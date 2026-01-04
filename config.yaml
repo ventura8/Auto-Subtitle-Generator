@@ -1,0 +1,238 @@
+# Auto Subtitle Generator Configuration
+# -------------------------------------
+# This configuration file controls the behavior of the AI Audio Subtitle Generator pipeline.
+# Include settings for Whisper AI transcription, hallucination filtering, and NLLB translation.
+
+# -----------------------------------------------------------------------------
+# Whisper AI Settings
+# -----------------------------------------------------------------------------
+# Configuration for the OpenAI Whisper automatic speech recognition model.
+whisper:
+  # Model Size: Determines accuracy and resource usage.
+  # Available Options:
+  # - "tiny" / "tiny.en"       (Fastest, lowest accuracy, ~1GB VRAM)
+  # - "base" / "base.en"       (Balanced for simple audio, ~1-2GB VRAM)
+  # - "small" / "small.en"     (Good general purpose, ~2-3GB VRAM)
+  # - "medium" / "medium.en"   (High accuracy, ~5GB VRAM)
+  # - "large-v3"               (Best accuracy, requires ~10GB VRAM)
+  model_size: "large-v3"
+  
+  # Forced Language: Force Whisper to assume this language (e.g., "ro", "en").
+  # Leave null to use auto-detection.
+  language: null
+  
+  # Use Prompt: Boolean validation to enable contextual prompting.
+  # Set to true to provide Whisper with context about the audio (e.g., specific terminology).
+  use_prompt: true
+  
+  # Custom Prompt: Text string to guide the model's style or vocabulary.
+  # Leave empty to use the system default optimization prompt.
+  custom_prompt: "This video contains speech in multiple languages including Romanian, English, French, Italian, German, and Spanish."
+  
+  # Custom Prompt Priority: If true, the custom_prompt above overrides everything.
+  # If false, the script will still use the "Smart Auto-Detect" bias (e.g. adding 'Primarily in RO').
+  custom_prompt_priority: false
+ 
+  # Force Detected Language: If true, the result of the "Robust Scan" is forced as the primary language.
+  # This prevents Whisper from locking onto an English intro.
+  force_detected_language: false
+ 
+  # Use Vocal Separation: If true, use BS-Roformer to clean the audio.
+  # Set to false if the isolated track sounds 'metallic' or missing content.
+  use_vocal_separation: true
+ 
+# -----------------------------------------------------------------------------
+# Hallucination & Noise Filters
+# -----------------------------------------------------------------------------
+# Filters to post-process Whisper output and remove common AI artifacts, 
+# such as repetitive text generated during silence or background music.
+hallucinations:
+  # Silence Threshold: Probability threshold (0.0 - 1.0) to discard low-confidence segments.
+  # Set to 0.85 for old/noisy recordings to prevent valid speech from being skipped.
+  silence_threshold: 0.85
+  
+  # Repetition Threshold: non-negative integer.
+  # Flags a segment as invalid if the exact same text appears consecutively this many times.
+  repetition_threshold: 15
+  
+  # Known Phrases: List of specific strings to continually ignore.
+  # Useful for removing recurring "subscribe" channel calls or AI hallucinations.
+  known_phrases:
+    - "nu uitați să dați like"
+    - "nu uitati sa dati like"
+    - "să lăsați un comentariu"
+    - "sa lasati un comentariu"
+    - "să distribuiți"
+    - "sa distribuiti"
+    - "abonați-vă la canal"
+    - "abonati-va la canal"
+    - "mulțumesc pentru vizionare"
+    - "multumesc pentru vizionare"
+    - "thank you for watching"
+    - "thanks for watching"
+    - "don't forget to subscribe"
+    - "please subscribe"
+    - "like and subscribe"
+    - "hit the like button"
+    - "leave a comment"
+    - "share this video"
+    - "see you in the next"
+    - "bye bye"
+    - "merci d'avoir regardé"
+    - "n'oubliez pas de vous abonner"
+    - "laissez un commentaire"
+    - "à bientôt"
+    - "danke fürs zuschauen"
+    - "vergisst nicht zu abonnieren"
+    - "gracias por ver"
+    - "no olvides suscribirte"
+    - "grazie per aver guardato"
+    - "non dimenticare di iscriverti"
+ 
+# -----------------------------------------------------------------------------
+# NLLB Translation Targets
+# -----------------------------------------------------------------------------
+# Defines the target languages for the NLLB (No Language Left Behind) translator.
+# The keys (e.g., 'en', 'fr') are used in output filenames.
+# Values map to the specific NLLB model code and a human-readable label.
+target_languages:
+  # Major Global Languages
+  en: {code: "eng_Latn", label: "English"}
+  zh: {code: "zho_Hans", label: "Chinese (Simplified)"}
+  es: {code: "spa_Latn", label: "Spanish"}
+  fr: {code: "fra_Latn", label: "French"}
+  ar: {code: "arb_Arab", label: "Arabic"}
+  ru: {code: "rus_Cyrl", label: "Russian"}
+  pt: {code: "por_Latn", label: "Portuguese"}
+  de: {code: "deu_Latn", label: "German"}
+  ja: {code: "jpn_Jpan", label: "Japanese"}
+  hi: {code: "hin_Deva", label: "Hindi"}
+ 
+  # European & Regional
+  ro: {code: "ron_Latn", label: "Romanian"}
+  tr: {code: "tur_Latn", label: "Turkish"}
+  it: {code: "ita_Latn", label: "Italian"}
+  ko: {code: "kor_Hang", label: "Korean"}
+  vi: {code: "vie_Latn", label: "Vietnamese"}
+  pl: {code: "pol_Latn", label: "Polish"}
+  nl: {code: "nld_Latn", label: "Dutch"}
+  id: {code: "ind_Latn", label: "Indonesian"}
+  uk: {code: "ukr_Cyrl", label: "Ukrainian"}
+  th: {code: "tha_Thai", label: "Thai"}
+  cs: {code: "ces_Latn", label: "Czech"}
+  hu: {code: "hun_Latn", label: "Hungarian"}
+  sv: {code: "swe_Latn", label: "Swedish"}
+  el: {code: "ell_Grek", label: "Greek"}
+  
+  # Nordic & Others
+  da: {code: "dan_Latn", label: "Danish"}
+  fi: {code: "fin_Latn", label: "Finnish"}
+  no: {code: "nob_Latn", label: "Norwegian"}
+  bg: {code: "bul_Cyrl", label: "Bulgarian"}
+  hr: {code: "hrv_Latn", label: "Croatian"}
+  sr: {code: "srp_Cyrl", label: "Serbian"}
+  sk: {code: "slk_Latn", label: "Slovak"}
+  sl: {code: "slv_Latn", label: "Slovenian"}
+  lt: {code: "lit_Latn", label: "Lithuanian"}
+  lv: {code: "lvs_Latn", label: "Latvian"}
+  et: {code: "est_Latn", label: "Estonian"}
+  he: {code: "heb_Hebr", label: "Hebrew"}
+  fa: {code: "pes_Arab", label: "Persian"}
+ 
+# -----------------------------------------------------------------------------
+# NLLB Translation Quality Settings
+# -----------------------------------------------------------------------------
+# Advanced parameters for the NLLB-200 translation model.
+# These control the trade-off between speed and linguistic excellence.
+nllb:
+  # Number of Beams: Increases hypothesis exploration.
+  # Available Options:
+  # - 5  (Standard high-quality)
+  # - 10 (Ultra-Quality: Best linguistic flow, slower)
+  num_beams: 10
+ 
+  # Length Penalty: Encourages the model to produce longer/more descriptive translations.
+  # - 1.0 (Neutral)
+  # - 1.1 (Slightly more descriptive - Recommended for high quality)
+  length_penalty: 1.1
+ 
+  # No Repeat N-Gram Size: Prevents the model from repeating the same word chains.
+  # - 0 (Off - Let the model decide)
+  # - 4 (Gentle repetition prevention for long narratives)
+  no_repeat_ngram_size: 0
+ 
+  # Repetition Penalty: Penalizes words already generated.
+  # - 1.0 (Neutral - Recommended for 3.3B model)
+  repetition_penalty: 1.0
+ 
+# -----------------------------------------------------------------------------
+# File Type Settings
+# -----------------------------------------------------------------------------
+# Supported video extensions to scan for.
+file_types:
+  extensions:
+    - ".mp4"
+    - ".mkv"
+    - ".mov"
+    - ".avi"
+    - ".webm"
+    - ".flv"
+    - ".m4v"
+    - ".ts"
+    - ".mts"
+ 
+# -----------------------------------------------------------------------------
+# Model Configuration
+# -----------------------------------------------------------------------------
+# Specific model IDs or paths for the AI components.
+models:
+  # NLLB Translation Model (HuggingFace ID)
+  # Available Options:
+  # - "facebook/nllb-200-3.3B"            (High quality, slower, ~8-10GB VRAM)
+  # - "facebook/nllb-200-1.3B"            (Balanced, faster, ~4-5GB VRAM)
+  # - "facebook/nllb-200-distilled-600M"  (Fastest, lower quality, ~1-2GB VRAM)
+  nllb: "facebook/nllb-200-3.3B"
+  
+  # Audio Separator Model (BS-Roformer Checkpoint)
+  # Common options supported by python-audio-separator:
+  # - "model_bs_roformer_ep_317_sdr_12.9755.ckpt" (Best vocal isolation)
+  # - "UVR-MDX-Net-Inst_HQ_3.onnx"                (Good general purpose)
+  # Ensure the model filename matches what is expected by the library.
+  audio_separator: "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+ 
+# -----------------------------------------------------------------------------
+# Performance Tuning
+# -----------------------------------------------------------------------------
+# Manual overrides for system optimization. 
+# Leave these commented out or set to null to let the auto-optimizer decide based on hardware.
+performance:
+  # Target VRAM in GB for dynamic scaling (Recommended: 28 for 32GB cards)
+  max_vram_usage_gb: null
+ 
+  # Whisper workers (Parallel transcription: 10+ recommended for 9950X)
+  whisper_workers: null
+  
+  # Beam size for Whisper (higher = more accurate, slower)
+  whisper_beam: null
+  
+  # Batch size for NLLB translation (will be dynamically overridden if null)
+  # nllb_batch: null
+  
+  # FFmpeg threads (0 = auto)
+  ffmpeg_threads: null
+ 
+# -----------------------------------------------------------------------------
+# Voice Activity Detection (VAD)
+# -----------------------------------------------------------------------------
+# Parameters for Whisper's internal VAD filter to detecting speech vs silence.
+vad:
+  # Minimum duration of silence (in ms) to consider a break in speech.
+  min_silence_duration_ms: 500
+ 
+# ------------------------------------------------------------------------------
+# DEBUGGING
+# ------------------------------------------------------------------------------
+# debug_logging:
+#   - false: Standard output (Recommended).
+#   - true:  Detailed terminal logs for troubleshooting.
+debug_logging: false

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  static_analysis:
+    name: "🔍 Static Quality Verification"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linting Tools
+        run: |
+          pip install pylint flake8 pyyaml
+      - name: Run Pylint
+        # Allow failure for now as codebase might have legacy issues
+        run: |
+          pylint auto_subtitle.py || true
+
+  technical_validation:
+    name: "🧪 Automated Pipeline Validation"
+    needs: static_analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Dependencies
+        run: |
+          pip install pytest pytest-cov radon pyyaml
+      - name: Run Tests with Coverage
+        run: |
+          pytest --cov=auto_subtitle --cov=modules --cov-branch --cov-report=xml --cov-report=term --cov-fail-under=90 tests/
+      - name: Upload Coverage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  quality_reporting:
+    name: "📊 Analytics & Coverage Reporting"
+    needs: technical_validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to commit badge if we wanted, but we'll display summary
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Coverage Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Reporting Dependencies
+        run: |
+          pip install radon
+      - name: Generate Badge and Summary
+        run: |
+          python tests/transform_coverage.py coverage.xml
+          cat coverage_summary.md >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,54 @@
+# Common
+__pycache__/
+*.py[cod]
+*.so
+.env
+venv/
+bin/
+develop-eggs/
+dist/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+models/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# VS Code
+.vscode/
+
+# Windows
+Thumbs.db
+
+# --- Testing & Coverage ---
+.pytest_cache/
+.coverage
+coverage.xml
+coverage_summary.md
+htmlcov/
+test_debug.txt
+test_debug.log
+debug_output.txt
+test_result.txt
+result.log
+test_failure.log
+*.log
+run_tests_debug.py
+
+# --- Generated Content ---
+input/
+*.srt
+*.mp4
+*.mkv
+*.wav
+*.mp3
+debug_test_logs.txt
+single_test.txt
+sanitized*.txt
+start.bat
