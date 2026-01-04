@@ -1,0 +1,15 @@
+--extra-index-url https://download.pytorch.org/whl/nightly/cu128
+torch
+torchvision
+torchaudio
+faster-whisper
+transformers
+sentencepiece
+accelerate
+nvidia-cudnn-cu12
+nvidia-cublas-cu12
+audio-separator[gpu]
+pyyaml
+pytest
+pytest-cov
+radon
