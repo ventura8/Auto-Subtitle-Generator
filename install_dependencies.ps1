@@ -88,12 +88,36 @@ try {
 
     # Uninstall existing PyTorch to ensure clean GPU install
     Write-Host "Ensuring clean PyTorch installation..." -ForegroundColor Cyan
-    & $VenvPip uninstall -y torch torchvision torchaudio 2>$null
+    try {
+        $msg = & $VenvPip uninstall -y torch torchvision torchaudio 2>&1
+    }
+    catch {
+        Write-Host "Clean uninstall skipped (packages likely not installed)." -ForegroundColor DarkGray
+    }
 
-    # Install all dependencies from requirements.txt
-    Write-Host "Installing dependencies from requirements.txt (forcing upgrade)..." -ForegroundColor Cyan
-    & $VenvPip install --upgrade --pre -r "$PSScriptRoot\requirements.txt"
+    # 1. Install PyTorch ecosystem FIRST (Force CUDA 12.8 Nightly for RTX 5090 Blackwell)
+    Write-Host "Installing PyTorch Nightly with CUDA 12.8 Support..." -ForegroundColor Cyan
+    & $VenvPip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+
+    # 2. Install Audio-Separator with GPU extras explicitly
+    Write-Host "Installing Audio-Separator (GPU)..." -ForegroundColor Cyan
+    & $VenvPip install "audio-separator[gpu]"
+
+    # 3. Install other requirements (excluding torch to prevent downgrade)
+    Write-Host "Installing remaining dependencies..." -ForegroundColor Cyan
     
+    # Read requirements and filter out torch/audio-separator lines
+    $reqContent = Get-Content "$PSScriptRoot\requirements.txt"
+    $filteredReq = $reqContent | Where-Object { 
+        $_ -notmatch "^torch" -and 
+        $_ -notmatch "audio-separator" -and 
+        $_ -notmatch "--extra-index-url"
+    }
+    $filteredReq | Set-Content "$PSScriptRoot\requirements_filtered.temp.txt"
+    
+    & $VenvPip install -r "$PSScriptRoot\requirements_filtered.temp.txt"
+    Remove-Item "$PSScriptRoot\requirements_filtered.temp.txt" -Force
+
     Write-Host "Dependencies installed successfully." -ForegroundColor Green
 }
 catch {

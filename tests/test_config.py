@@ -59,13 +59,13 @@ class TestConfig(unittest.TestCase):
                 "nllb_batch": 16
             }
         }
-        
+
         optimizer = MagicMock()
         optimizer.config = {}
         log = MagicMock()
-        
+
         res = config.load_config(optimizer, log)
-        
+
         self.assertTrue(res)
         self.assertTrue(config.DEBUG_LOGGING)
         self.assertEqual(config.WHISPER_MODEL_SIZE, "medium")
@@ -76,7 +76,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.NLLB_MODEL_ID, "facebook/nllb-distilled")
         self.assertEqual(config.NLLB_NUM_BEAMS, 3)
         self.assertEqual(config.VAD_MIN_SILENCE_MS, 300)
-        
+
         # Optimizer overrides
         self.assertEqual(optimizer.config["whisper_beam"], 2)
         self.assertEqual(optimizer.config["nllb_batch"], 16)

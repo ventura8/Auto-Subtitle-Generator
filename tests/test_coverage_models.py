@@ -1,5 +1,6 @@
+from modules import models
 import unittest
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 import os
 import sys
 
@@ -8,7 +9,6 @@ _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from modules import models
 
 class TestCoverageModels(unittest.TestCase):
 
@@ -20,8 +20,8 @@ class TestCoverageModels(unittest.TestCase):
     def test_detect_hardware_verbose(self):
         opt = models.SystemOptimizer()
         with patch("modules.models.log") as mock_log, \
-             patch.object(opt, "_detect_gpu"), \
-             patch.object(opt, "_assign_profile"):
+                patch.object(opt, "_detect_gpu"), \
+                patch.object(opt, "_assign_profile"):
             opt.detect_hardware(verbose=True)
             mock_log.assert_called()
 
@@ -30,8 +30,8 @@ class TestCoverageModels(unittest.TestCase):
         mock_props = MagicMock()
         type(mock_props).total_memory = property(lambda x: "invalid")
         with patch("torch.cuda.is_available", return_value=True), \
-             patch("torch.cuda.get_device_properties", return_value=mock_props), \
-             patch("modules.models.log"):
+                patch("torch.cuda.get_device_properties", return_value=mock_props), \
+                patch("modules.models.log"):
             opt._detect_gpu()
             self.assertEqual(opt.vram_gb, 0.0)
 
@@ -41,8 +41,8 @@ class TestCoverageModels(unittest.TestCase):
         mock_props.total_memory = 8 * 1024**3
         mock_props.name = "TestGPU"
         with patch("torch.cuda.is_available", return_value=True), \
-             patch("torch.cuda.get_device_properties", return_value=mock_props), \
-             patch("modules.models.log") as mock_log:
+                patch("torch.cuda.get_device_properties", return_value=mock_props), \
+                patch("modules.models.log") as mock_log:
             opt._detect_gpu(verbose=True)
             mock_log.assert_called()
 
@@ -71,21 +71,21 @@ class TestCoverageModels(unittest.TestCase):
     def test_nllb_translator_load_lazy(self):
         # Test the lazy import logic
         with patch("transformers.NllbTokenizer"), \
-             patch("transformers.AutoModelForSeq2SeqLM"), \
-             patch("torch.backends.cuda.matmul.allow_tf32"), \
-             patch("modules.models.log"), \
-             patch("torch.cuda.is_available", return_value=False):
+                patch("transformers.AutoModelForSeq2SeqLM"), \
+                patch("torch.backends.cuda.matmul.allow_tf32"), \
+                patch("modules.models.log"), \
+                patch("torch.cuda.is_available", return_value=False):
             # Reset globals to force re-import check
             models.torch = None
             models.NllbTokenizer = None
             models.AutoModelForSeq2SeqLM = None
-            
+
             # This will trigger _load
-            NLLBTranslator = models.NLLBTranslator()
+            _ = models.NLLBTranslator()
 
     def test_nllb_translator_load_error(self):
         with patch("transformers.NllbTokenizer.from_pretrained", side_effect=Exception("Load fail")), \
-             patch("modules.models.log"):
+                patch("modules.models.log"):
             with self.assertRaises(Exception):
                 models.NLLBTranslator()
 
@@ -93,9 +93,9 @@ class TestCoverageModels(unittest.TestCase):
         mock_model = MagicMock()
         mock_tokenizer = MagicMock()
         with patch("transformers.NllbTokenizer.from_pretrained", return_value=mock_tokenizer), \
-             patch("transformers.AutoModelForSeq2SeqLM.from_pretrained", return_value=mock_model), \
-             patch("modules.models.OPTIMIZER") as mock_opt, \
-             patch("modules.models.log"):
+                patch("transformers.AutoModelForSeq2SeqLM.from_pretrained", return_value=mock_model), \
+                patch("modules.models.OPTIMIZER") as mock_opt, \
+                patch("modules.models.log"):
             mock_opt.config = {"device": "cuda"}
             models.NLLBTranslator()
             mock_model.generate.assert_called()
@@ -132,9 +132,9 @@ class TestCoverageModels(unittest.TestCase):
         mm = models.ModelManager()
         mock_model = MagicMock()
         with patch("faster_whisper.WhisperModel", return_value=mock_model), \
-             patch("faster_whisper.BatchedInferencePipeline") as mock_pipe, \
-             patch("modules.models.OPTIMIZER") as mock_opt, \
-             patch("modules.models.log"):
+                patch("faster_whisper.BatchedInferencePipeline") as mock_pipe, \
+                patch("modules.models.OPTIMIZER") as mock_opt, \
+                patch("modules.models.log"):
             mock_opt.config = {"device": "cpu", "whisper_compute": "int8", "whisper_workers": 1, "whisper_batch_size": 4}
             mm.get_whisper()
             mock_pipe.assert_called()
@@ -142,16 +142,16 @@ class TestCoverageModels(unittest.TestCase):
     def test_model_manager_get_nllb(self):
         mm = models.ModelManager()
         with patch("modules.models.NLLBTranslator") as mock_nllb, \
-             patch.object(mm, "offload_whisper"), \
-             patch.object(mm, "offload_separator"), \
-             patch("modules.models.log"):
+                patch.object(mm, "offload_whisper"), \
+                patch.object(mm, "offload_separator"), \
+                patch("modules.models.log"):
             mm.get_nllb()
             mock_nllb.assert_called()
 
     def test_model_manager_get_separator(self):
         mm = models.ModelManager()
         with patch("audio_separator.separator.Separator") as mock_sep, \
-             patch("modules.models.log"):
+                patch("modules.models.log"):
             mm.get_separator()
             mock_sep.assert_called()
 
@@ -176,10 +176,11 @@ class TestCoverageModels(unittest.TestCase):
         with patch("modules.models.log"):
             mm.offload_nllb()
             mm._nllb.offload.assert_called()
-            
+
             with patch.object(mm, "get_nllb") as mock_get:
                 mm.preload_nllb()
                 mock_get.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -216,7 +216,7 @@ performance:
   whisper_beam: null
   
   # Batch size for NLLB translation (will be dynamically overridden if null)
-  # nllb_batch: null
+  nllb_batch: null
   
   # FFmpeg threads (0 = auto)
   ffmpeg_threads: null

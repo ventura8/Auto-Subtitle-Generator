@@ -18,7 +18,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         import auto_subtitle
         from modules import config, models
         import modules.translation as translation
-        
+
         # Link globals to centralized mocks
         auto_subtitle.torch = sys.modules["torch"]
         auto_subtitle.subprocess = sys.modules["subprocess"]
@@ -222,8 +222,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                     # proper command called
                     cmd_args = m_popen.call_args[0][0]
                     self.assertIn("--batch", cmd_args)
-                    
-                    
+
                     # Verify open was called (satisfies lint and logic)
                     m_open.assert_called()
 
@@ -342,17 +341,17 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
     def test_embed_subtitles(self):
         # Cover embed_subtitles logic
         with patch("auto_subtitle.utils.run_ffmpeg_progress") as m_run, \
-             patch("auto_subtitle.utils.get_audio_duration", return_value=100), \
-             patch("os.path.exists", return_value=False): # output doesn't exist
-            
+                patch("auto_subtitle.utils.get_audio_duration", return_value=100), \
+                patch("os.path.exists", return_value=False):  # output doesn't exist
+
             srt_files = [("en.srt", "en", "English"), ("es.srt", "es", "Spanish")]
             auto_subtitle.embed_subtitles("vid.mp4", srt_files)
-            
+
             m_run.assert_called()
             cmd = m_run.call_args[0][0]
             self.assertIn("-c:s", cmd)
-            self.assertIn("mov_text", cmd) # since .mp4
-            
+            self.assertIn("mov_text", cmd)  # since .mp4
+
             # Verify metadata
             self.assertIn("language=en", cmd)
             self.assertIn("language=es", cmd)
@@ -361,13 +360,13 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         # Cover ImportError inside _init_* functions
         # We need to un-mock sys.modules or override them specifically for this test
         # But since they are mocked in setUp via sys.modules assignments, we can side_effect on the mock
-        
+
         # 1. Faster-Whisper Fail
         with patch.dict(sys.modules, {"faster_whisper": None}):
-             # Use a context manager to catch sys.exit
-             with self.assertRaises(SystemExit) as cm:
-                 auto_subtitle._init_whisper_and_separator(0, 6)
-             self.assertEqual(cm.exception.code, 1)
+            # Use a context manager to catch sys.exit
+            with self.assertRaises(SystemExit) as cm:
+                auto_subtitle._init_whisper_and_separator(0, 6)
+            self.assertEqual(cm.exception.code, 1)
 
         # 2. Transformers Fail (NLLB)
         # We need to simulate ImportError on import transformers
@@ -381,33 +380,32 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
     def test_nvidia_path_loading(self):
         # Cover load_nvidia_paths and _get_nvidia_bin_lib_paths
         # We need to mock os.path.exists and os.listdir to simulate NVIDIA folders
-        
+
         def os_exists_side_effect(path):
             if "nvidia" in path or "site-packages" in path or "lib" in path:
                 return True
             return False
-            
+
         with patch("site.getsitepackages", return_value=["/site-packages"]), \
-             patch("sys.prefix", "/sys_prefix"), \
-             patch("os.path.exists", side_effect=os_exists_side_effect), \
-             patch("os.listdir", return_value=["cudnn", "cublas"]), \
-             patch("os.path.isdir", return_value=True), \
-             patch("os.environ", {"PATH": ""}) as m_env, \
-             patch("os.add_dll_directory", create=True) as m_add_dll:
-            
+                patch("sys.prefix", "/sys_prefix"), \
+                patch("os.path.exists", side_effect=os_exists_side_effect), \
+                patch("os.listdir", return_value=["cudnn", "cublas"]), \
+                patch("os.path.isdir", return_value=True), \
+                patch("os.environ", {"PATH": ""}), \
+                patch("os.add_dll_directory", create=True) as m_add_dll:
+
             # Simulate torch.__path__
             with patch("auto_subtitle.torch") as m_torch:
                 m_torch.__path__ = ["/site-packages/torch"]
-                
+
                 auto_subtitle.load_nvidia_paths()
-                
+
                 # Check that paths were added
                 self.assertTrue(len(os.environ["PATH"]) > 0)
                 # Should have found bin/lib for cudnn/cublas
                 # Logic: /site-packages/nvidia/cudnn/bin, lib...
                 # We expect multiple add_dll_directory calls
                 m_add_dll.assert_called()
-
 
 
 if __name__ == "__main__":

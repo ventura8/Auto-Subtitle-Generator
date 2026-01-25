@@ -126,29 +126,62 @@ def _process_transcription_segments(segments_gen, total_dur, start_time):
     return segments
 
 
-def transcribe_video_audio(video_path, model_mgr, forced_lang=None, forced_prompt=None):
-    """Runs Whisper transcription on the video (or vocal track)."""
-
-    # 1. Prepare Audio
-# ... (rest of function until segment gen)
-    # Check for existing Vocals first if separation enabled
+def _prepare_audio(video_path, model_mgr):
+    """Prepares audio for transcription (Separation or Extraction)."""
     transcribe_path = video_path
     if config.USE_VOCAL_SEPARATION:
         transcribe_path = _detect_and_separate_vocals(video_path, model_mgr)
-        # Offload separator immediately after use
         model_mgr.offload_separator()
 
     if transcribe_path == video_path:
-        # No separation or failed, extract standard audio
         transcribe_path = utils.extract_clean_audio(video_path)
+    return transcribe_path
+
+
+def _perform_transcription(whisper_model, path, prompt, lang, vad_params):
+    """Executes the raw Whisper transcription call."""
+    try:
+        return whisper_model.transcribe(
+            path,
+            beam_size=OPTIMIZER.config["whisper_beam"],
+            initial_prompt=prompt,
+            vad_filter=True,
+            vad_parameters=vad_params,
+            language=lang,
+            condition_on_previous_text=True,
+            no_speech_threshold=0.6
+        )
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            log("  [Whisper] OOM detected. Clearing cache and retrying...", "WARNING")
+            import torch
+            import gc
+            torch.cuda.empty_cache()
+            gc.collect()
+            time.sleep(1)
+            return whisper_model.transcribe(
+                path,
+                beam_size=max(1, OPTIMIZER.config["whisper_beam"] // 2),
+                initial_prompt=prompt,
+                vad_filter=True,
+                vad_parameters=vad_params,
+                language=lang,
+                condition_on_previous_text=True,
+                no_speech_threshold=0.6
+            )
+        raise e
+
+
+def transcribe_video_audio(video_path, model_mgr, forced_lang=None, forced_prompt=None):
+    """Runs Whisper transcription on the video (or vocal track)."""
+    # 1. Prepare Audio
+    transcribe_path = _prepare_audio(video_path, model_mgr)
 
     # 2. Transcribe
     log(f"  [Task 1/4] Transcribing '{os.path.basename(transcribe_path)}'...")
     whisper_model = model_mgr.get_whisper()
 
     current_prompt = forced_prompt if forced_prompt else config.INITIAL_PROMPT
-
-    # Language handling
     lang_to_use = forced_lang if forced_lang else config.FORCED_LANGUAGE
 
     # Log configuration details as requested
@@ -165,45 +198,15 @@ def transcribe_video_audio(video_path, model_mgr, forced_lang=None, forced_promp
     start_time = time.time()
 
     try:
-        # Tuned VAD Parameters for Sequential Mode
-        # Ensures correct Language ID without cutting off start
         vad_params = dict(
-            threshold=0.35,              # More sensitive (default 0.5)
-            min_silence_duration_ms=500,  # Matches config
-            speech_pad_ms=500            # Add padding to capture breath/starts
+            threshold=0.35,
+            min_silence_duration_ms=500,
+            speech_pad_ms=500
         )
 
-        try:
-            segments_gen, info = whisper_model.transcribe(
-                transcribe_path,
-                beam_size=OPTIMIZER.config["whisper_beam"],
-                initial_prompt=current_prompt,
-                vad_filter=True,             # ENABLED: Needed for Lang ID accuracy
-                vad_parameters=vad_params,   # TUNED: Prevents start cut-off
-                language=lang_to_use,
-                condition_on_previous_text=True,
-                no_speech_threshold=0.6
-            )
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                log("  [Whisper] OOM detected. Clearing cache and retrying...", "WARNING")
-                import torch
-                torch.cuda.empty_cache()
-                import gc
-                gc.collect()
-                time.sleep(1)
-                segments_gen, info = whisper_model.transcribe(
-                    transcribe_path,
-                    beam_size=max(1, OPTIMIZER.config["whisper_beam"] // 2),
-                    initial_prompt=current_prompt,
-                    vad_filter=True,
-                    vad_parameters=vad_params,
-                    language=lang_to_use,
-                    condition_on_previous_text=True,
-                    no_speech_threshold=0.6
-                )
-            else:
-                raise e
+        segments_gen, info = _perform_transcription(
+            whisper_model, transcribe_path, current_prompt, lang_to_use, vad_params
+        )
 
         total_dur = info.duration
         log(f"  [Whisper] Detected Language: {info.language} (Probability: {info.language_probability:.2%})")

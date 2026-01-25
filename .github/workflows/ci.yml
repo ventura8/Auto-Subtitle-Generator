@@ -19,10 +19,13 @@ jobs:
       - name: Install Linting Tools
         run: |
           pip install pylint flake8 pyyaml
+      - name: Run Flake8
+        run: |
+          flake8 .
       - name: Run Pylint
         # Allow failure for now as codebase might have legacy issues
         run: |
-          pylint auto_subtitle.py || true
+          pylint auto_subtitle.py modules/ tests/ || true
 
   technical_validation:
     name: "🧪 Automated Pipeline Validation"
@@ -36,7 +39,7 @@ jobs:
           python-version: '3.12'
       - name: Install Dependencies
         run: |
-          pip install pytest pytest-cov radon pyyaml
+          pip install -r test-requirements.txt
       - name: Run Tests with Coverage
         run: |
           pytest --cov=auto_subtitle --cov=modules --cov-branch --cov-report=xml --cov-report=term --cov-fail-under=90 tests/

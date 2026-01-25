@@ -55,7 +55,9 @@ def generate_badge(line_rate, output_path="assets/badge.svg"):
         <rect x="{label_width}" width="{value_width}" height="20" fill="{color}"/>
         <rect width="{total_width}" height="20" fill="url(#s)"/>
     </g>
-    <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">
+    <g fill="#fff" text-anchor="middle"
+       font-family="Verdana,Geneva,DejaVu Sans,sans-serif"
+       text-rendering="geometricPrecision" font-size="110">
         <text aria-hidden="true" x="{int(label_x)}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" """ \
         f"""textLength="{label_width*10 - 100}">{label_text}</text>
         <text x="{int(label_x)}" y="140" transform="scale(.1)" fill="#fff" textLength="{label_width*10 - 100}">{label_text}</text>

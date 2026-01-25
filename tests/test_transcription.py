@@ -8,15 +8,17 @@ _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
+
 class TestTranscription(unittest.TestCase):
     def setUp(self):
         global transcription
         from modules import transcription
-        
+
         # Ensure OPTIMIZER has real values
         transcription.OPTIMIZER.vram_gb = 0
         transcription.OPTIMIZER.cpu_cores = 8
         transcription.OPTIMIZER.config["whisper_beam"] = 5
+
     @patch("modules.transcription.utils.extract_clean_audio", return_value="vocals.wav")
     @patch("modules.models.ModelManager")
     def test_transcribe_video_audio_success(self, mock_mm, mock_extract):

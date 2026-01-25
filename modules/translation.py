@@ -176,18 +176,12 @@ def _poll_translation_results(proc, missing_langs, folder, base_name, segments):
             _process_completed_output(output_file, lang, segments, folder, base_name)
 
 
-def _execute_translation_workers(missing_langs, source_data, src_code, folder, base_name, segments):
-    """Orchestrates the worker processes for each missing language."""
-    log(f"  [System] Offloading remaining {len(missing_langs)} targets to Batch Worker...")
-
-    # 1. Create Manifest
+def _create_translation_manifest(missing_langs, source_data, src_code, folder, base_name):
+    """Creates the job manifest and input files for the worker."""
     from modules import config
 
     manifest_jobs = []
-
-    # Pre-write common input file
     common_input = os.path.join(folder, f"{base_name}.common_input.json")
-    # Track temp files for cleanup
     temp_files = [common_input]
 
     with open(common_input, 'w', encoding='utf-8') as f:
@@ -198,9 +192,11 @@ def _execute_translation_workers(missing_langs, source_data, src_code, folder, b
         output_file = os.path.join(folder, f".temp_output.{base_name}.{lang}.json")
         temp_files.append(output_file)
 
-        # Ensure cleanup of old pending files
         if os.path.exists(output_file):
-            os.remove(output_file)
+            try:
+                os.remove(output_file)
+            except OSError:
+                pass
 
         manifest_jobs.append({
             "lang": lang,
@@ -217,7 +213,36 @@ def _execute_translation_workers(missing_langs, source_data, src_code, folder, b
     with open(manifest_path, 'w', encoding='utf-8') as f:
         json.dump({"jobs": manifest_jobs}, f, ensure_ascii=False, indent=2)
 
-    # 2. Spawn Isolated Worker (Batch Mode)
+    return manifest_path, temp_files
+
+
+def _cleanup_worker_process(proc):
+    """Safely terminates the worker process."""
+    if proc.poll() is None:
+        log("!   [Cleanup] Terminating orphaned translation worker...", "WARNING")
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        except Exception:
+            pass
+        utils.unregister_subprocess(proc)
+
+
+def _cleanup_temp_files(temp_files):
+    """Removes temporary files."""
+    for tf in temp_files:
+        if os.path.exists(tf):
+            try:
+                os.remove(tf)
+            except OSError:
+                pass
+
+
+def _run_worker_process(manifest_path, missing_langs, folder, base_name, segments, temp_files):
+    """Spawns and manages the isolated translation worker process."""
     cmd = [
         sys.executable,
         os.path.join("modules", "isolated_translator.py"),
@@ -226,47 +251,34 @@ def _execute_translation_workers(missing_langs, source_data, src_code, folder, b
     ]
 
     proc = subprocess.Popen(cmd)
-
-    # Register for cleanup
     utils.register_subprocess(proc)
 
     try:
-        # 3. Poll for Results (Real-time)
         _poll_translation_results(proc, missing_langs, folder, base_name, segments)
-
-        # Final check after process exit
         proc.wait()
 
         if proc.returncode != 0:
             log(f"!!! Translation worker failed with code {proc.returncode}", "ERROR")
 
     finally:
-        # Cleanup Worker
-        if proc.poll() is None:
-            log("!   [Cleanup] Terminating orphaned translation worker...", "WARNING")
-            try:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            except Exception:
-                pass
-            utils.unregister_subprocess(proc)
+        _cleanup_worker_process(proc)
+        _cleanup_temp_files(temp_files)
 
-        # Cleanup Files
-        for tf in temp_files:
-            if os.path.exists(tf):
-                try:
-                    os.remove(tf)
-                except OSError:
-                    pass
-
-    # GC/Cache clear
     gc.collect()
     if 'torch' in globals() and torch is not None:
         if hasattr(torch, "cuda") and torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+
+def _execute_translation_workers(missing_langs, source_data, src_code, folder, base_name, segments):
+    """Orchestrates the worker processes for each missing language."""
+    log(f"  [System] Offloading remaining {len(missing_langs)} targets to Batch Worker...")
+
+    manifest_path, temp_files = _create_translation_manifest(
+        missing_langs, source_data, src_code, folder, base_name
+    )
+
+    _run_worker_process(manifest_path, missing_langs, folder, base_name, segments, temp_files)
 
 
 def translate_segments(segments, src_lang, model_mgr, folder, base_name):

@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import os
 import sys
 
@@ -13,6 +13,7 @@ class TestModels(unittest.TestCase):
     def setUp(self):
         global models
         from modules import models
+
     def test_system_optimizer_init(self):
         opt = models.SystemOptimizer()
         self.assertEqual(opt.profile, "STANDARD")

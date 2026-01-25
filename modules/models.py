@@ -94,21 +94,61 @@ class SystemOptimizer:
 
     def _assign_profile(self, verbose=True):
         """Assigns performance profile based on detected hardware."""
-        if self.config["device"] == "cuda":
-            try:
-                vram = float(self.vram_gb)
-            except (TypeError, ValueError):
-                vram = 0.0
-            if vram >= 22:
-                self.set_profile("ULTRA", verbose=verbose)
-            elif vram >= 15:
-                self.set_profile("HIGH", verbose=verbose)
-            elif vram >= 10:
-                self.set_profile("MID", verbose=verbose)
-            else:
-                self.set_profile("LOW", verbose=verbose)
-        else:
+        if self.config["device"] != "cuda":
             self.set_profile("CPU_ONLY", verbose=verbose)
+            return
+
+        try:
+            vram = float(self.vram_gb)
+        except (TypeError, ValueError):
+            vram = 0.0
+
+        if vram >= 22:
+            profile = "ULTRA"
+        elif vram >= 15:
+            profile = "HIGH"
+        elif vram >= 10:
+            profile = "MID"
+        else:
+            profile = "LOW"
+
+        self.set_profile(profile, verbose=verbose)
+
+    def _calculate_batch_sizes(self, profile_name):
+        """Calculates dynamic batch sizes based on profile and VRAM."""
+        # 1. Calculate Target VRAM (Proportional Scaling)
+        # We usage Total VRAM - 4GB (Safety Buffer for Windows/Display)
+        target_vram = max(4.0, self.vram_gb - 4.0)
+
+        # 2. Dynamic NLLB Scaling
+        nllb_overhead = 8.1
+        nllb_per_item = 0.40 if config.NLLB_NUM_BEAMS <= 5 else 0.80
+        dynamic_nllb_batch = max(
+            1, int((target_vram - nllb_overhead) / nllb_per_item)
+        )
+
+        profile_caps = {
+            "ULTRA": 32, "HIGH": 16, "MID": 8, "LOW": 4, "CPU_ONLY": 1
+        }
+        max_limit = profile_caps.get(profile_name, 4)
+        dynamic_nllb_batch = min(dynamic_nllb_batch, max_limit)
+
+        # 3. Dynamic Whisper Scaling
+        wh_overhead = 3.1
+        wh_per_item = 0.6
+        dynamic_whisper_batch = max(
+            1, int((target_vram - wh_overhead) / wh_per_item)
+        )
+
+        # 4. Worker Scaling
+        if self.vram_gb >= 24:
+            whisper_workers = 10 if profile_name == "ULTRA" else 5
+        elif self.vram_gb >= 10:
+            whisper_workers = 4
+        else:
+            whisper_workers = 1
+
+        return dynamic_nllb_batch, dynamic_whisper_batch, whisper_workers
 
     def set_profile(self, profile_name, verbose=True):
         """Applies a named performance profile."""
@@ -122,77 +162,58 @@ class SystemOptimizer:
         if verbose and profile_name != "STANDARD":
             log(f"[Optimization] Applied Profile: {profile_name}")
 
-        # 1. Calculate Target VRAM (Proportional Scaling)
-        # We aim for (Total VRAM - 4GB safety buffer) or config override
-        # 1. Calculate Target VRAM (Proportional Scaling)
-        # We usage Total VRAM - 4GB (Safety Buffer for Windows/Display)
-        # This allows scaling to 48GB, 80GB, etc. without hard limits.
-        target_vram = max(4.0, self.vram_gb - 4.0)
-
-        # 2. Dynamic NLLB Scaling
-        # Tuned based on user feedback: 12GB used vs 32GB available
-        # Real usage is ~0.5GB per item with beams=10
-        nllb_overhead = 8.1
-        # Increased safety margin: 0.25 -> 0.40, 0.50 -> 0.80
-        # This prevents transient spikes from pushing into Shared RAM
-        nllb_per_item = 0.40 if config.NLLB_NUM_BEAMS <= 5 else 0.80
-        dynamic_nllb_batch = max(1, int((target_vram - nllb_overhead) / nllb_per_item))
-
-        # Hard Cap to prevent massive batches creating fragmentation
-        dynamic_nllb_batch = min(dynamic_nllb_batch, 32)
-
-        # 3. Dynamic Whisper Scaling
-        # Whisper large-v3 weights: ~3.1GB in float16
-        wh_overhead = 3.1
-        wh_per_item = 0.6  # Aggressive per-batch estimation for 5090
-        dynamic_whisper_batch = max(
-            1, int((target_vram - wh_overhead) / wh_per_item)
+        dyn_nllb, dyn_whisper, wh_workers = self._calculate_batch_sizes(
+            profile_name
         )
-
-        # 4. Worker Scaling
-        if self.vram_gb >= 24:
-            whisper_workers = 10 if profile_name == "ULTRA" else 5
-        elif self.vram_gb >= 10:
-            whisper_workers = 4
-        else:
-            whisper_workers = 1
 
         profiles = {
             "ULTRA": {
                 "whisper_beam": 5,
                 "whisper_compute": "float16",
-                "whisper_workers": whisper_workers,
+                "whisper_workers": wh_workers,
                 "whisper_batch_size": 1,  # FORCED: Sequential for Max Accuracy
-                "nllb_batch": dynamic_nllb_batch,
+                "nllb_batch": dyn_nllb,
                 "ffmpeg_threads": self.cpu_cores
             },
             "HIGH": {
                 "whisper_beam": 5,
                 "whisper_compute": "float16",
-                "whisper_workers": max(1, whisper_workers // 2),
-                "whisper_batch_size": max(1, dynamic_whisper_batch // 2),
-                "nllb_batch": max(1, dynamic_nllb_batch // 2),
+                "whisper_workers": max(1, wh_workers // 2),
+                "whisper_batch_size": max(1, dyn_whisper // 2),
+                "nllb_batch": max(1, dyn_nllb // 2),
                 "ffmpeg_threads": self.cpu_cores
             },
             "MID": {
                 "whisper_beam": 5,
                 "whisper_workers": 1,
-                "nllb_batch": dynamic_nllb_batch
+                "nllb_batch": dyn_nllb
             },
             "LOW": {
-                "whisper_beam": 2,
+                "whisper_beam": 5,
                 "nllb_batch": 1,
                 "whisper_compute": "int8_float16"
             },
             "CPU_ONLY": {
-                "whisper_beam": 1,
+                "whisper_beam": 5,
                 "whisper_compute": "int8",
                 "nllb_batch": 1,
                 "ffmpeg_threads": 4
             },
         }
         if profile_name in profiles:
-            self.config.update(profiles[profile_name])
+            # Apply profile defaults
+            profile_cfg = profiles[profile_name]
+
+            # CRITICAL: Allow user overrides from config.yaml to persist!
+            # We only apply profile defaults if the key is not already in self.config
+            # OR if it's the default value we want to'over-tune'.
+            # Specifically for whisper_beam, we check if it was manually set.
+            for k, v in profile_cfg.items():
+                # If the user hasn't explicitly overridden this in config.yaml, use profile default
+                # (Assuming 'None' or the init default means 'not overridden')
+                if k == "whisper_beam" and self.config.get("whisper_beam_overridden"):
+                    continue
+                self.config[k] = v
             if verbose and profile_name in ["ULTRA", "HIGH", "MID"]:
                 msg = (
                     f"[Optimization] Dynamic NLLB batch size: "
@@ -253,7 +274,12 @@ class NLLBTranslator:
             # 'auto' allows offloading to CPU/Disk which causes shared RAM spikes.
             # We force 'cuda:0' (or primary) to ensure it stays in VRAM or errors out (OOM)
             # rather than slowing down system with shared memory.
-            target_device = "cuda" if OPTIMIZER.config["device"] == "cuda" else "cpu"
+            if OPTIMIZER.config["device"] == "cuda":
+                target_device = "cuda:0"
+                device_map = {"": 0}  # Force entire model onto GPU 0
+            else:
+                target_device = "cpu"
+                device_map = None
 
             try:
                 # First attempt: Try standard load (checks online if needed)
@@ -263,7 +289,7 @@ class NLLBTranslator:
                     low_cpu_mem_usage=True,
                     attn_implementation="eager",
                     tie_word_embeddings=True,
-                    device_map=target_device  # STRICT
+                    device_map=device_map
                 )
             except (OSError, ValueError, RuntimeError) as net_err:
                 log(f"[Load] Network/Load error ({net_err}). Trying local_files_only...", "WARNING")
@@ -274,9 +300,13 @@ class NLLBTranslator:
                     low_cpu_mem_usage=True,
                     attn_implementation="eager",
                     tie_word_embeddings=True,
-                    device_map=target_device,
+                    device_map=device_map,
                     local_files_only=True
                 )
+
+            # Ensure model is on the right device if device_map was None
+            if device_map is None:
+                self.model.to(target_device)
 
             # Official Weight Tying
             self.model.tie_weights()

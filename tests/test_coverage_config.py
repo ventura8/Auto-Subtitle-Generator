@@ -1,15 +1,14 @@
+from modules import config
 import unittest
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 import os
 import sys
-import yaml
 
 # Ensure modules can be imported
 _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from modules import config
 
 class TestCoverageConfig(unittest.TestCase):
 
@@ -100,9 +99,10 @@ class TestCoverageConfig(unittest.TestCase):
 
     def test_load_config_exception(self):
         with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", side_effect=Exception("Error")):
+                patch("builtins.open", side_effect=Exception("Error")):
             res = config.load_config(MagicMock(), MagicMock())
             self.assertFalse(res)
+
 
 if __name__ == "__main__":
     unittest.main()

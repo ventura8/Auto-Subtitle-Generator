@@ -425,6 +425,13 @@ def setup_environment():
     utils.setup_signal_handlers()
 
 
+def process_video_batch(video_files, model_mgr, forced_lang, forced_prompt):
+    """Processes a list of video files."""
+    for i, video_path in enumerate(video_files):
+        print(f"\n[{i + 1}/{len(video_files)}] Processing: {video_path}")
+        process_video(video_path, model_mgr, forced_lang, forced_prompt)
+
+
 def main():
     setup_environment()
     init_ai_engine()
@@ -439,10 +446,7 @@ def main():
     log(f"Found {len(video_files)} videos to process.", "INFO")
 
     model_mgr = ModelManager()
-
-    for i, video_path in enumerate(video_files):
-        print(f"\n[{i + 1}/{len(video_files)}] Processing: {video_path}")
-        process_video(video_path, model_mgr, forced_lang, forced_prompt)
+    process_video_batch(video_files, model_mgr, forced_lang, forced_prompt)
 
     print("\n[Done] All tasks completed.")
 

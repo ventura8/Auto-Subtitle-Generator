@@ -1,5 +1,6 @@
+import auto_subtitle
 import unittest
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 import os
 import sys
 
@@ -8,7 +9,6 @@ _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-import auto_subtitle
 
 class TestCoverageAutoSubtitle(unittest.TestCase):
 
@@ -21,17 +21,17 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
     @patch("sys.exit")
     def test_init_torch_fail(self, mock_exit, mock_log, mock_bar):
         with patch.dict("sys.modules", {"torch": MagicMock(side_effect=ImportError("No torch"))}):
-             # We need to trigger the import inside _init_torch_and_hardware
-             with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs: 
-                        exec("raise ImportError('No torch')") if name == "torch" else MagicMock()):
-                 auto_subtitle._init_torch_and_hardware(1, 6)
-                 mock_exit.assert_called_with(1)
+            # We need to trigger the import inside _init_torch_and_hardware
+            with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs:
+                       exec("raise ImportError('No torch')") if name == "torch" else MagicMock()):
+                auto_subtitle._init_torch_and_hardware(1, 6)
+                mock_exit.assert_called_with(1)
 
     @patch("auto_subtitle.print_progress_bar")
     @patch("auto_subtitle.log")
     @patch("sys.exit")
     def test_init_transformers_fail(self, mock_exit, mock_log, mock_bar):
-        with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs: 
+        with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs:
                    exec("raise ImportError('No transformers')") if name == "transformers" else MagicMock()):
             auto_subtitle._init_nvidia_and_transformers(3, 6)
             mock_exit.assert_called_with(1)
@@ -40,7 +40,7 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
     @patch("auto_subtitle.log")
     @patch("sys.exit")
     def test_init_whisper_fail(self, mock_exit, mock_log, mock_bar):
-        with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs: 
+        with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs:
                    exec("raise ImportError('No whisper')") if name == "faster_whisper" else MagicMock()):
             auto_subtitle._init_whisper_and_separator(4, 6)
             mock_exit.assert_called_with(1)
@@ -48,7 +48,7 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
     @patch("auto_subtitle.print_progress_bar")
     @patch("auto_subtitle.log")
     def test_init_separator_skip(self, mock_log, mock_bar):
-        with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs: 
+        with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs:
                    exec("raise ImportError('No separator')") if "audio_separator" in name else MagicMock()):
             auto_subtitle._init_whisper_and_separator(5, 6)
             mock_log.assert_called()
@@ -61,8 +61,8 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
 
     def test_get_nvidia_bin_lib_paths(self):
         with patch("os.path.exists", return_value=True), \
-             patch("os.path.isdir", return_value=True), \
-             patch("os.listdir", return_value=["item1"]):
+                patch("os.path.isdir", return_value=True), \
+                patch("os.listdir", return_value=["item1"]):
             paths = auto_subtitle._get_nvidia_bin_lib_paths("site-packages")
             self.assertTrue(len(paths) > 0)
 
@@ -77,14 +77,14 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
 
     def test_load_nvidia_paths_torch_fail(self):
         with patch("site.getsitepackages", return_value=[]), \
-             patch("builtins.__import__", side_effect=lambda name, *args, **kwargs: 
-                   exec("raise ImportError()") if name == "torch" else MagicMock()):
+            patch("builtins.__import__", side_effect=lambda name, *args, **kwargs:
+                  exec("raise ImportError()") if name == "torch" else MagicMock()):
             auto_subtitle.load_nvidia_paths()
 
     def test_check_resume_empty_srt(self):
         with patch("os.path.exists", return_value=True), \
-             patch("auto_subtitle.utils.parse_srt", return_value=[]), \
-             patch("auto_subtitle.log"):
+                patch("auto_subtitle.utils.parse_srt", return_value=[]), \
+                patch("auto_subtitle.log"):
             res = auto_subtitle._check_resume("folder", "base", "vid.mp4", "en")
             self.assertEqual(res, (None, None, None))
 
@@ -125,19 +125,20 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
 
     def test_get_input_files_exclude_multilang(self):
         with patch("argparse.ArgumentParser.parse_args", return_value=MagicMock(input_path="folder", cpu=False, lang=None, prompt=None)), \
-             patch("os.path.isfile", return_value=False), \
-             patch("os.path.isdir", return_value=True), \
-             patch("os.walk", return_value=[(".", [], ["vid.mp4", "vid_multilang.mp4"])]):
+                patch("os.path.isfile", return_value=False), \
+                patch("os.path.isdir", return_value=True), \
+                patch("os.walk", return_value=[(".", [], ["vid.mp4", "vid_multilang.mp4"])]):
             files, _, _ = auto_subtitle.get_input_files()
             self.assertEqual(len(files), 1)
 
     @patch("sys.exit")
     def test_get_input_files_not_found(self, mock_exit):
         with patch("argparse.ArgumentParser.parse_args", return_value=MagicMock(input_path="ghost", cpu=False, lang=None, prompt=None)), \
-             patch("os.path.isfile", return_value=False), \
-             patch("os.path.isdir", return_value=False):
+                patch("os.path.isfile", return_value=False), \
+                patch("os.path.isdir", return_value=False):
             auto_subtitle.get_input_files()
             mock_exit.assert_called_with(1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,8 +32,6 @@ class TestIsolatedTranslator(unittest.TestCase):
         self.assertEqual(res, ["Hola", "Mundo"])
         mock_translator.translate.assert_called()
 
-
-
     @patch("sys.exit")
     def test_main(self, mock_exit):
         from modules import isolated_translator
@@ -43,7 +41,7 @@ class TestIsolatedTranslator(unittest.TestCase):
 
         # Use patch.object to ensure we catch the exact reference used by the module
         with patch.object(isolated_translator, "run_batch_translation_worker") as mock_run, \
-                patch.object(isolated_translator.utils, "init_console") as mock_init, \
+                patch.object(isolated_translator.utils, "init_console"), \
                 patch.object(sys, "argv", ["isolated_translator.py", "--batch", "manifest.json"]):
 
             with self.assertRaises(SystemExit):

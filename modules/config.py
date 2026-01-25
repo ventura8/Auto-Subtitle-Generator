@@ -125,14 +125,8 @@ def get_nllb_code(iso_code):
     return ISO_TO_NLLB.get(iso_code, "eng_Latn")
 
 
-def _load_whisper_config(w_conf, logger_func):
-    global WHISPER_MODEL_SIZE, INITIAL_PROMPT, FORCED_LANGUAGE
-    global PROMPT_USE_CUSTOM_PRIORITY, USE_VOCAL_SEPARATION
-
-    if "model_size" in w_conf:
-        WHISPER_MODEL_SIZE = w_conf["model_size"]
-        logger_func(f"[Config] Whisper Model: {WHISPER_MODEL_SIZE}")
-
+def _load_whisper_language(w_conf, logger_func):
+    global FORCED_LANGUAGE
     if "language" in w_conf:
         val = w_conf["language"]
         # Handle YAML 'false' boolean or empty string
@@ -142,32 +136,41 @@ def _load_whisper_config(w_conf, logger_func):
             FORCED_LANGUAGE = str(val)
         logger_func(f"[Config] Forced Language: {FORCED_LANGUAGE}")
 
-    USE_VOCAL_SEPARATION = w_conf.get("use_vocal_separation", True)
-    if not USE_VOCAL_SEPARATION:
-        logger_func("[Config] Vocal Separation: DISABLED")
-    else:
-        logger_func("[Config] Vocal Separation: ENABLED")
 
+def _load_whisper_prompt(w_conf, logger_func):
+    global INITIAL_PROMPT, PROMPT_USE_CUSTOM_PRIORITY
     PROMPT_USE_CUSTOM_PRIORITY = w_conf.get("custom_prompt_priority", False)
     if w_conf.get("use_prompt", True):
         custom = w_conf.get("custom_prompt", "")
         if custom:
             INITIAL_PROMPT = custom
-            if PROMPT_USE_CUSTOM_PRIORITY:
-                logger_func(
-                    "[Config] Using Custom Prompt (PRIORITY Mode). "
-                    "Auto-bias disabled."
-                )
-            else:
-                logger_func(
-                    "[Config] Using Custom Prompt (Base Mode). "
-                    "Auto-bias enabled."
-                )
+            mode = "PRIORITY" if PROMPT_USE_CUSTOM_PRIORITY else "Base"
+            bias = "disabled" if PROMPT_USE_CUSTOM_PRIORITY else "enabled"
+            logger_func(
+                f"[Config] Using Custom Prompt ({mode} Mode). "
+                f"Auto-bias {bias}."
+            )
         else:
             logger_func("[Config] Using Default Prompt (Enabled in config).")
     else:
         INITIAL_PROMPT = None
         logger_func("[Config] Prompt Disabled in config.")
+
+
+def _load_whisper_config(w_conf, logger_func):
+    global WHISPER_MODEL_SIZE, USE_VOCAL_SEPARATION
+
+    if "model_size" in w_conf:
+        WHISPER_MODEL_SIZE = w_conf["model_size"]
+        logger_func(f"[Config] Whisper Model: {WHISPER_MODEL_SIZE}")
+
+    _load_whisper_language(w_conf, logger_func)
+
+    USE_VOCAL_SEPARATION = w_conf.get("use_vocal_separation", True)
+    status = "ENABLED" if USE_VOCAL_SEPARATION else "DISABLED"
+    logger_func(f"[Config] Vocal Separation: {status}")
+
+    _load_whisper_prompt(w_conf, logger_func)
 
 
 def _load_hallucination_config(h_conf, logger_func):
@@ -190,8 +193,9 @@ def _load_performance_overrides(p_conf: Dict[str, Any], optimizer: Any, logger_f
     if not p_conf:
         return
     updated_keys = []
-    if p_conf.get("whisper_beam"):
+    if p_conf.get("whisper_beam") is not None:
         optimizer.config["whisper_beam"] = int(p_conf["whisper_beam"])
+        optimizer.config["whisper_beam_overridden"] = True
         updated_keys.append("whisper_beam")
     if p_conf.get("nllb_batch"):
         optimizer.config["nllb_batch"] = int(p_conf["nllb_batch"])

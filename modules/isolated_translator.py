@@ -55,6 +55,7 @@ def run_translation_worker(input_file, output_file, src_lang, tgt_lang, batch_si
             # Speed is audio-seconds per real-second
             speed = current_audio_time / elapsed if elapsed > 0 else 0
             eta = (total_dur - current_audio_time) / speed if speed > 0 else 0
+            ts_str = f"{utils.format_timestamp(current_audio_time)} / {utils.format_timestamp(total_dur)}"
 
             # Professional Format: Full Text + Timestamps
             if res:
@@ -66,7 +67,7 @@ def run_translation_worker(input_file, output_file, src_lang, tgt_lang, batch_si
             utils.print_progress_bar(
                 current_audio_time, total_dur,
                 prefix=prefix_str,
-                timestamp_str=f"{utils.format_timestamp(current_audio_time)} / {utils.format_timestamp(total_dur)}",
+                timestamp_str=ts_str,
                 speed=speed,
                 eta=eta
             )
@@ -214,6 +215,37 @@ def run_batch_translation_worker(manifest_path):
     log("[Isolation] Batch Processing Complete.")
 
 
+def _run_legacy_mode():
+    """Parses arguments and runs legacy single-file mode."""
+    if len(sys.argv) < 7:
+        print(
+            "Usage:\n"
+            "  python isolated_translator.py --batch manifest.json\n"
+            "  python isolated_translator.py input.json output.json src tgt "
+            "batch_size label [step_current step_total]"
+        )
+        sys.exit(1)
+
+    input_file = sys.argv[1]
+    output_file = sys.argv[2]
+    src_lang = sys.argv[3]
+    tgt_lang = sys.argv[4]
+    batch_size = int(sys.argv[5])
+    lang_label = sys.argv[6]
+
+    prefix_str = f"  [Translate] {lang_label}"
+    if len(sys.argv) >= 9:
+        step_current = sys.argv[7]
+        step_total = sys.argv[8]
+        prefix_str = f"  [Translate {step_current}/{step_total}] {lang_label}"
+
+    log("[Isolation] Starting Translation Worker...", level="INFO")
+
+    run_translation_worker(
+        input_file, output_file, src_lang, tgt_lang, batch_size, lang_label, prefix_str
+    )
+
+
 def main():
     try:
         utils.init_console()
@@ -227,34 +259,7 @@ def main():
             sys.exit(0)
 
         # Mode 2: Legacy Single Mode
-        # Args: input_json output_json src_lang tgt_lang batch_size lang_label [step_current step_total]
-        if len(sys.argv) < 7:
-            print(
-                "Usage:\n"
-                "  python isolated_translator.py --batch manifest.json\n"
-                "  python isolated_translator.py input.json output.json src tgt "
-                "batch_size label [step_current step_total]"
-            )
-            sys.exit(1)
-
-        input_file = sys.argv[1]
-        output_file = sys.argv[2]
-        src_lang = sys.argv[3]
-        tgt_lang = sys.argv[4]
-        batch_size = int(sys.argv[5])
-        lang_label = sys.argv[6]
-
-        prefix_str = f"  [Translate] {lang_label}"
-        if len(sys.argv) >= 9:
-            step_current = sys.argv[7]
-            step_total = sys.argv[8]
-            prefix_str = f"  [Translate {step_current}/{step_total}] {lang_label}"
-
-        log("[Isolation] Starting Translation Worker...", level="INFO")
-
-        run_translation_worker(
-            input_file, output_file, src_lang, tgt_lang, batch_size, lang_label, prefix_str
-        )
+        _run_legacy_mode()
 
     except Exception as e:
         log(f"[Isolation] FATAL ERROR: {e}")

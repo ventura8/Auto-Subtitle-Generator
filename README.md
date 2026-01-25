@@ -41,13 +41,13 @@ graph TD
 
 The system automatically selects one of the following profiles based on your detected VRAM:
 
-| Profile | VRAM Trigger | Whisper Beam Size | NLLB Batch Size | Compute Precision | Target GPU |
-| :--- | :--- | :---: | :---: | :---: | :--- |
-| **ULTRA** | 22 GB+ | 5 | 32 | `float16` | RTX 3090 / 4090 / 5090 |
-| **HIGH** | 15 GB+ | 5 | 64 | `float16` | RTX 4080 / 5080 |
-| **MID** | 10 GB+ | 5 | 32 | `float16` | RTX 3080 / 4070 |
-| **LOW** | < 10 GB | 2 | 8 | `int8_float16` | RTX 3060 / 2060 |
-| **CPU** | N/A | 2 | 4 | `int8` | No GPU Found |
+| Profile | VRAM Trigger | NLLB Batch Size | Compute Precision | Target GPU |
+| :--- | :--- | :---: | :---: | :--- |
+| **ULTRA** | 22 GB+ | 32 (Max) | `float16` | RTX 3090 / 4090 / 5090 |
+| **HIGH** | 15 GB+ | 16 (Max) | `float16` | RTX 4080 / 5080 |
+| **MID** | 10 GB+ | 8 (Max) | `float16` | RTX 3080 / 4070 |
+| **LOW** | < 10 GB | 4 (Max) | `int8_float16` | RTX 3060 / 2060 |
+| **CPU** | N/A | 1 | `int8` | No GPU Found |
 
  *   **ULTRA (RTX 5090 - 32GB VRAM):**
     *   **High-Fidelity Transcription:** Uses Sequential Whisper with Tuned VAD for 100% start-of-video accuracy.

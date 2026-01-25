@@ -10,6 +10,3 @@ nvidia-cudnn-cu12
 nvidia-cublas-cu12
 audio-separator[gpu]
 pyyaml
-pytest
-pytest-cov
-radon

@@ -195,64 +195,65 @@ def log(message, level="INFO", to_console=True):
     sys.stdout.flush()
 
 
+def _format_time_component(seconds):
+    """Formats seconds into HH:MM:SS."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    return f'{h:02d}:{m:02d}:{s:02d}'
+
+
+def _get_progress_info(elapsed, speed, speed_unit, eta, timestamp_str, suffix):
+    """Gathers and formats all progress metadata."""
+    parts = []
+    if timestamp_str:
+        parts.append(timestamp_str)
+    elif elapsed is not None:
+        parts.append(_format_time_component(elapsed))
+
+    if eta is not None:
+        try:
+            if float(eta) > 0:
+                parts.append(f'ETA {_format_time_component(float(eta))}')
+        except (TypeError, ValueError):
+            pass
+
+    if speed is not None:
+        try:
+            parts.append(f'{float(speed):.2f}{speed_unit}')
+        except (TypeError, ValueError):
+            pass
+
+    if suffix:
+        parts.append(suffix)
+    return parts
+
+
 def print_progress_bar(
     iteration, total, prefix='', suffix='', decimals=1, length=20,
     fill='█', empty='░', elapsed=None, speed=None, speed_unit='x',
     eta=None, no_newline=False, timestamp_str=None
 ):
     """
-    Call in a loop to create terminal progress bar. Updated for Windows robustness and wrapping prevention.
+    Call in a loop to create terminal progress bar.
     """
     import shutil
-    if total == 0:
-        total = 1
-
-    # Defensive handling for MagicMocks
+    # Defensive handling for non-numeric inputs (e.g. mocks in tests)
     try:
+        tot = float(total) if total and float(total) > 0 else 1.0
         it = float(iteration)
-        tot = float(total) if float(total) > 0 else 1.0
     except (TypeError, ValueError):
         it, tot = 0.0, 1.0
 
-    percent_float = 100 * (it / tot)
-    percent_str = ("{0:." + str(decimals) + "f}").format(percent_float)
-    filled_length = int(length * it // tot)
-    bar = fill * filled_length + empty * (length - filled_length)
+    percent_f = 100 * (it / tot)
+    percent_s = ("{0:." + str(decimals) + "f}").format(percent_f)
+    filled_l = int(length * it // tot)
+    bar = fill * filled_l + empty * (length - filled_l)
 
-    # Build info parts
-    info_parts = [f'{percent_str:>5}%']
-
-    if timestamp_str is not None:
-        info_parts.append(timestamp_str)
-    elif elapsed is not None:
-        hours = int(elapsed // 3600)
-        minutes = int((elapsed % 3600) // 60)
-        seconds = int(elapsed % 60)
-        elapsed_str = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
-        info_parts.append(elapsed_str)
-
-    # Defensive ETA check
-    try:
-        if eta is not None and float(eta) > 0:
-            eta_val = float(eta)
-            eta_hours = int(eta_val // 3600)
-            eta_minutes = int((eta_val % 3600) // 60)
-            eta_seconds = int(eta_val % 60)
-            eta_str = f'ETA {eta_hours:02d}:{eta_minutes:02d}:{eta_seconds:02d}'
-            info_parts.append(eta_str)
-    except (TypeError, ValueError):
-        pass
-
-    try:
-        if speed is not None:
-            speed_val = float(speed)
-            speed_str = f'{speed_val:.2f}{speed_unit}'
-            info_parts.append(speed_str)
-    except (TypeError, ValueError):
-        pass
-
-    if suffix:
-        info_parts.append(suffix)
+    info_parts = [f'{percent_s:>5}%']
+    info_parts.extend(
+        _get_progress_info(elapsed, speed, speed_unit, eta, timestamp_str, suffix)
+    )
 
     info_display = ' | '.join(info_parts)
     full_bar = f'[{bar}] {info_display}'
@@ -273,7 +274,7 @@ def print_progress_bar(
         sys.stdout.flush()
     except UnicodeEncodeError:
         # Fallback to ASCII
-        safe_bar = '#' * filled_length + '-' * (length - filled_length)
+        safe_bar = '#' * int(filled_l) + '-' * (int(length) - int(filled_l))
         full_bar_safe = f'[{safe_bar}] {info_display}'
         # Re-calc prefix truncate for safe bar? Assuming similar length.
         final_str_safe = f'{prefix}{full_bar_safe}'
@@ -375,6 +376,32 @@ def _process_ffmpeg_line(line, start_time, total_duration, desc):
             pass
 
 
+def _monitor_ffmpeg_process(process, start_time, total_duration, desc):
+    """Monitors FFmpeg stderr for progress updates."""
+    while True:
+        line = process.stderr.readline()
+        if not line and process.poll() is not None:
+            break
+
+        _process_ffmpeg_line(line, start_time, total_duration, desc)
+
+
+def _finalize_ffmpeg_progress(process, cmd, start_time, total_duration, desc):
+    """Handles final progress update and return code check."""
+    # Ensure 100% at the end
+    if total_duration > 0:
+        elapsed = time.time() - start_time
+        print_progress_bar(
+            total_duration, total_duration,
+            prefix=desc,
+            elapsed=elapsed,
+            speed=total_duration / elapsed if elapsed > 0 else 1.0
+        )
+
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, cmd)
+
+
 def run_ffmpeg_progress(cmd, desc, total_duration):
     """Executes FFmpeg command with a real-time progress bar UI."""
     try:
@@ -387,35 +414,25 @@ def run_ffmpeg_progress(cmd, desc, total_duration):
             creationflags=(
                 subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             ),
-            text=True
+            encoding="utf-8",
+            errors="replace"
         )
         register_subprocess(process)
 
-        while True:
-            line = process.stderr.readline()
-            if not line and process.poll() is not None:
-                break
-
-            _process_ffmpeg_line(line, start_time, total_duration, desc)
-
-        # Ensure 100% at the end
-        if total_duration > 0:
-            elapsed = time.time() - start_time
-            print_progress_bar(
-                total_duration, total_duration,
-                prefix=desc,
-                elapsed=elapsed,
-                speed=total_duration / elapsed if elapsed > 0 else 1.0
-            )
-
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, cmd)
+        _monitor_ffmpeg_process(process, start_time, total_duration, desc)
+        _finalize_ffmpeg_progress(process, cmd, start_time, total_duration, desc)
 
     except Exception as e:
         raise e
     finally:
         if 'process' in locals():
             unregister_subprocess(process)
+
+
+def _validate_clean_audio_file(temp_wav):
+    """Verifies that the extracted audio file is valid."""
+    if not os.path.exists(temp_wav) or os.path.getsize(temp_wav) < 1024:
+        raise RuntimeError("Extracted audio is invalid/empty.")
 
 
 def extract_clean_audio(video_path):
@@ -436,11 +453,6 @@ def extract_clean_audio(video_path):
 
     log("  [Pre-Process] Extracting & Normalizing Audio...", "INFO")
 
-    # -vn: No video
-    # -ac 1: Mono (Whisper models are trained on mono 16kHz)
-    # -ar 16000: Resample to 16kHz
-    # -c:a pcm_f32le: 32-bit Float PCM
-    # loudnorm: Normalize loudness (EBU R128)
     cmd = [
         FFMPEG_CMD, "-y", "-i", video_path,
         "-vn", "-ac", "1", "-ar", "16000",
@@ -455,29 +467,43 @@ def extract_clean_audio(video_path):
     except Exception as e:
         log(f"Audio extraction failed: {e}", "ERROR")
         if os.path.exists(temp_wav):
-            os.remove(temp_wav)
+            for _ in range(3):
+                try:
+                    os.remove(temp_wav)
+                    break
+                except OSError:
+                    time.sleep(0.5)
         raise e
 
-    if not os.path.exists(temp_wav) or os.path.getsize(temp_wav) < 1024:
-        raise RuntimeError("Extracted audio is invalid/empty.")
-
+    _validate_clean_audio_file(temp_wav)
     return temp_wav
+
+
+def _is_temp_file(filename, base_name, video_filename):
+    """Checks if a file is a temporary file related to the video."""
+    if filename == video_filename:
+        return False
+    if not filename.startswith(base_name):
+        return False
+    return (
+        filename.endswith(".wav") or
+        filename.endswith(".mp3") or
+        filename.endswith(".json") or
+        filename.endswith(".False.srt")
+    )
 
 
 def cleanup_temp_files(folder, base_name, video_filename):
     """Clean up temporary WAV/MP3 files."""
     for f in os.listdir(folder):
-        if f.startswith(base_name) and (
-            f.endswith(".wav") or f.endswith(".mp3") or
-            f.endswith(".json") or f.endswith(".False.srt")
-        ):
-
-            # Don't delete the original video
-            if f != video_filename:
+        if _is_temp_file(f, base_name, video_filename):
+            path = os.path.join(folder, f)
+            for _ in range(3):  # Retry loop for Windows locks
                 try:
-                    os.remove(os.path.join(folder, f))
+                    os.remove(path)
+                    break
                 except OSError:
-                    pass
+                    time.sleep(0.5)
 
 
 def get_cpu_name():

@@ -30,7 +30,8 @@ This document serves as the **SINGLE SOURCE OF TRUTH** for AI agents working on 
 - **Memory Management**:
   - ✅ Use `gc.collect()` and `torch.cuda.empty_cache()` inside any heavy loops (e.g., translation batches).
   - ✅ **Explicit Offloading**: Always unload previous models (e.g., `model_mgr.offload_whisper()`) *before* starting a new heavy task.
-  - ✅ Batch sizes for NLLB/Whisper must be dynamic but **Hard Capped** (e.g., Max 32) to prevent fragmentation.
+  - ✅ **Tier-based Caps**: Batch sizes for NLLB must follow dynamic tier limits (32/16/8/4) to prevent VRAM overflow.
+  - ✅ **Shared Memory Guard**: Forced device mapping MUST be used to prevent "System RAM Spillover".
 
 ## 5. 🎨 UI & UX Standards
 - **Visual Identity**: Maintain the "High-Tech" aesthetic.
