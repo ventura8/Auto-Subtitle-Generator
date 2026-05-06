@@ -1,4 +1,5 @@
 import importlib
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -96,6 +97,17 @@ class TestCoverageTranscription(unittest.TestCase):
             transcription.transcribe_video_audio("vid.mp4", mm)
             mock_log.assert_any_call("  [Warning] Low language confidence (0.10).", "WARNING")
 
+    def test_get_separated_vocal_path_skips_staging_files(self):
+        with (
+            patch(
+                "os.listdir",
+                return_value=[".vid_(Vocals).wav.tmp", "vid_(Vocals)_.tmp", "vid_(Vocals).wav"],
+            ),
+            patch("os.path.join", side_effect=lambda *parts: parts[-1]),
+        ):
+            res = transcription._get_separated_vocal_path("vid.mp4")
+            self.assertEqual(res, "vid_(Vocals).wav")
+
     def test_process_separator_outputs(self):
         output_files = ["dir/vid_(Vocals).wav", "dir/vid_(Instrumental).wav"]
 
@@ -109,24 +121,52 @@ class TestCoverageTranscription(unittest.TestCase):
         with (
             patch("os.path.abspath", side_effect=lambda x: x),
             patch("os.path.exists", side_effect=exists_side_effect),
-            patch("os.rename") as mock_rename,
+            patch("shutil.move") as mock_move,
+            patch("os.replace") as mock_replace,
         ):
             res = transcription._process_separator_outputs(output_files, "target")
             self.assertIn("vid_(Vocals).wav", res)
-            mock_rename.assert_called_once()
-            rename_args = mock_rename.call_args[0]
-            self.assertEqual(rename_args[0], "dir/vid_(Vocals).wav")
-            self.assertTrue(rename_args[1].endswith("vid_(Vocals).wav"))
+            mock_move.assert_called_once()
+            move_args = mock_move.call_args[0]
+            self.assertEqual(move_args[0], "dir/vid_(Vocals).wav")
+            temp_path = move_args[1]
+            self.assertTrue(os.path.basename(temp_path).startswith("."))
+            self.assertTrue(temp_path.endswith(".tmp"))
+            mock_replace.assert_called_once_with(temp_path, os.path.join("target", "vid_(Vocals).wav"))
+
+    def test_move_separator_output_noop_when_source_missing(self):
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("shutil.move") as mock_move,
+            patch("os.replace") as mock_replace,
+        ):
+            transcription._move_separator_output("missing.wav", os.path.join("target", "missing.wav"))
+            mock_move.assert_not_called()
+            mock_replace.assert_not_called()
+
+    def test_move_separator_output_stages_resume_safe_temp(self):
+        dst_path = os.path.join("target", "vid_(Vocals).wav")
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("shutil.move") as mock_move,
+            patch("os.replace") as mock_replace,
+        ):
+            transcription._move_separator_output("dir/vid_(Vocals).wav", dst_path)
+            temp_path = mock_move.call_args[0][1]
+            self.assertEqual(os.path.dirname(temp_path), "target")
+            self.assertTrue(os.path.basename(temp_path).startswith("."))
+            self.assertTrue(temp_path.endswith(".tmp"))
+            mock_replace.assert_called_once_with(temp_path, dst_path)
 
     def test_process_separator_outputs_returns_none_when_only_instrumental(self):
         with (
             patch("os.path.abspath", side_effect=lambda x: x),
             patch("os.path.exists", return_value=True),
-            patch("os.rename") as mock_rename,
+            patch("shutil.move") as mock_move,
         ):
             res = transcription._process_separator_outputs(["dir/vid_(Instrumental).wav"], "target")
             self.assertIsNone(res)
-            mock_rename.assert_not_called()
+            mock_move.assert_not_called()
 
     def test_process_separator_outputs_ignores_relative_instrumental_from_target_dir(self):
         output_files = [
@@ -149,13 +189,13 @@ class TestCoverageTranscription(unittest.TestCase):
             patch("os.path.abspath", side_effect=lambda x: x),
             patch("os.path.isabs", return_value=False),
             patch("os.path.exists", side_effect=exists_side_effect),
-            patch("os.rename") as mock_rename,
+            patch("shutil.move") as mock_move,
         ):
             res = transcription._process_separator_outputs(output_files, "target")
             self.assertIsNotNone(res)
             assert res is not None
             self.assertTrue(res.endswith("vid_(Vocals).wav"))
-            self.assertIn(mock_rename.call_count, {0, 1})
+            self.assertIn(mock_move.call_count, {0, 1})
 
     def test_transcribe_video_audio_forced_lang(self):
         mm = MagicMock()
