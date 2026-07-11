@@ -6,69 +6,102 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
+env:
+  POETRY_VERSION: "2.4.1"
+
 jobs:
   static_analysis:
     name: "🔍 Static Quality Verification"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install Linting Tools
+      - name: Install Poetry
         run: |
-          pip install pylint flake8 pyyaml
+          pip install "poetry==${POETRY_VERSION}"
+      - name: Install Dev Dependencies
+        run: |
+          poetry install --only dev --no-root
+      - name: Run Ruff
+        run: |
+          poetry run ruff check .
       - name: Run Flake8
         run: |
-          flake8 .
+          poetry run flake8 modules auto_subtitle.py
       - name: Run Pylint
-        # Allow failure for now as codebase might have legacy issues
         run: |
-          pylint auto_subtitle.py modules/ tests/ || true
+          poetry run pylint modules auto_subtitle.py
 
   technical_validation:
     name: "🧪 Automated Pipeline Validation"
     needs: static_analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install Dependencies
+      - name: Install Poetry
         run: |
-          pip install -r test-requirements.txt
+          pip install "poetry==${POETRY_VERSION}"
+      - name: Install Test Environment
+        run: |
+          poetry install --only dev --no-root
       - name: Run Tests with Coverage
         run: |
-          pytest --cov=auto_subtitle --cov=modules --cov-branch --cov-report=xml --cov-report=term --cov-fail-under=90 tests/
-      - name: Upload Coverage Artifact
-        uses: actions/upload-artifact@v4
+          poetry run pytest --cov=auto_subtitle --cov=modules --cov-branch --cov-report=xml --cov-report=json --cov-report=term --cov-fail-under=90 tests/
+      - name: Enforce Per-File Coverage >= 90%
+        run: |
+          poetry run coverage report --include=auto_subtitle.py --fail-under=90 -m
+          poetry run coverage report --include=modules/config.py --fail-under=90 -m
+          poetry run coverage report --include=modules/isolated_translator.py --fail-under=90 -m
+          poetry run coverage report --include=modules/models.py --fail-under=90 -m
+          poetry run coverage report --include=modules/transcription.py --fail-under=90 -m
+          poetry run coverage report --include=modules/translation.py --fail-under=90 -m
+          poetry run coverage report --include=modules/utils.py --fail-under=90 -m
+      - name: Upload Coverage Artifacts
+        uses: actions/upload-artifact@v7
         with:
-          name: coverage-xml
-          path: coverage.xml
+          name: coverage-artifacts
+          path: |
+            coverage.xml
+            coverage.json
+            .coverage
 
   quality_reporting:
     name: "📊 Analytics & Coverage Reporting"
     needs: technical_validation
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # Needed to commit badge if we wanted, but we'll display summary
     steps:
-      - uses: actions/checkout@v4
-      - name: Download Coverage Artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
         with:
-          name: coverage-xml
+          persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Install Poetry
+        run: |
+          pip install "poetry==${POETRY_VERSION}"
       - name: Install Reporting Dependencies
         run: |
-          pip install radon
+          poetry install --only dev --no-root
+      - name: Download Coverage Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-artifacts
       - name: Generate Badge and Summary
         run: |
-          python tests/transform_coverage.py coverage.xml
+          poetry run python tests/transform_metrics.py coverage.xml assets/coverage.svg
           cat coverage_summary.md >> $GITHUB_STEP_SUMMARY

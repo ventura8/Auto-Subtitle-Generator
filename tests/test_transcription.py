@@ -25,7 +25,7 @@ class TestTranscription(unittest.TestCase):
         mock_whisper = mock_mm.return_value.get_whisper.return_value
         mock_whisper.transcribe.return_value = (
             [MagicMock(start=0, end=1, text="Hello", avg_logprob=-0.1)],
-            MagicMock(language="en", language_probability=0.99, duration=10.0)
+            MagicMock(language="en", language_probability=0.99, duration=10.0),
         )
 
         segments, lang, _ = transcription.transcribe_video_audio("video.mp4", mock_mm.return_value)
@@ -41,8 +41,10 @@ class TestTranscription(unittest.TestCase):
         # Raise OOM once, then succeed
         mock_whisper.transcribe.side_effect = [
             RuntimeError("CUDA out of memory"),
-            ([MagicMock(start=0, end=1, text="Hello", avg_logprob=-0.1)],
-             MagicMock(language="en", language_probability=0.99, duration=10.0))
+            (
+                [MagicMock(start=0, end=1, text="Hello", avg_logprob=-0.1)],
+                MagicMock(language="en", language_probability=0.99, duration=10.0),
+            ),
         ]
 
         segments, lang, _ = transcription.transcribe_video_audio("video.mp4", mock_mm.return_value)

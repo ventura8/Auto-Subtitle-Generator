@@ -4,6 +4,8 @@ __pycache__/
 *.so
 .env
 venv/
+.venv/
+.venv-*/
 bin/
 develop-eggs/
 dist/
@@ -28,7 +30,12 @@ Thumbs.db
 
 # --- Testing & Coverage ---
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
 .coverage
+.coverage.*
+coverage.json
 coverage.xml
 coverage_summary.md
 htmlcov/
@@ -43,12 +50,16 @@ run_tests_debug.py
 
 # --- Generated Content ---
 input/
+/out.json
+/tmp*
 *.srt
 *.mp4
 *.mkv
 *.wav
 *.mp3
+*.tmp
 debug_test_logs.txt
 single_test.txt
 sanitized*.txt
+ffmpeg.zip
 start.bat

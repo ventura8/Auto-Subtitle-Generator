@@ -16,6 +16,7 @@ if _root not in sys.path:
 class TestIsolatedTranslator(unittest.TestCase):
     def test_translate_batch_chunk(self):
         from modules import isolated_translator
+
         # Mock translator
         mock_translator = MagicMock()
         mock_translator.translate.return_value = ["Hola", "Mundo"]
@@ -25,9 +26,7 @@ class TestIsolatedTranslator(unittest.TestCase):
         tgt_code = "spa_Latn"
 
         # CORRECT ORDER: translator, chunk, src, tgt
-        res = isolated_translator._translate_batch_chunk(
-            mock_translator, batch, src_code, tgt_code
-        )
+        res = isolated_translator._translate_batch_chunk(mock_translator, batch, src_code, tgt_code)
 
         self.assertEqual(res, ["Hola", "Mundo"])
         mock_translator.translate.assert_called()
@@ -40,10 +39,11 @@ class TestIsolatedTranslator(unittest.TestCase):
         mock_exit.side_effect = SystemExit
 
         # Use patch.object to ensure we catch the exact reference used by the module
-        with patch.object(isolated_translator, "run_batch_translation_worker") as mock_run, \
-                patch.object(isolated_translator.utils, "init_console"), \
-                patch.object(sys, "argv", ["isolated_translator.py", "--batch", "manifest.json"]):
-
+        with (
+            patch.object(isolated_translator, "run_batch_translation_worker") as mock_run,
+            patch.object(isolated_translator.utils, "init_console"),
+            patch.object(sys, "argv", ["isolated_translator.py", "--batch", "manifest.json"]),
+        ):
             with self.assertRaises(SystemExit):
                 isolated_translator.main()
 
@@ -57,16 +57,17 @@ class TestIsolatedTranslator(unittest.TestCase):
     @patch("builtins.open", new_callable=unittest.mock.mock_open, read_data='{"jobs": [{"lang": "es"}]}')
     def test_run_batch_translation_worker(self, mock_open, mock_opt, mock_load, mock_mm, mock_proc):
         from modules import isolated_translator
+
         isolated_translator.run_batch_translation_worker("manifest.json")
         mock_proc.assert_called()
         self.assertEqual(mock_proc.call_count, 1)
 
     @patch("modules.isolated_translator.utils.print_progress_bar")
     @patch("modules.isolated_translator.time.sleep")
-    @patch("os.rename")
+    @patch("os.replace")
     @patch("os.remove")
     @patch("os.path.exists")
-    def test_process_single_job(self, mock_exists, mock_remove, mock_rename, mock_sleep, mock_print):
+    def test_process_single_job(self, mock_exists, mock_remove, mock_replace, mock_sleep, mock_print):
         from modules import isolated_translator
 
         # Mock translator
@@ -82,19 +83,13 @@ class TestIsolatedTranslator(unittest.TestCase):
         # 2. output_file exists? -> False (for sync wait loop exit)
         mock_exists.return_value = False
 
-        job = {
-            "lang": "es",
-            "tgt_code": "spa",
-            "input": "in.json",
-            "output": "out.json",
-            "src_code": "eng_Latn"
-        }
+        job = {"lang": "es", "tgt_code": "spa", "input": "in.json", "output": "out.json", "src_code": "eng_Latn"}
 
         with patch("builtins.open", m_open):
             isolated_translator._process_single_job(job, 0, 1, mock_translator)
 
         mock_translator.translate.assert_called()
-        mock_rename.assert_called()
+        mock_replace.assert_called()
         # Verify file write to satisfy unused variable lint
         m_open().write.assert_called()
 
@@ -115,9 +110,7 @@ class TestIsolatedTranslator(unittest.TestCase):
         m_open = mock_open(read_data=json.dumps(input_data))
 
         with patch("builtins.open", m_open):
-            isolated_translator.run_translation_worker(
-                "in.json", "out.json", "eng_Latn", "spa_Latn", 1, "Spanish", " [Prefix]"
-            )
+            isolated_translator.run_translation_worker("in.json", "out.json", "eng_Latn", "spa_Latn", 1, "Spanish", " [Prefix]")
 
         mock_translator.translate.assert_called()
         # Verify it validates the write
@@ -129,20 +122,16 @@ class TestIsolatedTranslator(unittest.TestCase):
 
         # Simulate legacy CLI args
         # input output src tgt batch label
-        test_args = [
-            "isolated_translator.py", "in.json", "out.json",
-            "eng_Latn", "spa_Latn", "4", "Spanish"
-        ]
+        test_args = ["isolated_translator.py", "in.json", "out.json", "eng_Latn", "spa_Latn", "4", "Spanish"]
 
-        with patch.object(sys, "argv", test_args), \
-                patch("modules.isolated_translator.run_translation_worker") as mock_worker, \
-                patch("modules.isolated_translator.utils.init_console"):
-
+        with (
+            patch.object(sys, "argv", test_args),
+            patch("modules.isolated_translator.run_translation_worker") as mock_worker,
+            patch("modules.isolated_translator.utils.init_console"),
+        ):
             isolated_translator.main()
 
-            mock_worker.assert_called_with(
-                "in.json", "out.json", "eng_Latn", "spa_Latn", 4, "Spanish", '  [Translate] Spanish'
-            )
+            mock_worker.assert_called_with("in.json", "out.json", "eng_Latn", "spa_Latn", 4, "Spanish", "  [Translate] Spanish")
             # Should NOT exit strict 0 in legacy mode (it falls through or implicit return)
             # But main() doesn't have sys.exit(0) at end of legacy block?
             # Let's check code. It just finishes.

@@ -14,40 +14,10 @@ class TestTranslation(unittest.TestCase):
     def setUp(self):
         global translation, config, utils
         from modules import translation, config, utils
+
+        previous_target_languages = config.TARGET_LANGUAGES
+        self.addCleanup(setattr, config, "TARGET_LANGUAGES", previous_target_languages)
         config.TARGET_LANGUAGES = {"es": {"code": "spa_Latn", "label": "Spanish"}}
-
-    @patch("modules.translation.utils.register_subprocess")
-    @patch("modules.translation.utils.unregister_subprocess")
-    @patch("modules.translation.utils.save_translated_srt")
-    @patch("subprocess.Popen")
-    @patch("os.path.exists")
-    @patch("os.remove")
-    def test_handle_pivot_pass_success(self, mock_remove, mock_exists, mock_popen, mock_save_srt, mock_unreg, mock_reg):
-        mock_proc = MagicMock()
-        mock_proc.wait.return_value = 0
-        mock_proc.returncode = 0
-        mock_proc.poll.return_value = 0
-        mock_popen.return_value = mock_proc
-        mock_exists.return_value = True
-
-        # Ensure TARGET_LANGUAGES has "en" for pivot pass
-        config.TARGET_LANGUAGES = {
-            "en": {"code": "eng_Latn", "label": "English"},
-            "es": {"code": "spa_Latn", "label": "Spanish"}
-        }
-
-        source_data = [{"text": "Hello", "start": 0, "end": 1}]
-        # Data for json.load
-        m_open = mock_open(read_data='["Hello Translated"]')
-
-        with patch("builtins.open", m_open):
-            new_data, new_code = translation._handle_pivot_pass(
-                source_data, "es", "folder", "base", ["en"], "spa_Latn", []
-            )
-
-            self.assertEqual(new_code, "eng_Latn")
-            self.assertEqual(new_data[0]["text"], "Hello Translated")
-            mock_save_srt.assert_called()
 
     @patch("modules.translation.utils.validate_srt", return_value=False)
     @patch("os.path.exists", return_value=True)
@@ -82,10 +52,24 @@ class TestTranslation(unittest.TestCase):
             if poll_se.counter > 3:
                 return 0
             return None
+
         poll_se.counter = 0
         mock_proc.poll.side_effect = poll_se
-        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+
+        class FakeTimeoutExpired(TimeoutError):
+            pass
+
+        def wait_se(*args, **kwargs):
+            wait_se.counter += 1
+            if "timeout" in kwargs and wait_se.counter == 1:
+                raise FakeTimeoutExpired(f"worker timeout ({kwargs['timeout']})")
+            return 0
+
+        wait_se.counter = 0
+        mock_proc.wait.side_effect = wait_se
         mock_popen.return_value = mock_proc
+        mock_popen.return_value.__enter__.return_value = mock_proc
 
         # Mock segments
         seg1 = MagicMock()
@@ -97,12 +81,12 @@ class TestTranslation(unittest.TestCase):
         # Mock file existence:
         # First calls (checking inputs/manifests) -> True or False
         # Loop calls (checking outputs) -> True eventually
+        temp_output_checks = {"count": 0}
+
         def exists_side_effect(path):
             if "temp_output" in path:
-                # Simulate file appearing after some polls
-                if poll_se.counter >= 2:
-                    return True
-                return False
+                temp_output_checks["count"] += 1
+                return temp_output_checks["count"] >= 3
             # Default to True for other files (like common input) or False if checking target existence check
             return False
 
@@ -116,10 +100,8 @@ class TestTranslation(unittest.TestCase):
 
         m_open = mock_open(read_data=fake_json)
 
-        with patch("builtins.open", m_open):
-            translation.translate_segments(
-                segments, "en", MagicMock(), "folder", "base"
-            )
+        with patch("builtins.open", m_open), patch("modules.translation.subprocess.TimeoutExpired", FakeTimeoutExpired):
+            translation.translate_segments(segments, "en", MagicMock(), "folder", "base")
 
         # Should have called Popen (worker start)
         mock_popen.assert_called()

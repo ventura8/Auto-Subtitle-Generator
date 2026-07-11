@@ -2,12 +2,26 @@
 Utility module for Auto Subtitle Generator.
 Handles logging, timestamps, progress bars, and FFmpeg operations.
 """
+
 import sys
 import time
 import math
 import os
 import signal
 import subprocess
+import ctypes
+import gc
+import importlib
+import logging
+import platform
+import shutil
+from ctypes import wintypes
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
 from . import config
 
 # =============================================================================
@@ -17,8 +31,6 @@ from . import config
 
 def print_banner(optimizer=None):
     """Prints a stylish ASCII banner for the application."""
-    import platform
-
     os_info = f"{platform.system()} {platform.release()}"
 
     # Defaults if optimizer not ready
@@ -48,9 +60,8 @@ def print_banner(optimizer=None):
   / ___ \ |_| | || (_) |  ___) | |_| | |_) || |_| | ||  __/
  /_/   \_\__,_|\__\___/  |____/ \__,_|_.__/  \__|_|\__\___|
 """
-    print("   Initialization Complete.[████████████████████] 100.0%")
     print("=" * 60)
-    print("   AI HYBRID VHS AUDIO RESTORER - v1.0.0")
+    print("   AI HYBRID VHS AUDIO RESTORER - v1.1.0")
     print(f"   Running on: {os_info}")
     print("=" * 60 + "\n")
 
@@ -80,6 +91,12 @@ def print_banner(optimizer=None):
 
 # Track active subprocesses for cleanup
 active_subprocesses = []
+_WIN32_CTRL_HANDLER = None
+
+
+def _get_segment_class():
+    """Return the Segment class without a static import to avoid cycles."""
+    return importlib.import_module("modules.models").Segment
 
 
 def register_subprocess(proc):
@@ -93,7 +110,7 @@ def unregister_subprocess(proc):
         active_subprocesses.remove(proc)
 
 
-def handle_shutdown(signum, frame):
+def handle_shutdown(_signum, _frame):
     """Handles termination signals for graceful shutdown."""
     print("\n\n[!] Termination detected. Stopping all processes...")
 
@@ -105,12 +122,8 @@ def handle_shutdown(signum, frame):
                 proc.terminate()
                 # Windows might need force kill if SIGTERM is ignored
                 if sys.platform == "win32":
-                    subprocess.call(
-                        ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-            except Exception as e:
+                    subprocess.call(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError as e:
                 print(f"  [Cleanup] Error killing process: {e}")
 
     sys.exit(0)
@@ -118,9 +131,8 @@ def handle_shutdown(signum, frame):
 
 def init_console():
     """Initializes the console for ANSI support, especially on Windows."""
-    if os.name == 'nt':
+    if os.name == "nt":
         try:
-            import ctypes
             kernel32 = ctypes.windll.kernel32
             # ENABLE_VIRTUAL_TERMINAL_PROCESSING (4) | ENABLE_PROCESSED_OUTPUT (1) | ENABLE_WRAP_AT_EOL_OUTPUT (2) = 7
             k32_stdout = -11
@@ -128,7 +140,7 @@ def init_console():
             mode = ctypes.c_uint32()
             if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
                 kernel32.SetConsoleMode(handle, mode.value | 7)
-        except Exception:
+        except (AttributeError, OSError):
             pass
 
 
@@ -140,13 +152,8 @@ def setup_signal_handlers():
     # Windows Console Handler for "X" button
     if sys.platform == "win32":
         try:
-            import ctypes
-            from ctypes import wintypes
-
             # Define handler type
-            HandlerRoutine = ctypes.WINFUNCTYPE(
-                wintypes.BOOL, wintypes.DWORD
-            )
+            handler_routine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
 
             def ctrl_handler(ctrl_type):
                 # 0: CTRL_C_EVENT
@@ -160,14 +167,13 @@ def setup_signal_handlers():
                 return False
 
             # Keep reference alive to prevent GC
-            global _win32_ctrl_handler
-            _win32_ctrl_handler = HandlerRoutine(ctrl_handler)
+            globals()["_WIN32_CTRL_HANDLER"] = handler_routine(ctrl_handler)
 
             kernel32 = ctypes.windll.kernel32
-            if not kernel32.SetConsoleCtrlHandler(_win32_ctrl_handler, True):
+            if not kernel32.SetConsoleCtrlHandler(globals()["_WIN32_CTRL_HANDLER"], True):
                 print("[Warning] Failed to set Windows Console Handler")
 
-        except Exception as e:
+        except (AttributeError, OSError) as e:
             print(f"[Warning] Error setting up Windows handler: {e}")
 
 
@@ -179,14 +185,10 @@ def log(message, level="INFO", to_console=True):
 
     # If debug logging is ON, everything goes to console.
     # If OFF, DEBUG messages are skipped.
-    should_print = to_console and (
-        level != "DEBUG" or config.DEBUG_LOGGING
-    )
+    should_print = to_console and (level != "DEBUG" or config.DEBUG_LOGGING)
 
     if should_print:
-        prefix = {
-            "ERROR": "!!! ", "WARNING": "! ", "CRITICAL": "XXX "
-        }.get(level, "")
+        prefix = {"ERROR": "!!! ", "WARNING": "! ", "CRITICAL": "XXX "}.get(level, "")
         # Use \r\033[K to clear any active progress bar on the current line
         print(f"\r\033[K{prefix}{message}")
 
@@ -200,11 +202,17 @@ def _format_time_component(seconds):
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
-    return f'{h:02d}:{m:02d}:{s:02d}'
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def _get_progress_info(elapsed, speed, speed_unit, eta, timestamp_str, suffix):
+def _get_progress_info(progress_options):
     """Gathers and formats all progress metadata."""
+    elapsed = progress_options.get("elapsed")
+    speed = progress_options.get("speed")
+    speed_unit = progress_options.get("speed_unit", "x")
+    eta = progress_options.get("eta")
+    timestamp_str = progress_options.get("timestamp_str")
+    suffix = progress_options.get("suffix")
     parts = []
     if timestamp_str:
         parts.append(timestamp_str)
@@ -214,13 +222,13 @@ def _get_progress_info(elapsed, speed, speed_unit, eta, timestamp_str, suffix):
     if eta is not None:
         try:
             if float(eta) > 0:
-                parts.append(f'ETA {_format_time_component(float(eta))}')
+                parts.append(f"ETA {_format_time_component(float(eta))}")
         except (TypeError, ValueError):
             pass
 
     if speed is not None:
         try:
-            parts.append(f'{float(speed):.2f}{speed_unit}')
+            parts.append(f"{float(speed):.2f}{speed_unit}")
         except (TypeError, ValueError):
             pass
 
@@ -229,66 +237,248 @@ def _get_progress_info(elapsed, speed, speed_unit, eta, timestamp_str, suffix):
     return parts
 
 
-def print_progress_bar(
-    iteration, total, prefix='', suffix='', decimals=1, length=20,
-    fill='█', empty='░', elapsed=None, speed=None, speed_unit='x',
-    eta=None, no_newline=False, timestamp_str=None
-):
+def _get_progress_style(progress_options):
+    """Return the display style values for a progress bar."""
+    return {
+        "prefix": progress_options.get("prefix", ""),
+        "suffix": progress_options.get("suffix", ""),
+        "decimals": progress_options.get("decimals", 1),
+        "length": progress_options.get("length", 20),
+        "fill": progress_options.get("fill", "█"),
+        "empty": progress_options.get("empty", "░"),
+    }
+
+
+def _normalize_progress_numbers(iteration, total):
+    """Normalize progress numbers for display."""
+    try:
+        normalized_total = float(total) if total and float(total) > 0 else 1.0
+        normalized_iteration = float(iteration)
+    except (TypeError, ValueError):
+        normalized_iteration, normalized_total = 0.0, 1.0
+    return normalized_iteration, normalized_total
+
+
+def _build_progress_bars(normalized_iteration, normalized_total, style, progress_options):
+    """Build the rich and ASCII progress-bar variants."""
+    percent_f = 100 * (normalized_iteration / normalized_total)
+    percent_s = ("{0:." + str(style["decimals"]) + "f}").format(percent_f)
+    filled_length = int(style["length"] * normalized_iteration // normalized_total)
+    progress_bar = style["fill"] * filled_length + style["empty"] * (style["length"] - filled_length)
+
+    info_parts = [f"{percent_s:>5}%"]
+    info_parts.extend(_get_progress_info(progress_options | {"suffix": style["suffix"]}))
+    info_display = " | ".join(info_parts)
+    rich_bar = f"[{progress_bar}] {info_display}"
+    safe_bar = "#" * int(filled_length) + "-" * (int(style["length"]) - int(filled_length))
+    return rich_bar, f"[{safe_bar}] {info_display}"
+
+
+def _truncate_progress_prefix(prefix, bar_text):
+    """Trim the prefix to fit the current terminal width."""
+    term_width = shutil.get_terminal_size((80, 20)).columns - 1
+    max_prefix = max(10, term_width - len(bar_text) - 5)
+    if len(prefix) > max_prefix:
+        return "..." + prefix[-(max_prefix - 3) :]
+    return prefix
+
+
+def _build_progress_display(iteration, total, progress_options):
+    """Build the rendered progress-bar string and completion flag."""
+    style = _get_progress_style(progress_options)
+    normalized_iteration, normalized_total = _normalize_progress_numbers(iteration, total)
+    rich_bar, safe_bar = _build_progress_bars(
+        normalized_iteration,
+        normalized_total,
+        style,
+        progress_options,
+    )
+    prefix = _truncate_progress_prefix(style["prefix"], rich_bar)
+    return (
+        f"{prefix}{rich_bar}",
+        f"{prefix}{safe_bar}",
+        normalized_iteration >= normalized_total,
+    )
+
+
+def print_progress_bar(iteration, total, **progress_options):
     """
     Call in a loop to create terminal progress bar.
     """
-    import shutil
-    # Defensive handling for non-numeric inputs (e.g. mocks in tests)
-    try:
-        tot = float(total) if total and float(total) > 0 else 1.0
-        it = float(iteration)
-    except (TypeError, ValueError):
-        it, tot = 0.0, 1.0
-
-    percent_f = 100 * (it / tot)
-    percent_s = ("{0:." + str(decimals) + "f}").format(percent_f)
-    filled_l = int(length * it // tot)
-    bar = fill * filled_l + empty * (length - filled_l)
-
-    info_parts = [f'{percent_s:>5}%']
-    info_parts.extend(
-        _get_progress_info(elapsed, speed, speed_unit, eta, timestamp_str, suffix)
+    no_newline = progress_options.get("no_newline", False)
+    final_str, safe_final_str, is_complete = _build_progress_display(
+        iteration,
+        total,
+        progress_options,
     )
-
-    info_display = ' | '.join(info_parts)
-    full_bar = f'[{bar}] {info_display}'
-
-    # Terminal Width Awareness to prevent wrapping repetition on Windows
-    term_width = shutil.get_terminal_size((80, 20)).columns - 1
-
-    # Truncate prefix if needed
-    max_prefix = max(10, term_width - len(full_bar) - 5)
-    if len(prefix) > max_prefix:
-        prefix = "..." + prefix[-(max_prefix - 3):]
-
-    final_str = f'{prefix}{full_bar}'
 
     # Use \r\033[K for in-place update. print(..., end='', flush=True) is safer for some wrappers.
     try:
-        sys.stdout.write(f'\r\033[K{final_str}')
+        sys.stdout.write(f"\r\033[K{final_str}")
         sys.stdout.flush()
     except UnicodeEncodeError:
-        # Fallback to ASCII
-        safe_bar = '#' * int(filled_l) + '-' * (int(length) - int(filled_l))
-        full_bar_safe = f'[{safe_bar}] {info_display}'
-        # Re-calc prefix truncate for safe bar? Assuming similar length.
-        final_str_safe = f'{prefix}{full_bar_safe}'
-        sys.stdout.write(f'\r{final_str_safe}')
+        sys.stdout.write(f"\r{safe_final_str}")
         sys.stdout.flush()
 
     # Print new line on complete
-    if iteration >= total and not no_newline:
+    if is_complete and not no_newline:
         print()
 
 
 # =============================================================================
 # TIME & FILE UTILS
 # =============================================================================
+
+
+def _format_elapsed_time(seconds):
+    """Formats elapsed seconds as HH:MM:SS."""
+    safe_seconds = max(0, int(seconds))
+    hours = safe_seconds // 3600
+    minutes = (safe_seconds % 3600) // 60
+    remaining_seconds = safe_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{remaining_seconds:02d}"
+
+
+def format_elapsed_time(seconds):
+    """Public wrapper for elapsed-time formatting."""
+    return _format_elapsed_time(seconds)
+
+
+def _format_total_processing_speed(media_seconds, elapsed_seconds):
+    """Builds the total processing speed text for one input file."""
+    if elapsed_seconds <= 0 or media_seconds <= 0:
+        return "N/A"
+
+    speed = media_seconds / elapsed_seconds
+    return f"{speed:.2f}x realtime"
+
+
+def format_total_processing_speed(media_seconds, elapsed_seconds):
+    """Public wrapper for processing speed summary formatting."""
+    return _format_total_processing_speed(media_seconds, elapsed_seconds)
+
+
+def _resolve_input_path(input_path):
+    """Resolve the input path from CLI args or prompt."""
+    path = input_path
+    if not path:
+        print(">> Please Drag & Drop a video file here and press Enter:")
+        path = input(">>Path: ").strip().strip('"')
+    return path or "input"
+
+
+def resolve_input_path(input_path):
+    """Public wrapper for resolving user-provided input paths."""
+    return _resolve_input_path(input_path)
+
+
+def _collect_video_files(path):
+    """Collect supported input videos from a file or directory path."""
+    files = []
+    supported_extensions = {(ext if str(ext).startswith(".") else f".{ext}").lower() for ext in config.VIDEO_EXTENSIONS}
+
+    if os.path.isfile(path):
+        file_name = os.path.basename(path)
+        file_stem, file_ext = os.path.splitext(file_name)
+        if file_ext.lower() in supported_extensions and not file_stem.lower().endswith("_multilang"):
+            files.append(os.path.abspath(path))
+        return files
+
+    if os.path.isdir(path):
+        for root, _, filenames in os.walk(path):
+            for file_name in filenames:
+                file_stem, file_ext = os.path.splitext(file_name)
+                if file_ext.lower() not in supported_extensions:
+                    continue
+                if file_stem.lower().endswith("_multilang"):
+                    continue
+                files.append(os.path.abspath(os.path.join(root, file_name)))
+        return files
+
+    log(f"Error: Path not found: {path}", "CRITICAL")
+    sys.exit(1)
+
+
+def collect_video_files(path):
+    """Public wrapper for collecting supported video inputs."""
+    return _collect_video_files(path)
+
+
+def classify_batch_result(process_result):
+    """Classify a process_video return value for batch counters."""
+    if not (isinstance(process_result, tuple) and len(process_result) == 3):
+        return "failed"
+
+    segments = process_result[0]
+    if segments is None:
+        return "failed"
+    if segments:
+        return "succeeded"
+    return "no_speech"
+
+
+def build_file_summary(video_path, elapsed_seconds, status):
+    """Build per-file metrics summary and return message, media duration, and batch item stats."""
+    file_name = os.path.basename(video_path)
+    elapsed_text = format_elapsed_time(elapsed_seconds)
+    try:
+        media_seconds = get_audio_duration(video_path)
+        speed_summary = format_total_processing_speed(media_seconds, elapsed_seconds)
+        media_text = format_elapsed_time(media_seconds) if media_seconds > 0 else "N/A"
+        summary_message = (
+            f"  [Summary] {file_name} | Total processing speed: {speed_summary} | Media duration: {media_text} | Elapsed: {elapsed_text}"
+        )
+        file_stats = {
+            "file_name": file_name,
+            "status": status,
+            "media_text": media_text,
+            "elapsed_text": elapsed_text,
+            "speed_summary": speed_summary,
+        }
+        return summary_message, max(0.0, float(media_seconds)), file_stats
+    except (OSError, ValueError, RuntimeError, TypeError) as e:
+        log(f"  [Summary] Warning: failed to compute media metrics for {file_name}: {e}", "WARNING")
+        return (
+            f"  [Summary] {file_name} | Total processing speed: N/A | Media duration: N/A | Elapsed: {elapsed_text}",
+            0.0,
+            {
+                "file_name": file_name,
+                "status": status,
+                "media_text": "N/A",
+                "elapsed_text": elapsed_text,
+                "speed_summary": "N/A",
+            },
+        )
+
+
+def log_batch_summary(total_files, counters, total_media_seconds, batch_start_time, file_stats):
+    """Log aggregate batch statistics and per-file details for multi-file runs."""
+    if total_files <= 1 or batch_start_time is None:
+        return
+
+    total_elapsed = time.time() - batch_start_time
+    total_media_text = format_elapsed_time(total_media_seconds) if total_media_seconds > 0 else "N/A"
+    batch_speed = format_total_processing_speed(total_media_seconds, total_elapsed)
+    batch_elapsed_text = format_elapsed_time(total_elapsed)
+    log(
+        f"  [Batch Summary] Files: {total_files} | "
+        f"Succeeded: {counters['succeeded']} | "
+        f"No speech: {counters['no_speech']} | "
+        f"Failed: {counters['failed']} | "
+        f"Media duration: {total_media_text} | Elapsed: {batch_elapsed_text} | Total processing speed: {batch_speed}",
+        "INFO",
+    )
+    log("  [Batch Files]", "INFO")
+    for item in file_stats:
+        log(
+            f"    - {item['file_name']} | "
+            f"Status: {item['status']} | "
+            f"Media: {item['media_text']} | "
+            f"Elapsed: {item['elapsed_text']} | "
+            f"Speed: {item['speed_summary']}",
+            "INFO",
+        )
+
 
 def get_ffmpeg_paths():
     """Returns paths to FFmpeg binaries, preferring local venv installation."""
@@ -307,13 +497,21 @@ FFMPEG_CMD, FFPROBE_CMD = get_ffmpeg_paths()
 def get_audio_duration(file_path):
     """Returns duration of audio file in seconds."""
     try:
-        cmd = [
-            FFPROBE_CMD, "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", file_path
-        ]
+        cmd = [FFPROBE_CMD, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
         return float(subprocess.check_output(cmd).decode().strip())
-    except Exception:
-        return 0.0
+    except Exception as exc:
+        if isinstance(exc, (OSError, ValueError)):
+            return 0.0
+
+        called_process_error = getattr(subprocess, "CalledProcessError", None)
+        if (
+            isinstance(called_process_error, type)
+            and issubclass(called_process_error, BaseException)
+            and isinstance(exc, called_process_error)
+        ):
+            return 0.0
+
+        raise
 
 
 def format_timestamp(seconds):
@@ -323,26 +521,34 @@ def format_timestamp(seconds):
     minutes = math.floor(seconds / 60)
     seconds %= 60
     milliseconds = round((seconds - math.floor(seconds)) * 1000)
-    return (
-        f"{hours:02d}:{minutes:02d}:{math.floor(seconds):02d},"
-        f"{milliseconds:03d}"
-    )
+    return f"{hours:02d}:{minutes:02d}:{math.floor(seconds):02d},{milliseconds:03d}"
 
 
 def parse_timestamp(ts_str):
     """Converts SRT timestamp (HH:MM:SS,mmm) to seconds."""
     try:
-        if ':' not in ts_str:
+        if ":" not in ts_str:
             return 0.0
-        h, m, s_ms = ts_str.split(':')
-        if ',' in s_ms:
-            s, ms = s_ms.split(',')
-        elif '.' in s_ms:
-            s, ms = s_ms.split('.')
+        h, m, s_ms = ts_str.split(":")
+        if "," in s_ms:
+            s, ms = s_ms.split(",")
+        elif "." in s_ms:
+            s, ms = s_ms.split(".")
         else:
             s, ms = s_ms, "0"
-        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
-    except Exception:
+        fraction_digits = len(ms)
+        if fraction_digits == 0:
+            fraction = 0.0
+        elif fraction_digits == 1:
+            fraction = int(ms) / 10.0
+        elif fraction_digits == 2:
+            fraction = int(ms) / 100.0
+        elif fraction_digits == 3:
+            fraction = int(ms) / 1000.0
+        else:
+            fraction = int(ms) / (10**fraction_digits)
+        return int(h) * 3600 + int(m) * 60 + int(s) + fraction
+    except (ValueError, TypeError):
         return 0.0
 
 
@@ -351,29 +557,15 @@ def _process_ffmpeg_line(line, start_time, total_duration, desc):
     if line and "time=" in line:
         try:
             time_str = line.split("time=")[1].split()[0]
-            current_seconds = parse_timestamp(
-                time_str.replace('.', ',')
-            )
+            current_seconds = parse_timestamp(time_str.replace(".", ","))
             if total_duration > 0:
                 elapsed = time.time() - start_time
                 speed = current_seconds / elapsed if elapsed > 0 else 0
-                eta = (
-                    (total_duration - current_seconds) / speed
-                    if speed > 0 else 0
-                )
+                eta = (total_duration - current_seconds) / speed if speed > 0 else 0
 
-                print_progress_bar(
-                    current_seconds, total_duration,
-                    prefix=desc,
-                    elapsed=elapsed,
-                    speed=speed,
-                    eta=eta
-                )
-        except Exception:
-            # GC/Cache clear
-            import gc
+                print_progress_bar(current_seconds, total_duration, prefix=desc, elapsed=elapsed, speed=speed, eta=eta)
+        except (IndexError, TypeError, ValueError):
             gc.collect()
-            pass
 
 
 def _monitor_ffmpeg_process(process, start_time, total_duration, desc):
@@ -392,40 +584,34 @@ def _finalize_ffmpeg_progress(process, cmd, start_time, total_duration, desc):
     if total_duration > 0:
         elapsed = time.time() - start_time
         print_progress_bar(
-            total_duration, total_duration,
-            prefix=desc,
-            elapsed=elapsed,
-            speed=total_duration / elapsed if elapsed > 0 else 1.0
+            total_duration, total_duration, prefix=desc, elapsed=elapsed, speed=total_duration / elapsed if elapsed > 0 else 1.0
         )
 
     if process.returncode != 0:
-        raise subprocess.CalledProcessError(process.returncode, cmd)
+        error_cls = getattr(subprocess, "CalledProcessError", None)
+        if isinstance(error_cls, type) and issubclass(error_cls, BaseException):
+            raise error_cls(process.returncode, cmd)
+
+        # Test environments may replace the subprocess module with a mock object.
+        raise RuntimeError(f"FFmpeg command failed with return code {process.returncode}: {cmd}")
 
 
 def run_ffmpeg_progress(cmd, desc, total_duration):
     """Executes FFmpeg command with a real-time progress bar UI."""
-    try:
-        start_time = time.time()
-        # Popen to capture progress
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            creationflags=(
-                subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-            ),
-            encoding="utf-8",
-            errors="replace"
-        )
+    start_time = time.time()
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        creationflags=(subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0),
+        encoding="utf-8",
+        errors="replace",
+    ) as process:
         register_subprocess(process)
-
-        _monitor_ffmpeg_process(process, start_time, total_duration, desc)
-        _finalize_ffmpeg_progress(process, cmd, start_time, total_duration, desc)
-
-    except Exception as e:
-        raise e
-    finally:
-        if 'process' in locals():
+        try:
+            _monitor_ffmpeg_process(process, start_time, total_duration, desc)
+            _finalize_ffmpeg_progress(process, cmd, start_time, total_duration, desc)
+        finally:
             unregister_subprocess(process)
 
 
@@ -448,23 +634,32 @@ def extract_clean_audio(video_path):
             if dur > 0:
                 log("  [Pre-Process] Found valid existing temp audio.")
                 return temp_wav
-        except Exception:
+        except (OSError, ValueError):
             pass
 
     log("  [Pre-Process] Extracting & Normalizing Audio...", "INFO")
 
     cmd = [
-        FFMPEG_CMD, "-y", "-i", video_path,
-        "-vn", "-ac", "1", "-ar", "16000",
-        "-c:a", "pcm_f32le",
-        "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-        temp_wav
+        FFMPEG_CMD,
+        "-y",
+        "-i",
+        video_path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_f32le",
+        "-af",
+        "loudnorm=I=-16:TP=-1.5:LRA=11",
+        temp_wav,
     ]
 
     try:
         total_dur = get_audio_duration(video_path)
         run_ffmpeg_progress(cmd, "  [Sample] Extracting Audio", total_dur)
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         log(f"Audio extraction failed: {e}", "ERROR")
         if os.path.exists(temp_wav):
             for _ in range(3):
@@ -473,7 +668,7 @@ def extract_clean_audio(video_path):
                     break
                 except OSError:
                     time.sleep(0.5)
-        raise e
+        raise
 
     _validate_clean_audio_file(temp_wav)
     return temp_wav
@@ -483,14 +678,14 @@ def _is_temp_file(filename, base_name, video_filename):
     """Checks if a file is a temporary file related to the video."""
     if filename == video_filename:
         return False
-    if not filename.startswith(base_name):
-        return False
-    return (
-        filename.endswith(".wav") or
-        filename.endswith(".mp3") or
-        filename.endswith(".json") or
-        filename.endswith(".False.srt")
+    is_temp_name = (
+        filename.startswith(base_name)
+        or filename.startswith(f".temp_output.{base_name}")
+        or filename.startswith(f".temp_input.{base_name}")
     )
+    if not is_temp_name:
+        return False
+    return filename.endswith(".wav") or filename.endswith(".mp3") or filename.endswith(".json")
 
 
 def cleanup_temp_files(folder, base_name, video_filename):
@@ -508,16 +703,14 @@ def cleanup_temp_files(folder, base_name, video_filename):
 
 def get_cpu_name():
     """Returns the processor name."""
-    if sys.platform == "win32":
+    if sys.platform == "win32" and winreg is not None:
         try:
-            import winreg
             key_path = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path)
             processor_name = winreg.QueryValueEx(key, "ProcessorNameString")[0]
             return processor_name.strip()
-        except Exception:
+        except OSError:
             pass
-    import platform
     return platform.processor() or "Unknown CPU"
 
 
@@ -536,23 +729,23 @@ def save_srt(segments, path):
 
         # Atomic replace (handles overwrite on Windows Python 3.3+)
         os.replace(temp_path, path)
-    except Exception as e:
+    except OSError:
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
             except OSError:
                 pass
-        raise e
+        raise
 
 
 def save_translated_srt(segments, translations, path):
     """Saves translated segments to an SRT file."""
-    from .models import Segment
+    segment_cls = _get_segment_class()
 
     final_segments = []
     for i, seg in enumerate(segments):
         text = translations[i] if i < len(translations) else "[Missing]"
-        final_segments.append(Segment(seg.start, seg.end, text))
+        final_segments.append(segment_cls(seg.start, seg.end, text))
     save_srt(final_segments, path)
 
 
@@ -576,13 +769,14 @@ def _check_srt_corruption(line, next_line=None):
 
 def validate_srt(path):
     """Checks for basic SRT markers to filter out obviously undefined files."""
+    is_valid = False
     if not os.path.exists(path):
-        return False
+        return is_valid
 
     try:
         # Check size (extremely small is suspicious for an SRT)
         if os.path.getsize(path) < 10:
-            return False
+            return is_valid
 
         # Use utf-8-sig to handle BOM automatically
         with open(path, "r", encoding="utf-8-sig") as f:
@@ -590,7 +784,7 @@ def validate_srt(path):
 
             stripped = content.strip()
             if not stripped:
-                return False
+                return is_valid
 
             # Basic SRT Signature:
             # 1. Starts with a number (Index)
@@ -598,25 +792,27 @@ def validate_srt(path):
 
             # Check 1: First non-whitespace char is digit
             if not stripped[0].isdigit():
-                return False
+                return is_valid
 
             # Check 2: Contains " --> "
             if " --> " not in stripped:
-                return False
+                return is_valid
 
-        return True
-    except Exception:
-        return False
+        is_valid = True
+    except OSError:
+        is_valid = False
+
+    return is_valid
 
 
 def parse_srt(path):
     """Parses an SRT file back into a list of Segment objects."""
-    from .models import Segment
+    segment_cls = _get_segment_class()
     # CRITICAL: Validate first
     if not validate_srt(path):
-        import logging
         logging.getLogger("Antigravity").warning(
-            f"  [Guard] Rejected corrupted SRT: {os.path.basename(path)}"
+            "  [Guard] Rejected corrupted SRT: %s",
+            os.path.basename(path),
         )
         return []
 
@@ -637,8 +833,8 @@ def parse_srt(path):
                         start = parse_timestamp(start_str)
                         end = parse_timestamp(end_str)
                         text = " ".join(lines[2:])
-                        segments.append(Segment(start, end, text))
-                    except Exception:
+                        segments.append(segment_cls(start, end, text))
+                    except (ValueError, IndexError):
                         continue  # Skip invalid timestamps
 
     return segments

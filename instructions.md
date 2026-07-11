@@ -4,7 +4,7 @@ This document serves as the **SINGLE SOURCE OF TRUTH** for AI agents working on 
 
 ## 1. 🏗️ Architecture & Structure
 - **Modular Design**: All logic MUST reside in `modules/`. `auto_subtitle.py` is strictly an orchestrator (< 500 lines).
-- **Isolated Execution**: Heavy AI tasks (like NLLB translation) MUST run in a separate process (`isolated_translator.py`) to allow full VRAM cleanup.
+- **Isolated Execution**: Heavy AI translation tasks MUST run in a separate process (`isolated_translator.py`) to allow full VRAM cleanup.
 - **No Shared State**: Modules should be stateless where possible. Use `ModelManager` for persistent state.
 
 ## 2. 🛡️ Reliability & Stability
@@ -23,8 +23,9 @@ This document serves as the **SINGLE SOURCE OF TRUTH** for AI agents working on 
 - **Complexity Limit**: Cyclomatic Complexity MUST be **< 10**.
   - ❌ DO NOT use `# noqa: C901`. Refactor the function instead.
 - **Linting**:
-  - ✅ Run `autopep8 --in-place --recursive .` before submitting.
-  - ✅ Verify with `flake8 . --count --max-complexity=10`.
+  - ✅ Run `ruff format --check .` for formatting verification.
+  - ✅ Verify with `ruff check .` (must enforce cyclomatic complexity **< 10** via C90), `flake8 modules auto_subtitle.py --max-complexity=10`, and `pylint modules`.
+  - ✅ Use `run_local_pipeline.ps1` as the canonical local quality gate.
 
 ## 4. ⚡ High-Performance Standards
 - **Memory Management**:

@@ -37,7 +37,7 @@ class TestUtils(unittest.TestCase):
         duration = utils.get_audio_duration("video.mp4")
         self.assertEqual(duration, 123.45)
 
-    @patch("subprocess.check_output", side_effect=Exception("FFprobe fail"))
+    @patch("subprocess.check_output", side_effect=OSError("FFprobe fail"))
     def test_get_audio_duration_fail(self, mock_co):
         duration = utils.get_audio_duration("video.mp4")
         self.assertEqual(duration, 0)
@@ -90,7 +90,7 @@ class TestUtils(unittest.TestCase):
 
     @patch("os.name", "nt")
     def test_init_console_windows(self):
-        # Mock ctypes via sys.modules because it's imported LOCALLY
+        # Mock ctypes module behavior used by the top-level import
         mock_ctypes = MagicMock()
         mock_kernel32 = MagicMock()
         mock_ctypes.windll.kernel32 = mock_kernel32
@@ -99,7 +99,7 @@ class TestUtils(unittest.TestCase):
         # And write to the byref arg if possible, but just returning True is enough to enter the if
         mock_kernel32.GetConsoleMode.return_value = 1
 
-        with patch.dict("sys.modules", {"ctypes": mock_ctypes}):
+        with patch("modules.utils.ctypes", mock_ctypes):
             utils.init_console()
 
         mock_kernel32.SetConsoleMode.assert_called()
@@ -131,11 +131,12 @@ class TestUtils(unittest.TestCase):
         mock_opt.profile = "ULTRA"
         mock_opt.config.get.return_value = "8"  # batch/thread
 
-        with patch("builtins.print") as m_print, \
-                patch("platform.system", return_value="TestOS"), \
-                patch("platform.release", return_value="1.0"), \
-                patch("os.cpu_count", return_value=16):
-
+        with (
+            patch("builtins.print") as m_print,
+            patch("platform.system", return_value="TestOS"),
+            patch("platform.release", return_value="1.0"),
+            patch("os.cpu_count", return_value=16),
+        ):
             utils.print_banner(mock_opt)
             # Verify basic output parts
             calls = [str(c) for c in m_print.call_args_list]
@@ -149,10 +150,9 @@ class TestUtils(unittest.TestCase):
         mock_winreg = MagicMock()
         mock_winreg.QueryValueEx.return_value = ["Intel Mock CPU", 1]
 
-        with patch.dict("sys.modules", {"winreg": mock_winreg}):
-            with patch("sys.platform", "win32"):
-                name = utils.get_cpu_name()
-                self.assertEqual(name, "Intel Mock CPU")
+        with patch("modules.utils.winreg", mock_winreg), patch("sys.platform", "win32"):
+            name = utils.get_cpu_name()
+            self.assertEqual(name, "Intel Mock CPU")
 
     def test_run_ffmpeg_progress_logic(self):
         # Test the parsing logic of run_ffmpeg_progress
@@ -162,12 +162,15 @@ class TestUtils(unittest.TestCase):
         mock_proc.stderr.readline.side_effect = [
             "frame= 100 fps= 25 q=-1.0 size= 100kB time=00:00:01.00 bitrate= 100kbits/s speed=1.0x\n",
             "frame= 200 fps= 25 q=-1.0 size= 200kB time=00:00:02.00 bitrate= 100kbits/s speed=1.0x\n",
-            ""
+            "",
         ]
 
-        with patch("subprocess.Popen", return_value=mock_proc), \
-                patch("modules.utils.register_subprocess"), \
-                patch("modules.utils.print_progress_bar") as m_bar:
+        with (
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch("modules.utils.register_subprocess"),
+            patch("modules.utils.print_progress_bar") as m_bar,
+        ):
+            mock_popen.return_value.__enter__.return_value = mock_proc
 
             utils.run_ffmpeg_progress(["ffmpeg", "-ver"], "Processing", total_duration=4.0)
             self.assertTrue(m_bar.call_count >= 2)
@@ -176,17 +179,19 @@ class TestUtils(unittest.TestCase):
         # Test extract_clean_audio success path
         # First call is to check reuse (False), second is final check (True)
         exists_side_effect = [False, True]
-        with patch("os.path.exists", side_effect=exists_side_effect), \
-                patch("modules.utils.get_audio_duration", return_value=123.0), \
-                patch("modules.utils.run_ffmpeg_progress"), \
-                patch("os.path.getsize", return_value=2048):  # valid size
-
+        with (
+            patch("os.path.exists", side_effect=exists_side_effect),
+            patch("modules.utils.get_audio_duration", return_value=123.0),
+            patch("modules.utils.run_ffmpeg_progress"),
+            patch("os.path.getsize", return_value=2048),
+        ):  # valid size
             res = utils.extract_clean_audio("video.mp4")
             self.assertTrue(res.endswith("_temp.wav"))
 
     def test_save_and_parse_srt(self):
         # Test save_srt and then parse_srt
         from modules.models import Segment
+
         segs = [Segment(0.0, 1.0, "Hello"), Segment(1.0, 2.5, "World")]
 
         # We need to use a real temporary file to test read/write cleanly,
@@ -207,9 +212,11 @@ class TestUtils(unittest.TestCase):
 
         # Test PARSE
         fake_srt = "1\n00:00:00,000 --> 00:00:01,000\nHello\n\n2\n00:00:01,000 --> 00:00:02,500\nWorld"
-        with patch("builtins.open", mock_open(read_data=fake_srt)), \
-                patch("os.path.exists", return_value=True), \
-                patch("os.path.getsize", return_value=100):
+        with (
+            patch("builtins.open", mock_open(read_data=fake_srt)),
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=100),
+        ):
             parsed = utils.parse_srt("out.srt")
             self.assertEqual(len(parsed), 2)
             self.assertEqual(parsed[0].text, "Hello")

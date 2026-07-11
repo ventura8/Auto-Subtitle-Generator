@@ -13,7 +13,7 @@ The project is refactored for maintainability and scalability. Core components a
 
 ### Installation
 - Users run `install_dependencies.ps1` (PowerShell).
-- It installs **PyTorch Nightly** (for CUDA 12.6+ support) and `faster-whisper`.
+- It installs **PyTorch Stable** (for CUDA 12.8 support) and `faster-whisper`.
 
 ### Execution
 - **Drag & Drop**: Primary user interaction (handled via `sys.argv`).
@@ -23,14 +23,18 @@ The project is refactored for maintainability and scalability. Core components a
 
 1. **Error Handling**: Use the `log()` helper for consistent output.
 2. **Testing**: 
-    -   Run tests and update badge: `pytest` (or use `./run_tests_with_coverage.ps1`)
+    -   Run the local CI pipeline and update the badge: `./run_local_pipeline.ps1`
     -   **Strict Requirement**: Maintain at least **90% test coverage** for the entire project.
     -   Badge and reports are generated automatically on every test run.
 3. **Linting & Code Quality**: 
     -   **Strict Complexity Limit**: All functions must have a Cyclomatic Complexity of **< 10**.
     -   **Zero Suppressions**: Do **NOT** use `# noqa: C901`. If a function is too complex, refactor it into helper functions.
-    -   **Formatting**: Always use `autopep8` to fix formatting issues automatically.
-    -   **CI Pipeline**: The pipeline runs `flake8` with `--max-complexity=10` and fails on any error.
-    -   **AI Workspace**: Agents should follow the [/fix-file](file:///c:/Users/ventu/Projects/Auto-Subtitle-Generator/.agent/workflows/fix-file.md) workflow.
+    -   **Formatting**: Use `ruff format` for repository formatting consistency.
+    -   **CI Pipeline**: `run_local_pipeline.ps1` is the local quality gate. `.github/workflows/ci.yml` runs equivalent Ruff, Flake8, Pylint, and pytest coverage checks directly in GitHub Actions rather than invoking the PowerShell script.
+    -   **CI Security Defaults**: Workflow permissions default to read-only repository contents and checkout steps disable persisted credentials.
+    -   **AI Workspace**: Agents should follow `.github/skills/fix-file/SKILL.md` when applying targeted file fixes.
 4. **Documentation**: 
-    -   Always update `Instructions.md`, `README.md`, and relevant `docs/` files if necessary when making changes.
+    -   Always update `instructions.md`, `README.md`, and relevant `docs/` files if necessary when making changes.
+5. **Run Summaries**:
+    -   Keep per-file summary output accurate in docs.
+    -   For multi-file processing, document both aggregate batch summary fields and per-file batch stats.

@@ -1,20 +1,20 @@
-from modules import transcription
 import unittest
 from unittest.mock import MagicMock, patch
 import os
 import sys
+import importlib
 
 # Ensure modules can be imported
 _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
+transcription = importlib.import_module("modules.transcription")
+
 
 class TestCoverageTranscription(unittest.TestCase):
-
     def test_get_separated_vocal_path_success(self):
-        with patch("os.listdir", return_value=["vid_(Vocals)_.wav"]), \
-                patch("os.path.join", return_value="dir/vid_(Vocals)_.wav"):
+        with patch("os.listdir", return_value=["vid_(Vocals)_.wav"]), patch("os.path.join", return_value="dir/vid_(Vocals)_.wav"):
             res = transcription._get_separated_vocal_path("vid.mp4")
             self.assertEqual(res, "dir/vid_(Vocals)_.wav")
 
@@ -27,20 +27,24 @@ class TestCoverageTranscription(unittest.TestCase):
             self.assertEqual(transcription._detect_and_separate_vocals("vid.mp4", MagicMock()), "vid.mp4")
 
     def test_detect_and_separate_vocals_resume(self):
-        with patch("modules.config.USE_VOCAL_SEPARATION", True), \
-                patch("modules.transcription._get_separated_vocal_path", return_value="vocal.wav"), \
-                patch("modules.transcription.log") as mock_log:
+        with (
+            patch("modules.config.USE_VOCAL_SEPARATION", True),
+            patch("modules.transcription._get_separated_vocal_path", return_value="vocal.wav"),
+            patch("modules.transcription.log") as mock_log,
+        ):
             res = transcription._detect_and_separate_vocals("vid.mp4", MagicMock())
             self.assertEqual(res, "vocal.wav")
             mock_log.assert_called()
 
     def test_detect_and_separate_vocals_fail(self):
         mm = MagicMock()
-        mm.get_separator.side_effect = Exception("Sep fail")
-        with patch("modules.config.USE_VOCAL_SEPARATION", True), \
-                patch("modules.transcription._get_separated_vocal_path", return_value=None), \
-                patch("modules.utils.extract_clean_audio"), \
-                patch("modules.transcription.log") as mock_log:
+        mm.get_separator.side_effect = RuntimeError("Sep fail")
+        with (
+            patch("modules.config.USE_VOCAL_SEPARATION", True),
+            patch("modules.transcription._get_separated_vocal_path", return_value=None),
+            patch("modules.utils.extract_clean_audio"),
+            patch("modules.transcription.log") as mock_log,
+        ):
             res = transcription._detect_and_separate_vocals("vid.mp4", mm)
             self.assertEqual(res, "vid.mp4")
             mock_log.assert_any_call("  [Sep] Warning: Separation failed (Sep fail). Using original audio.", "WARNING")
@@ -56,10 +60,12 @@ class TestCoverageTranscription(unittest.TestCase):
         mm = MagicMock()
         mock_whisper = mm.get_whisper.return_value
         mock_whisper.transcribe.return_value = ([], MagicMock(duration=10, language="en", language_probability=0.9))
-        with patch("modules.config.USE_VOCAL_SEPARATION", False), \
-                patch("modules.config.INITIAL_PROMPT", None), \
-                patch("modules.utils.extract_clean_audio", return_value="audio.wav"), \
-                patch("modules.transcription.log") as mock_log:
+        with (
+            patch("modules.config.USE_VOCAL_SEPARATION", False),
+            patch("modules.config.INITIAL_PROMPT", None),
+            patch("modules.utils.extract_clean_audio", return_value="audio.wav"),
+            patch("modules.transcription.log") as mock_log,
+        ):
             transcription.transcribe_video_audio("vid.mp4", mm, forced_prompt=None)
             mock_log.assert_any_call("  [Whisper] Config: No Input Prompt")
 
@@ -67,9 +73,11 @@ class TestCoverageTranscription(unittest.TestCase):
         mm = MagicMock()
         mock_whisper = mm.get_whisper.return_value
         mock_whisper.transcribe.side_effect = RuntimeError("Other error")
-        with patch("modules.config.USE_VOCAL_SEPARATION", False), \
-                patch("modules.utils.extract_clean_audio", return_value="audio.wav"), \
-                patch("modules.transcription.log"):
+        with (
+            patch("modules.config.USE_VOCAL_SEPARATION", False),
+            patch("modules.utils.extract_clean_audio", return_value="audio.wav"),
+            patch("modules.transcription.log"),
+        ):
             with self.assertRaises(RuntimeError):
                 transcription.transcribe_video_audio("vid.mp4", mm)
 
@@ -77,18 +85,22 @@ class TestCoverageTranscription(unittest.TestCase):
         mm = MagicMock()
         mock_whisper = mm.get_whisper.return_value
         mock_whisper.transcribe.return_value = ([], MagicMock(duration=10, language="en", language_probability=0.1))
-        with patch("modules.config.USE_VOCAL_SEPARATION", False), \
-                patch("modules.utils.extract_clean_audio", return_value="audio.wav"), \
-                patch("modules.transcription.log") as mock_log:
+        with (
+            patch("modules.config.USE_VOCAL_SEPARATION", False),
+            patch("modules.utils.extract_clean_audio", return_value="audio.wav"),
+            patch("modules.transcription.log") as mock_log,
+        ):
             transcription.transcribe_video_audio("vid.mp4", mm)
             mock_log.assert_any_call("  [Warning] Low language confidence (0.10).", "WARNING")
 
     def test_process_separator_outputs(self):
         output_files = ["dir/vid_(Vocals).wav", "dir/vid_(Instrumental).wav"]
-        with patch("os.path.abspath", side_effect=lambda x: x), \
-                patch("os.path.exists", return_value=True), \
-                patch("os.remove"), \
-                patch("os.rename"):
+        with (
+            patch("os.path.abspath", side_effect=lambda x: x),
+            patch("os.path.exists", return_value=True),
+            patch("os.remove"),
+            patch("os.rename"),
+        ):
             res = transcription._process_separator_outputs(output_files, "target")
             self.assertIn("vid_(Vocals).wav", res)
 
@@ -96,9 +108,11 @@ class TestCoverageTranscription(unittest.TestCase):
         mm = MagicMock()
         mock_whisper = mm.get_whisper.return_value
         mock_whisper.transcribe.return_value = ([], MagicMock(duration=10, language="ro", language_probability=0.9))
-        with patch("modules.config.USE_VOCAL_SEPARATION", False), \
-                patch("modules.utils.extract_clean_audio", return_value="audio.wav"), \
-                patch("modules.transcription.log") as mock_log:
+        with (
+            patch("modules.config.USE_VOCAL_SEPARATION", False),
+            patch("modules.utils.extract_clean_audio", return_value="audio.wav"),
+            patch("modules.transcription.log") as mock_log,
+        ):
             transcription.transcribe_video_audio("vid.mp4", mm, forced_lang="ro")
             mock_log.assert_any_call("  [Whisper] Config: Forced Language='ro'")
 

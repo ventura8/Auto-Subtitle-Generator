@@ -13,33 +13,50 @@ Prerequisites:
     Run 'install_dependencies.ps1' to setup the environment.
 """
 
+import argparse
+import gc
+import importlib
+import logging
+import multiprocessing
 import os
+import site
 import sys
+import time
+import warnings
 
-# Ensure the root directory is in sys.path for internal module imports
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+from modules import config
+from modules import models
+from modules import utils
+from modules.models import ModelManager, OPTIMIZER
+from modules.transcription import transcribe_video_audio
+from modules.translation import translate_segments
+from modules.utils import log, print_progress_bar
 
-import multiprocessing  # noqa: E402
-import argparse  # noqa: E402
-import gc  # noqa: E402
-import logging  # noqa: E402
-
-# New Modules
-from modules import config  # noqa: E402
-from modules import utils  # noqa: E402
-from modules.utils import log, print_progress_bar  # noqa: E402
-from modules import models  # noqa: E402
-from modules.models import OPTIMIZER, ModelManager  # noqa: E402
-from modules.transcription import transcribe_video_audio  # noqa: E402
-from modules.translation import translate_segments  # noqa: E402
+warnings.filterwarnings("ignore", category=UserWarning, message=".*expandable_segments not supported.*")
+warnings.filterwarnings("ignore", message=".*The following generation flags are not valid.*")
 
 
-# Lazy imports handle
-torch = None
+# Torch runtime holder; tests may monkeypatch module-level "torch".
+_RUNTIME_STATE = {"torch": None}
 
-logging.getLogger("transformers").addFilter(
-    lambda record: "tied weights" not in record.getMessage()
-)
+
+def _get_torch_module():
+    """Return torch module reference, honoring any test monkeypatch on module attribute."""
+    patched_torch = globals().get("torch")
+    if patched_torch is not None:
+        return patched_torch
+    return _RUNTIME_STATE["torch"]
+
+
+def _set_torch_module(torch_module):
+    """Persist torch module reference for runtime and tests."""
+    _RUNTIME_STATE["torch"] = torch_module
+    globals()["torch"] = torch_module
+
+
+logging.getLogger("transformers").addFilter(lambda record: "tied weights" not in record.getMessage())
+
+INIT_TOTAL_STEPS = 6
 
 
 # =============================================================================
@@ -47,17 +64,22 @@ logging.getLogger("transformers").addFilter(
 # =============================================================================
 
 
+def _render_init_progress(step, total_steps, stage, status="OK"):
+    """Render a consistent initialization progress update."""
+    suffix = f"{stage:<35} [{status}]"
+    print_progress_bar(step, total_steps, prefix="[Init] ", suffix=suffix, length=25, decimals=1)
+
+
 def _init_torch_and_hardware(step, total_steps):
     """Initializes PyTorch and hardware detection."""
     # Step 1: PyTorch
     try:
-        global torch
-        import torch as _torch
-        if torch is None:
-            torch = _torch
+        torch_module = importlib.import_module("torch")
+        if _get_torch_module() is None:
+            _set_torch_module(torch_module)
+        _render_init_progress(step, total_steps, "Loading PyTorch")
     except ImportError as e:
-        suffix_fail = f"{'Loading PyTorch':<35} [FAIL]"
-        print_progress_bar(step, total_steps, prefix="[Init] ", suffix=suffix_fail, length=25, decimals=0)
+        _render_init_progress(step, total_steps, "Loading PyTorch", "FAIL")
         print("")
         log(f"[Fatal] PyTorch missing: {e}", "CRITICAL")
         sys.exit(1)
@@ -65,6 +87,7 @@ def _init_torch_and_hardware(step, total_steps):
     # Step 2: Hardware Detection
     step += 1
     OPTIMIZER.detect_hardware(verbose=False)
+    _render_init_progress(step, total_steps, "Detecting Hardware")
     return step
 
 
@@ -73,16 +96,16 @@ def _init_nvidia_and_transformers(step, total_steps):
     # Step 3: NVIDIA Paths
     step += 1
     load_nvidia_paths()
+    _render_init_progress(step, total_steps, "Configuring NVIDIA Runtime")
 
     # Step 4: Transformers
     step += 1
     try:
-        models.AutoTokenizer  # Trigger lazy load validation if we wanted
-        # Verification import
-        import transformers  # noqa: F401
+        importlib.import_module("transformers")
+
+        _render_init_progress(step, total_steps, "Loading Transformers (NLLB)")
     except ImportError:
-        suffix_tr_fail = f"{'Loading Transformers (NLLB)':<35} [FAIL]"
-        print_progress_bar(step, total_steps, prefix="[Init] ", suffix=suffix_tr_fail, length=25, decimals=0)
+        _render_init_progress(step, total_steps, "Loading Transformers (NLLB)", "FAIL")
         print("")
         log("[Fatal] Transformers missing.", "CRITICAL")
         sys.exit(1)
@@ -94,10 +117,11 @@ def _init_whisper_and_separator(step, total_steps):
     # Step 5: Faster-Whisper
     step += 1
     try:
-        import faster_whisper  # noqa: F401
+        importlib.import_module("faster_whisper")
+
+        _render_init_progress(step, total_steps, "Loading Faster-Whisper")
     except ImportError:
-        suffix_wh_fail = f"{'Loading Faster-Whisper':<35} [FAIL]"
-        print_progress_bar(step, total_steps, prefix="[Init] ", suffix=suffix_wh_fail, length=25, decimals=0)
+        _render_init_progress(step, total_steps, "Loading Faster-Whisper", "FAIL")
         print("")
         log("[Fatal] Faster-Whisper missing.", "CRITICAL")
         sys.exit(1)
@@ -105,26 +129,30 @@ def _init_whisper_and_separator(step, total_steps):
     # Step 6: Audio-Separator
     step += 1
     try:
-        import audio_separator.separator  # noqa: F401
+        importlib.import_module("audio_separator.separator")
+
+        _render_init_progress(step, total_steps, "Loading Audio-Separator")
     except ImportError:
-        suffix_sep_skip = f"{'Loading Audio-Separator':<35} [SKIP]"
-        print_progress_bar(step, total_steps, prefix="[Init] ", suffix=suffix_sep_skip, length=25, decimals=0)
+        _render_init_progress(step, total_steps, "Loading Audio-Separator", "SKIP")
         log("[Warning] audio-separator not installed. Vocal separation will be skipped.", "WARNING")
+
+    return step
 
 
 def init_ai_engine():
     """Lazily loads all AI dependencies with a progress indicator."""
-    if torch is not None:
+    if _get_torch_module() is not None:
         return
 
-    print("[AI ENGINE INITIALIZATION]")
-
-    total_steps = 6
+    total_steps = INIT_TOTAL_STEPS
     step = 1
 
     step = _init_torch_and_hardware(step, total_steps)
     step = _init_nvidia_and_transformers(step, total_steps)
-    _init_whisper_and_separator(step, total_steps)
+    step = _init_whisper_and_separator(step, total_steps)
+
+    if step == total_steps:
+        _render_init_progress(step, total_steps, "Initialization Complete")
 
 
 def _get_nvidia_bin_lib_paths(sp):
@@ -144,11 +172,15 @@ def _get_nvidia_bin_lib_paths(sp):
 
 def _apply_paths_to_env(paths):
     """Internal helper to update PATH and DLL directories."""
-    import os
+    raw_path = os.environ.get("PATH", "")
+    normalized_entries = {os.path.normcase(os.path.normpath(entry)) for entry in raw_path.split(os.pathsep) if entry}
+
     for p in paths:
-        if p not in os.environ['PATH']:
-            os.environ['PATH'] = p + os.pathsep + os.environ['PATH']
-            if hasattr(os, 'add_dll_directory'):
+        normalized_p = os.path.normcase(os.path.normpath(p))
+        if normalized_p not in normalized_entries:
+            os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
+            normalized_entries.add(normalized_p)
+            if hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(p)
                 except (AttributeError, OSError):
@@ -157,9 +189,6 @@ def _apply_paths_to_env(paths):
 
 def load_nvidia_paths():
     """Adds Torch/NVIDIA DLLs to PATH to fix ONNX Runtime 'CUDAExecutionProvider not available'."""
-    import site
-    import os
-
     paths_to_add = []
 
     # 1. Site Packages
@@ -172,22 +201,26 @@ def load_nvidia_paths():
         paths_to_add.extend(_get_nvidia_bin_lib_paths(sp))
 
     # 2. Torch libs
-    try:
-        import torch
-        if hasattr(torch, '__path__'):
-            for q in torch.__path__:
-                lib_path = os.path.join(q, "lib")
-                if os.path.exists(lib_path):
-                    paths_to_add.append(lib_path)
-    except ImportError:
-        pass
+    torch_module = _get_torch_module()
+    if torch_module is None:
+        try:
+            torch_module = importlib.import_module("torch")
+            _set_torch_module(torch_module)
+        except ImportError:
+            torch_module = None
+
+    if torch_module is not None and hasattr(torch_module, "__path__"):
+        for q in torch_module.__path__:
+            lib_path = os.path.join(q, "lib")
+            if os.path.exists(lib_path):
+                paths_to_add.append(lib_path)
 
     # 3. Apply
     _apply_paths_to_env(paths_to_add)
 
     try:
-        import onnxruntime as ort  # noqa: F401
-    except Exception:
+        importlib.import_module("onnxruntime")
+    except ImportError:
         pass
 
 
@@ -196,7 +229,7 @@ def load_nvidia_paths():
 # =============================================================================
 
 
-def _check_resume(folder, base_name, video_path, forced_lang=None):
+def _check_resume(folder, base_name, forced_lang=None):
     """Checks if a valid SRT exists to skip transcription."""
     if forced_lang:
         srt_path = os.path.join(folder, f"{base_name}.{forced_lang}.srt")
@@ -204,20 +237,18 @@ def _check_resume(folder, base_name, video_path, forced_lang=None):
             segs = utils.parse_srt(srt_path)
             if segs:
                 log(f"  [Resume] Found valid SRT: {srt_path}")
-                return segs, forced_lang, None
-            else:
-                log(f"  [Resume] SRT {srt_path} is empty or corrupted. Skipping.", "WARNING")
-    else:
-        # Check commonly generated ones
-        for lang_code in ["en", "ro", "es", "fr"]:
-            srt_path = os.path.join(folder, f"{base_name}.{lang_code}.srt")
-            if os.path.exists(srt_path):
-                segs = utils.parse_srt(srt_path)
-                if segs:
-                    log(f"  [Resume] Found valid SRT: {srt_path}")
-                    return segs, lang_code, None
-                else:
-                    log(f"  [Resume] SRT {srt_path} is empty or corrupted. Skipping.", "WARNING")
+                return segs, forced_lang, srt_path
+            log(f"  [Resume] SRT {srt_path} is empty or corrupted. Skipping.", "WARNING")
+        return None, None, None
+    # Check commonly generated ones
+    for lang_code in ["en", "ro", "es", "fr"]:
+        srt_path = os.path.join(folder, f"{base_name}.{lang_code}.srt")
+        if os.path.exists(srt_path):
+            segs = utils.parse_srt(srt_path)
+            if segs:
+                log(f"  [Resume] Found valid SRT: {srt_path}")
+                return segs, lang_code, srt_path
+            log(f"  [Resume] SRT {srt_path} is empty or corrupted. Skipping.", "WARNING")
 
     return None, None, None
 
@@ -241,6 +272,7 @@ def embed_subtitles(video_path, srt_files):
     dir_name = os.path.dirname(video_path)
     file_name = os.path.basename(video_path)
     name_no_ext, ext = os.path.splitext(file_name)
+    normalized_ext = ext.lower()
     output_path = os.path.join(dir_name, f"{name_no_ext}_multilang{ext}")
 
     cmd = [utils.FFMPEG_CMD, "-y", "-i", video_path]
@@ -252,40 +284,52 @@ def embed_subtitles(video_path, srt_files):
     for i in range(len(srt_files)):
         cmd.extend(["-map", f"{i + 1}"])
 
-    cmd.extend(["-c:v", "copy", "-c:a", "copy", "-c:s",
-                "mov_text" if ext in [".mp4", ".m4v", ".mov"] else "srt"])
+    cmd.extend(
+        [
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+            "-c:s",
+            "mov_text" if normalized_ext in [".mp4", ".m4v", ".mov"] else "srt",
+        ]
+    )
 
     for i, (_, lang, label) in enumerate(srt_files):
-        cmd.extend([
-            f"-metadata:s:s:{i}", f"language={lang}",
-            f"-metadata:s:s:{i}", f"title={label}"
-        ])
+        cmd.extend([f"-metadata:s:s:{i}", f"language={lang}", f"-metadata:s:s:{i}", f"title={label}"])
 
     cmd.extend(["-loglevel", "info", output_path])
 
     try:
         total_dur = utils.get_audio_duration(video_path)
         utils.run_ffmpeg_progress(cmd, "  [Finalizing] Muxing Video", total_dur)
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         log(f"Embedding failed: {e}", "ERROR")
         if os.path.exists(output_path):
             try:
                 os.remove(output_path)
-            except Exception:
+            except OSError:
                 pass
 
 
-def _obtain_segments(folder, base_name, video_path, model_mgr, forced_lang, forced_prompt):
-    """Internal helper to either load existing SRT or run transcription."""
+def _obtain_segments(transcription_context, model_mgr, forced_lang, forced_prompt):
+    """Internal helper to either load an existing SRT or run transcription."""
+    folder = transcription_context["folder"]
+    base_name = transcription_context["base_name"]
+    video_path = transcription_context["video_path"]
     lang_hint = forced_lang if forced_lang else config.FORCED_LANGUAGE
     check_lang_code = lang_hint if lang_hint else None
 
     # Try to find existing output
-    loaded_segments, loaded_lang, _ = _check_resume(folder, base_name, video_path, check_lang_code)
+    loaded_segments, loaded_lang, resume_srt_path = _check_resume(
+        folder,
+        base_name,
+        check_lang_code,
+    )
 
     if loaded_segments:
         log(f"  [Step 1] Skipping Transcription. Found valid SRT for {loaded_lang}.")
-        return loaded_segments, loaded_lang, None
+        return loaded_segments, loaded_lang, resume_srt_path
 
     # Need to Transcribe
     return transcribe_video_audio(video_path, model_mgr, forced_lang, forced_prompt)
@@ -301,13 +345,13 @@ def _finalize_video_processing(video_path, folder, base_name, src_lang, src_srt_
         generated_srts.append((src_srt_path, src_lang, src_label))
 
     # Add Translations
-    for lang in config.TARGET_LANGUAGES:
+    for lang, info in config.TARGET_LANGUAGES.items():
         if lang == src_lang:
             continue
         lang_srt = os.path.join(folder, f"{base_name}.{lang}.srt")
         if os.path.exists(lang_srt):
-            info = config.TARGET_LANGUAGES[lang]
-            generated_srts.append((lang_srt, lang, info["label"]))
+            label = info.get("label", lang.upper()) if isinstance(info, dict) else lang.upper()
+            generated_srts.append((lang_srt, lang, label))
 
     embed_subtitles(video_path, generated_srts)
 
@@ -316,9 +360,7 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
     """Orchestrates the full processing pipeline for a single video."""
     config.load_config(OPTIMIZER, log)
     folder = os.path.dirname(video_path) or "."
-    final_output, srt_path, base_name = _get_output_filenames(
-        video_path, folder, None
-    )
+    final_output, _source_srt_path, base_name = _get_output_filenames(video_path, folder, None)
 
     # Check if this video is already done
     if os.path.exists(final_output):
@@ -328,8 +370,16 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
     try:
         utils.init_console()
         # Step 1: Transcribe (or Resume)
-        segments, src_lang, audio_path = _obtain_segments(
-            folder, base_name, video_path, model_mgr, forced_lang, forced_prompt
+        transcription_context = {
+            "folder": folder,
+            "base_name": base_name,
+            "video_path": video_path,
+        }
+        segments, src_lang, source_artifact_path = _obtain_segments(
+            transcription_context,
+            model_mgr,
+            forced_lang,
+            forced_prompt,
         )
 
         if not segments:
@@ -338,13 +388,17 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
             # Fix: Return 3 values as expected by callers
             return [], None, None
 
-        # Immediate Save: Source SRT
-        # ... (rest of function)
         src_srt_path = os.path.join(folder, f"{base_name}.{src_lang}.srt")
-        try:
-            utils.save_srt(segments, src_srt_path)
-        except Exception as e:
-            log(f"  [Error] Failed to save source SRT: {e}", "ERROR")
+        if source_artifact_path and source_artifact_path.endswith(".srt"):
+            log("  [Resume] Reusing existing subtitle file. Continuing translation and muxing.", "INFO")
+            src_srt_path = source_artifact_path
+        else:
+            # Immediate Save: Source SRT
+            try:
+                utils.save_srt(segments, src_srt_path)
+            except (OSError, ValueError) as e:
+                log(f"  [Error] Failed to save source SRT: {e}", "ERROR")
+                return None, None, None
 
         # Step 2: Translate
         try:
@@ -354,15 +408,15 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
 
             # FORCE CLEAN STATE (Paranoid Mode)
             gc.collect()
-            if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            torch_module = _get_torch_module()
+            if torch_module is not None and hasattr(torch_module, "cuda") and torch_module.cuda.is_available():
+                torch_module.cuda.empty_cache()
 
             # Refactored: Calls module function
             translate_segments(segments, src_lang, model_mgr, folder, base_name)
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError) as e:
             log(f"Translation failed: {e}", "ERROR")
             # Continue to finalizing even if translation fails
-            pass
 
         # Step 3: Finalize (Embed Subtitles)
         _finalize_video_processing(video_path, folder, base_name, src_lang, src_srt_path)
@@ -370,7 +424,7 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
         # Return results for callers (e.g. tests)
         return segments, src_lang, final_output
 
-    except Exception as e:
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError) as e:
         log(f"Processing failed for {video_path}: {e}", "ERROR")
         return None, None, None
 
@@ -392,28 +446,8 @@ def get_input_files():
     if args.cpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-    path = args.input_path
-    if not path:
-        print(">> Please Drag & Drop a video file here and press Enter:")
-        path = input(">>Path: ").strip().strip('"')
-
-    if not path:
-        path = "input"  # Default folder
-
-    files = []
-    if os.path.isfile(path):
-        files.append(os.path.abspath(path))
-    elif os.path.isdir(path):
-        for root, _, filenames in os.walk(path):
-            for f in filenames:
-                if f.lower().endswith(('.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm')):
-                    # Exclude our own output files
-                    if "_multilang" in f:
-                        continue
-                    files.append(os.path.abspath(os.path.join(root, f)))
-    else:
-        log(f"Error: Path not found: {path}", "CRITICAL")
-        sys.exit(1)
+    path = utils.resolve_input_path(args.input_path)
+    files = utils.collect_video_files(path)
 
     return files, args.lang, args.prompt
 
@@ -425,14 +459,51 @@ def setup_environment():
     utils.setup_signal_handlers()
 
 
+def _process_batch_video(video_path, index, total_files, process_context):
+    """Process one video in a batch and return status plus per-file metrics."""
+    model_mgr, forced_lang, forced_prompt = process_context
+    print(f"\n[{index + 1}/{total_files}] Processing: {video_path}")
+    start_time = time.time()
+    process_result = process_video(video_path, model_mgr, forced_lang, forced_prompt)
+    status = utils.classify_batch_result(process_result)
+    elapsed_seconds = time.time() - start_time
+    summary_message, media_seconds, item_stats = utils.build_file_summary(video_path, elapsed_seconds, status)
+    log(summary_message, "INFO")
+    return status, media_seconds, item_stats
+
+
 def process_video_batch(video_files, model_mgr, forced_lang, forced_prompt):
     """Processes a list of video files."""
+    batch_start_time = time.time() if len(video_files) > 1 else None
+    process_context = (model_mgr, forced_lang, forced_prompt)
+    total_media_seconds = 0.0
+    counters = {"succeeded": 0, "no_speech": 0, "failed": 0}
+    file_stats = []
+
     for i, video_path in enumerate(video_files):
-        print(f"\n[{i + 1}/{len(video_files)}] Processing: {video_path}")
-        process_video(video_path, model_mgr, forced_lang, forced_prompt)
+        status, media_seconds, item_stats = _process_batch_video(
+            video_path,
+            i,
+            len(video_files),
+            process_context,
+        )
+        counters[status] += 1
+        total_media_seconds += media_seconds
+        file_stats.append(item_stats)
+
+    utils.log_batch_summary(
+        len(video_files),
+        counters,
+        total_media_seconds,
+        batch_start_time,
+        file_stats,
+    )
 
 
 def main():
+    """Initialize environment and process all discovered videos."""
+    print("[AI ENGINE INITIALIZATION]")
+    _render_init_progress(0, INIT_TOTAL_STEPS, "Starting", "RUN")
     setup_environment()
     init_ai_engine()
     utils.print_banner(models.OPTIMIZER)

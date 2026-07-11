@@ -47,6 +47,7 @@ sys.modules["psutil"] = m_ps
 if sys.platform != "win32":
     sys.modules["winreg"] = MagicMock()
     import ctypes
+
     if not hasattr(ctypes, "windll"):
         ctypes.windll = MagicMock()
 
