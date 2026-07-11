@@ -13,58 +13,46 @@ class TestConfig(unittest.TestCase):
     def setUp(self):
         global config
         from modules import config
+
         # Reset globals
         config.TARGET_LANGUAGES = {}
         config.WHISPER_MODEL_SIZE = "small"
         config.FORCED_LANGUAGE = None
         config.USE_VOCAL_SEPARATION = True
         config.HALLUCINATION_SILENCE_THRESHOLD = 0.9
+        config.TRANSLATOR_ENGINE = "nllb"
 
-    @patch("yaml.safe_load")
     @patch("builtins.open", new_callable=mock_open)
     @patch("os.path.exists", return_value=True)
-    def test_load_full_config(self, mock_exists, mock_file, mock_yaml):
+    def test_load_full_config(self, mock_exists, mock_file):
+        fake_yaml = MagicMock()
+        fake_yaml.YAMLError = ValueError
+
         # Return dict directly, bypassing parser
-        mock_yaml.return_value = {
+        fake_yaml.safe_load.return_value = {
             "debug_logging": True,
-            "target_languages": {
-                "de": {"code": "deu_Latn", "label": "German"}
-            },
+            "target_languages": {"de": {"code": "deu_Latn", "label": "German"}},
             "whisper": {
                 "model_size": "medium",
                 "language": "en",
                 "use_vocal_separation": False,
                 "use_prompt": True,
                 "custom_prompt": "Smart prompt",
-                "custom_prompt_priority": True
+                "custom_prompt_priority": True,
             },
-            "hallucinations": {
-                "silence_threshold": 0.5,
-                "repetition_threshold": 10,
-                "known_phrases": ["bad phrase"]
-            },
-            "models": {
-                "nllb": "facebook/nllb-distilled",
-                "audio_separator": "custom.ckpt"
-            },
-            "nllb": {
-                "num_beams": 3,
-                "length_penalty": 0.8
-            },
-            "vad": {
-                "min_silence_duration_ms": 300
-            },
-            "performance": {
-                "whisper_beam": 2,
-                "nllb_batch": 16
-            }
+            "hallucinations": {"silence_threshold": 0.5, "repetition_threshold": 10, "known_phrases": ["bad phrase"]},
+            "models": {"nllb": "facebook/nllb-distilled", "audio_separator": "custom.ckpt"},
+            "nllb": {"num_beams": 3, "length_penalty": 0.8},
+            "vad": {"min_silence_duration_ms": 300},
+            "performance": {"whisper_beam": 2, "nllb_batch": 16},
         }
 
         optimizer = MagicMock()
         optimizer.config = {}
         log = MagicMock()
 
-        res = config.load_config(optimizer, log)
+        with patch("modules.config._get_yaml_module", return_value=fake_yaml):
+            res = config.load_config(optimizer, log)
 
         self.assertTrue(res)
         self.assertTrue(config.DEBUG_LOGGING)
@@ -89,12 +77,19 @@ class TestConfig(unittest.TestCase):
         # Should have populated defaults
         self.assertIn("es", config.TARGET_LANGUAGES)
 
-    @patch("yaml.safe_load", side_effect=Exception("YAML Error"))
     @patch("builtins.open", new_callable=mock_open)
     @patch("os.path.exists", return_value=True)
-    def test_load_config_invalid(self, mock_exists, mock_file, mock_yaml):
+    def test_load_config_invalid(self, mock_exists, mock_file):
+        class FakeYAMLError(Exception):
+            pass
+
+        fake_yaml = MagicMock()
+        fake_yaml.YAMLError = FakeYAMLError
+        fake_yaml.safe_load.side_effect = FakeYAMLError("YAML Error")
+
         log = MagicMock()
-        res = config.load_config(MagicMock(), log)
+        with patch("modules.config._get_yaml_module", return_value=fake_yaml):
+            res = config.load_config(MagicMock(), log)
         self.assertFalse(res)
         log.assert_called_with(unittest.mock.ANY, "ERROR")
 

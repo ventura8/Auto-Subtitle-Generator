@@ -1,8 +1,16 @@
+"""Transcription pipeline and vocal-separation orchestration."""
 
+import gc
+import math
 import os
 import sys
 import time
-import math
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
 from modules import config, utils
 from modules.utils import log
 from modules.models import OPTIMIZER
@@ -10,7 +18,7 @@ from modules.models import OPTIMIZER
 
 def _get_separated_vocal_path(video_path):
     """Internal helper to determine vocal separation output path."""
-    target_dir = os.path.dirname(video_path)
+    target_dir = os.path.abspath(os.path.dirname(video_path))
     base_name = os.path.splitext(os.path.basename(video_path))[0]
     # Audio-Separator naming: {base_name}_(Vocals)_...
     try:
@@ -59,16 +67,17 @@ def _detect_and_separate_vocals(video_path, model_mgr):
         log("  [Task 0/4] Separating Vocals (BS-Roformer)...")
         audio_input_path = utils.extract_clean_audio(video_path)
 
-        separator = model_mgr.get_separator()
+        target_dir = os.path.abspath(os.path.dirname(video_path))
+        separator = model_mgr.get_separator(output_dir=target_dir)
         output_files = separator.separate(audio_input_path)
 
-        vocal_file = _process_separator_outputs(output_files, os.path.dirname(video_path))
+        vocal_file = _process_separator_outputs(output_files, target_dir)
 
         if vocal_file and os.path.exists(vocal_file):
             log(f"  [Sep] Vocal track isolated: {os.path.basename(vocal_file)}")
             return vocal_file
 
-    except Exception as e:
+    except (RuntimeError, OSError) as e:
         log(f"  [Sep] Warning: Separation failed ({e}). Using original audio.", "WARNING")
 
     return video_path
@@ -110,18 +119,19 @@ def _process_transcription_segments(segments_gen, total_dur, start_time):
 
         # fast-whisper segments usually have 'avg_logprob'
         # standard openai-whisper segments also have 'avg_logprob'
-        prob = math.exp(segment.avg_logprob) if hasattr(segment, 'avg_logprob') else 1.0
+        prob = math.exp(segment.avg_logprob) if hasattr(segment, "avg_logprob") else 1.0
 
         ts_start = utils.format_timestamp(segment.start)
         ts_end = utils.format_timestamp(segment.end)
         print(f"[{ts_start}->{ts_end}] ({prob:.0%}) {segment.text.strip()}")
 
         utils.print_progress_bar(
-            segment.end, total_dur,
+            segment.end,
+            total_dur,
             prefix="  [Whisper] Transcribing",
             timestamp_str=f"{utils.format_timestamp(segment.end)} / {utils.format_timestamp(total_dur)}",
             speed=speed,
-            eta=eta
+            eta=eta,
         )
     return segments
 
@@ -149,14 +159,13 @@ def _perform_transcription(whisper_model, path, prompt, lang, vad_params):
             vad_parameters=vad_params,
             language=lang,
             condition_on_previous_text=True,
-            no_speech_threshold=0.6
+            no_speech_threshold=0.6,
         )
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
             log("  [Whisper] OOM detected. Clearing cache and retrying...", "WARNING")
-            import torch
-            import gc
-            torch.cuda.empty_cache()
+            if torch is not None:
+                torch.cuda.empty_cache()
             gc.collect()
             time.sleep(1)
             return whisper_model.transcribe(
@@ -167,24 +176,13 @@ def _perform_transcription(whisper_model, path, prompt, lang, vad_params):
                 vad_parameters=vad_params,
                 language=lang,
                 condition_on_previous_text=True,
-                no_speech_threshold=0.6
+                no_speech_threshold=0.6,
             )
-        raise e
+        raise
 
 
-def transcribe_video_audio(video_path, model_mgr, forced_lang=None, forced_prompt=None):
-    """Runs Whisper transcription on the video (or vocal track)."""
-    # 1. Prepare Audio
-    transcribe_path = _prepare_audio(video_path, model_mgr)
-
-    # 2. Transcribe
-    log(f"  [Task 1/4] Transcribing '{os.path.basename(transcribe_path)}'...")
-    whisper_model = model_mgr.get_whisper()
-
-    current_prompt = forced_prompt if forced_prompt else config.INITIAL_PROMPT
-    lang_to_use = forced_lang if forced_lang else config.FORCED_LANGUAGE
-
-    # Log configuration details as requested
+def _log_transcription_config(lang_to_use, current_prompt):
+    """Log the language and prompt configuration used for transcription."""
     if lang_to_use:
         log(f"  [Whisper] Config: Forced Language='{lang_to_use}'")
     else:
@@ -195,56 +193,70 @@ def transcribe_video_audio(video_path, model_mgr, forced_lang=None, forced_promp
     else:
         log("  [Whisper] Config: No Input Prompt")
 
+
+def _finalize_transcription(segments, info, start_time):
+    """Finalize Whisper output, filter segments, and free model resources."""
+    elapsed = time.time() - start_time
+    utils.print_progress_bar(
+        info.duration,
+        info.duration,
+        prefix="  [Whisper] Transcribing",
+        elapsed=elapsed,
+        speed=info.duration / elapsed if elapsed > 0 else 1.0,
+    )
+
+    filtered_segments, hallucinated_count = _filter_hallucinations(
+        segments,
+        config.HALLUCINATION_PHRASES,
+    )
+    if hallucinated_count > 0:
+        log(f"  [Whisper] Filtered {hallucinated_count} hallucinated segments.", "WARNING")
+
+    detected_lang = info.language
+    probability = info.language_probability
+    log(f"  [Whisper] Detected Language: {detected_lang} (Conf: {probability:.2f})")
+    if probability < 0.4:
+        log(f"  [Warning] Low language confidence ({probability:.2f}).", "WARNING")
+
+    filtered_segments.sort(key=lambda segment: segment.start)
+    return filtered_segments, detected_lang
+
+
+def transcribe_video_audio(video_path, model_mgr, forced_lang=None, forced_prompt=None):
+    """Runs Whisper transcription on the video (or vocal track)."""
+    # 1. Prepare Audio
+    transcribe_path = _prepare_audio(video_path, model_mgr)
+
+    # 2. Transcribe
+    log(f"  [Task 1/4] Transcribing '{os.path.basename(transcribe_path)}'...")
+    current_prompt = forced_prompt if forced_prompt else config.INITIAL_PROMPT
+    lang_to_use = forced_lang if forced_lang else config.FORCED_LANGUAGE
+
+    _log_transcription_config(lang_to_use, current_prompt)
+
     start_time = time.time()
 
     try:
-        vad_params = dict(
-            threshold=0.35,
-            min_silence_duration_ms=500,
-            speech_pad_ms=500
+        whisper_model = model_mgr.get_whisper()
+        vad_params = {
+            "threshold": 0.35,
+            "min_silence_duration_ms": 500,
+            "speech_pad_ms": 500,
+        }
+
+        segments_gen, info = _perform_transcription(whisper_model, transcribe_path, current_prompt, lang_to_use, vad_params)
+
+        segments = _process_transcription_segments(segments_gen, info.duration, start_time)
+
+        segments, detected_lang = _finalize_transcription(
+            segments,
+            info,
+            start_time,
         )
-
-        segments_gen, info = _perform_transcription(
-            whisper_model, transcribe_path, current_prompt, lang_to_use, vad_params
-        )
-
-        total_dur = info.duration
-        log(f"  [Whisper] Detected Language: {info.language} (Probability: {info.language_probability:.2%})")
-
-        # Extracted loop call
-        segments = _process_transcription_segments(segments_gen, total_dur, start_time)
-
-        # Ensure final state
-        elapsed = time.time() - start_time
-        utils.print_progress_bar(
-            total_dur, total_dur,
-            prefix="  [Whisper] Transcribing",
-            elapsed=elapsed,
-            speed=total_dur / elapsed if elapsed > 0 else 1.0
-        )
-
-        # --- HALLUCINATION FILTERING ---
-        segments, hallucinated_count = _filter_hallucinations(segments, config.HALLUCINATION_PHRASES)
-
-        if hallucinated_count > 0:
-            log(f"  [Whisper] Filtered {hallucinated_count} hallucinated segments.", "WARNING")
-
-        detected_lang = info.language
-        prob = info.language_probability
-
-        log(f"  [Whisper] Detected Language: {detected_lang} (Conf: {prob:.2f})")
-
-        if prob < 0.4:
-            log(f"  [Warning] Low language confidence ({prob:.2f}).", "WARNING")
-
-        # Offload Whisper to free VRAM for NLLB
-        model_mgr.offload_whisper()
-
-        # CRITICAL: Sort segments to prevent out-of-order SRT corruption
-        segments.sort(key=lambda s: s.start)
-
         return segments, detected_lang, transcribe_path
 
-    except Exception as e:
+    except (RuntimeError, OSError, ValueError) as e:
         log(f"Transcription failed: {e}", "ERROR")
-        raise e
+        raise
+    finally:
+        model_mgr.offload_whisper()

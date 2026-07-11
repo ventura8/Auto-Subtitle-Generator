@@ -12,7 +12,11 @@ if _root not in sys.path:
 class TestModels(unittest.TestCase):
     def setUp(self):
         global models
-        from modules import models
+        from modules import models, config
+
+        prev_engine = config.TRANSLATOR_ENGINE
+        self.addCleanup(setattr, config, "TRANSLATOR_ENGINE", prev_engine)
+        config.TRANSLATOR_ENGINE = "nllb"
 
     def test_system_optimizer_init(self):
         opt = models.SystemOptimizer()
@@ -37,6 +41,7 @@ class TestModels(unittest.TestCase):
     def test_detect_hardware_cpu(self, mock_is_avail):
         # psutil already mocked globally in conftest.py
         import psutil
+
         psutil.virtual_memory.return_value.total = 8 * 1024 * 1024 * 1024
         opt = models.SystemOptimizer()
         opt.detect_hardware(verbose=False)

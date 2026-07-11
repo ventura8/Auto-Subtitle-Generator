@@ -5,8 +5,8 @@
 
 # **Auto Subtitle Generator (RTX 5090 & Ryzen 9950X3D Optimized)**
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-![Coverage](assets/badge.svg)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+![Coverage](assets/coverage.svg)
 
 A high-performance, **100% Local AI pipeline** designed to restore, transcribe, and translate video subtitles completely offline.  
 This project is engineered for "Bleeding Edge" hardware (NVIDIA RTX 50-series + AMD Ryzen 9000 series), featuring **Automatic Hardware Detection** to maximize performance on any system.
@@ -59,7 +59,7 @@ The system automatically selects one of the following profiles based on your det
 
 This application is built with specific optimizations for high-end hardware but remains backward compatible.
 
-*   **App Engine:** Python 3.10+ Native w/ PyTorch Nightly (CUDA 12.6+).
+*   **App Engine:** Python 3.12+ Native w/ PyTorch Stable (CUDA 12.8).
 *   **CPU Optimization:** 
     *   **Ryzen 9000 Series (9950X3D):** Detects core count and assigns one FFmpeg thread per core minus OS overhead.
     *   **Instruction Sets:** AVX2/AVX512 optimizations enabled for PyTorch CPU operations.
@@ -72,7 +72,10 @@ This application is built with specific optimizations for high-end hardware but 
 ### **3. Full GPU AI Processing**
 
 *   **Transcription:** Faster-Whisper (Large-v3) running natively on CUDA.
-*   **Translation:** NLLB-200-3.3B model running in FP16 on the GPU.
+*   **Translation:** Configurable engine via `config.yaml`:
+*   `nllb` (default, fast and stable; uses NLLB batch translation flow)
+*   `translategemma` (higher quality, high VRAM requirement; does not use NLLB worker-batch lifecycle assumptions)
+*   **Engine lifecycle note:** `nllb` caches a single translator model instance per video and applies batched all-language translation in one lifecycle; `translategemma` follows its own generation lifecycle and does not reuse the NLLB batch-worker model-loading path.
 
 ### **4. VHS Audio Restoration**
 
@@ -102,10 +105,13 @@ Generates subtitles simultaneously for a vast array of languages, organized by g
 
 *   **Atomic Saves:** Subtitles are saved to disk *immediately* after each individual language is translated, preventing data loss if the process is interrupted.
 *   **Intelligent Skip:** 
-    *   Automatically skips videos that already have a final `_multilang.mkv` output.
+    *   Automatically skips videos that already have a final `_multilang` output for the same container extension.
     *   Skips individual languages if a valid `.srt` file already exists.
     *   Verifies SRT integrity before skipping (re-processes empty or corrupted files).
-*   **Batching & Caching:** The NLLB model is loaded **once** per video (in a separate process) to translate all 30+ languages, eliminating repetitive loading times.
+*   **Batching & Caching (NLLB only):** The NLLB model is loaded **once** per video (in a separate process) to translate all 30+ languages, eliminating repetitive loading times.
+*   **TranslateGemma lifecycle:** Translation runs through the TranslateGemma generation flow and does not use NLLB's single-worker batch cache lifecycle.
+*   **Per-File Summary Metrics:** At the end of each file, the pipeline prints total processing speed, media duration, and elapsed processing time.
+*   **Batch Summary Metrics:** For multi-file runs, the pipeline prints aggregate counts/speed plus a per-file stats list (status, media duration, elapsed, speed).
 
 ## **🚀 Processing Pipeline**
 
@@ -127,14 +133,14 @@ graph TD
 
     subgraph Step4 ["Step 4 — AI Translation (Isolated)"]
         S1 --> OFF["Offload Whisper & UVR<br/>(Free VRAM)"]
-        OFF --> N["NLLB-200<br/>(Single Model Load)"]
-        N -- "Batch Loop" --> T["Translate All Langs"]
+        OFF --> N["Translator Engine<br/>(Single Model Load)"]
+        N -- "Batch Loop + Optional Pivot" --> T["Translate All Langs"]
         T -- "Real-time" --> S2["Save Individual SRTs"]
     end
 
     subgraph Step5 ["Step 5 — Final Muxing"]
         S2 --> MUX["FFmpeg Muxer<br/>(Embed All Subtitles)"]
-        MUX --> OUT["Final MKV"]
+        MUX --> OUT["Final _multilang (same container)"]
     end
 ```
 
@@ -142,14 +148,14 @@ graph TD
 
 *   **OS:** Windows 10/11 (64-bit)
 *   **GPU:** NVIDIA RTX 3000/4000/5000 Series (Recommended).
-*   **Python:** 3.10 or newer.
+*   **Python:** 3.12 or newer.
 
 ## **📦 Installation**
 
 1.  **Clone the repository.**
 2.  Run the Installer:
     Double-click `install_dependencies.ps1`.
-    *   Automatically fetches **PyTorch Nightly** (CUDA 12.6+) required for RTX 50-series support.
+    *   Automatically fetches **PyTorch Stable** (CUDA 12.8) required for RTX 50-series support.
     *   Installs FFmpeg and all necessary AI libraries.
 
 
@@ -173,7 +179,28 @@ The script will produce:
 *   `video.ro.srt` (Original Language)
 *   `video.en.srt` (English Translation)
 *   ...and so on for all configured languages.
-*   `video_multilang.mkv` (Final video with all subtitles embedded).
+*   `video_multilang.<input_extension>` (Final video with all subtitles embedded using the same container as input).
+
+At the end of each processed file, the script also prints:
+*   `Total processing speed`
+*   `Media duration`
+*   `Elapsed`
+
+When processing multiple files, the script additionally prints:
+*   `Batch Summary` (total files, succeeded/no-speech/failed, media duration, elapsed, total speed)
+*   `Batch Files` list (per-file status, media duration, elapsed, speed)
+
+## **✅ Local Quality Gate**
+
+Run the full local validation pipeline:
+
+```powershell
+.\run_local_pipeline.ps1
+```
+
+This step validates linting and tests, enforces coverage threshold, and regenerates coverage artifacts.
+
+Coverage is enforced at **at least 90%** (`--cov-fail-under=90`).
 
 ## **⚙️ Customization**
 

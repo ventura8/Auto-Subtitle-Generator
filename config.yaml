@@ -127,7 +127,7 @@ target_languages:
   # Nordic & Others
   da: {code: "dan_Latn", label: "Danish"}
   fi: {code: "fin_Latn", label: "Finnish"}
-  no: {code: "nob_Latn", label: "Norwegian"}
+  "no": {code: "nob_Latn", label: "Norwegian"}
   bg: {code: "bul_Cyrl", label: "Bulgarian"}
   hr: {code: "hrv_Latn", label: "Croatian"}
   sr: {code: "srp_Cyrl", label: "Serbian"}
@@ -139,6 +139,27 @@ target_languages:
   he: {code: "heb_Hebr", label: "Hebrew"}
   fa: {code: "pes_Arab", label: "Persian"}
  
+# -----------------------------------------------------------------------------
+# Translation Engine
+# -----------------------------------------------------------------------------
+# Determines which engine to use for translating subtitles.
+# Available Options:
+# - "translategemma"  (Use Google TranslateGemma-12B. Highest translation quality/flow,
+#                      but requires high VRAM to load (~24GB in bfloat16).
+#                      Recommended for RTX 3090/4090 or high-end GPUs.
+#                      NOTE: This is a GATED model. You must accept the model's agreement on Hugging Face
+#                      and log in locally (via HF_TOKEN environment variable or huggingface-cli) to access it.)
+# - "nllb"            (Use Facebook NLLB-200. Very fast seq2seq architecture with
+#                      significantly lower VRAM requirements (1-10GB depending on model size).
+#                      Recommended fallback for lower-spec GPUs or CPU-only systems. No login required. - Default)
+translation:
+  engine: "nllb"
+
+# Hugging Face Access Token: Required to access gated models like TranslateGemma.
+# Generate yours at: https://huggingface.co/settings/tokens
+# If set to null, the app will check the HF_TOKEN environment variable or prompt on startup.
+hf_token: null
+
 # -----------------------------------------------------------------------------
 # NLLB Translation Quality Settings
 # -----------------------------------------------------------------------------
@@ -186,6 +207,14 @@ file_types:
 # -----------------------------------------------------------------------------
 # Specific model IDs or paths for the AI components.
 models:
+  # TranslateGemma Translation Model (HuggingFace ID)
+  # Available Options:
+  # - "google/translategemma-12b-it" (Standard 12B instruction-tuned model. Demands ~24GB VRAM. - Default)
+  # - "google/translategemma-4b-it"  (Smaller 4B variant. Lower VRAM usage than 12B.)
+  # - "google/translategemma-27b-it" (Largest variant. Highest quality, highest VRAM usage.)
+  # Note: These are GATED models. Access requires accepting model conditions on Hugging Face.
+  translategemma: "google/translategemma-12b-it"
+
   # NLLB Translation Model (HuggingFace ID)
   # Available Options:
   # - "facebook/nllb-200-3.3B"            (High quality, slower, ~8-10GB VRAM)

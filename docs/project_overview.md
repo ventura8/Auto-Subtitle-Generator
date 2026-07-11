@@ -12,13 +12,16 @@ The application is a high-performance, 100% local AI pipeline that processes vid
 .
 ├── auto_subtitle.py            # Main entry point and orchestrator
 ├── config.yaml                 # User configuration
+├── pyproject.toml              # Poetry project/dependency configuration
+├── run_local_pipeline.ps1      # Local quality gate (lint + tests + coverage)
 ├── modules/                    # Core logic and AI models
 │   ├── __init__.py
 │   ├── config.py               # Internal configuration & constants
-│   ├── models.py               # AI model wrappers (Whisper, NLLB) & Optimizer
+│   ├── models.py               # AI model wrappers (Whisper, NLLB, TranslateGemma) & Optimizer
 │   ├── utils.py                # Logging, FFmpeg, and file utilities
-│   └── isolated_translator.py  # Isolated worker process for NLLB translation
+│   └── isolated_translator.py  # Isolated worker process for translation jobs and pivot flow
 ├── docs/                       # Technical documentation
+│   └── releases/               # Versioned release notes
 ├── tests/                      # Pytest suite
 └── assets/                     # Logos and media
 ```

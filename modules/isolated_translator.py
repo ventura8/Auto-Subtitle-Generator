@@ -1,92 +1,230 @@
+"""Isolated translation worker entrypoint and batch helpers."""
+
 import sys
 import os
 import json
 import traceback
 import time
+import gc
+import tempfile
+import warnings
+from modules import config, utils
+from modules.models import ModelManager, OPTIMIZER, log
 
-# Ensure the root directory is in sys.path for internal module imports
-_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
+try:
+    import torch
+except ImportError:
+    torch = None
 
-from modules.models import ModelManager, OPTIMIZER, log  # noqa: E402
-from modules import config, utils  # noqa: E402
+warnings.filterwarnings("ignore", category=UserWarning, message=".*expandable_segments not supported.*")
+warnings.filterwarnings("ignore", message=".*The following generation flags are not valid.*")
+
+PIVOT_ERROR_TYPES = (
+    OSError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+    KeyError,
+    json.JSONDecodeError,
+)
+
+MAIN_FATAL_ERROR_TYPES = (
+    RuntimeError,
+    OSError,
+    ValueError,
+    TypeError,
+    KeyError,
+    json.JSONDecodeError,
+)
 
 
-def run_translation_worker(input_file, output_file, src_lang, tgt_lang, batch_size, lang_label, prefix_str):
-    """Executes the translation job in isolation."""
-    # 1. Load Data
-    with open(input_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+def _build_progress_values(current_audio_time, total_dur, start_real):
+    """Calculate progress-bar timing values for the current batch."""
+    elapsed = time.time() - start_real
+    speed = current_audio_time / elapsed if elapsed > 0 else 0
+    eta = (total_dur - current_audio_time) / speed if speed > 0 else 0
+    timestamp = f"{utils.format_timestamp(current_audio_time)} / {utils.format_timestamp(total_dur)}"
+    return speed, eta, timestamp
 
-    log(f"[Isolation] Loaded {len(data)} segments.", level="DEBUG")
 
-    # 2. Init Model (Fresh Environment)
+def _log_batch_texts(batch_items, batch_texts, translated_texts):
+    """Log source and target strings for a translated batch."""
+    for item, src_text, tgt_text in zip(batch_items, batch_texts, translated_texts):
+        timestamp = utils.format_timestamp(item["start"])
+        log(f"  [{timestamp}] SRC: {src_text}")
+        log(f"  [{timestamp}] TGT: {tgt_text}")
+
+
+def _cleanup_intermediate_memory(has_more_batches):
+    """Collect memory between translation batches when more work remains."""
+    if has_more_batches:
+        gc.collect()
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
+def _build_worker_runtime(batch_size):
+    """Load config and create the translator runtime for a worker process."""
     config.load_config(OPTIMIZER, log)
     OPTIMIZER.detect_hardware(verbose=False)
+    resolved_batch_size = batch_size if batch_size > 0 else OPTIMIZER.config["nllb_batch"]
+    translator = ModelManager().get_nllb()
+    return resolved_batch_size, translator
 
-    # If batch_size arg is provided and > 0, we can use it,
-    # otherwise we use the optimizer's dynamic value.
-    if batch_size <= 0:
-        batch_size = OPTIMIZER.config["nllb_batch"]
 
-    log(f"[Isolation] PID: {os.getpid()} | Batch Size: {batch_size} (Dynamic Scaling)")
-    manager = ModelManager()
-    translator = manager.get_nllb()
+def _save_worker_output(output_file, translations):
+    """Persist translated worker output to disk."""
+    output_dir = os.path.dirname(output_file) or "."
+    fd, temp_path = tempfile.mkstemp(dir=output_dir)
+    os.close(fd)
+    with open(temp_path, "w", encoding="utf-8") as temp_handle:
+        json.dump(translations, temp_handle, ensure_ascii=False, indent=2)
+    os.replace(temp_path, output_file)
 
-    # 3. Process in Batches
+
+def _save_job_translations(output_file, translations, data):
+    """Atomically persist per-job translations to disk."""
+    if len(translations) != len(data):
+        while len(translations) < len(data):
+            translations.append("Translation Error")
+
+    output_dir = os.path.dirname(output_file) or "."
+    fd, temp_save_path = tempfile.mkstemp(dir=output_dir)
+    os.close(fd)
+    with open(temp_save_path, "w", encoding="utf-8") as temp_handle:
+        json.dump(translations, temp_handle, ensure_ascii=False)
+    os.replace(temp_save_path, output_file)
+
+
+def _wait_for_parent_to_consume_output(output_file, lang):
+    """Wait briefly for the parent process to consume a job output file."""
+    wait_start = time.time()
+    while os.path.exists(output_file):
+        time.sleep(0.05)
+        if time.time() - wait_start > 10:
+            log(f"[Isolation] Warning: Parent timed out consuming {lang} output.", "WARNING")
+            break
+
+
+def _load_segments(input_file):
+    """Load serialized subtitle segments from disk."""
+    with open(input_file, "r", encoding="utf-8") as file_handle:
+        return json.load(file_handle)
+
+
+def _build_worker_job(*worker_args):
+    """Normalize the legacy worker argument tuple into a mapping."""
+    keys = (
+        "input_file",
+        "output_file",
+        "src_lang",
+        "tgt_lang",
+        "batch_size",
+        "lang_label",
+        "prefix_str",
+    )
+    return dict(zip(keys, worker_args))
+
+
+def _run_worker_batches(data, translator, batch_size, job_config):
+    """Process all worker batches and return translated strings."""
     translations = []
-    total = len(data)
     total_dur = data[-1]["end"] if data else 0
     start_real = time.time()
 
-    for i in range(0, total, batch_size):
-        batch_items = data[i: i + batch_size]
+    for batch_start in range(0, len(data), batch_size):
+        batch_items = data[batch_start : batch_start + batch_size]
         batch_texts = [item["text"] for item in batch_items]
         current_audio_time = batch_items[-1]["end"]
 
-        try:
-            # Run Translation
-            res = translator.translate(batch_texts, src_lang, tgt_lang)
-            translations.extend(res)
+        translated_texts = _translate_batch_chunk(
+            translator,
+            batch_texts,
+            job_config["src_lang"],
+            job_config["tgt_lang"],
+        )
+        translations.extend(translated_texts)
+        speed, eta, timestamp = _build_progress_values(
+            current_audio_time,
+            total_dur,
+            start_real,
+        )
 
-            # Update progress bar
-            elapsed = time.time() - start_real
-            # Speed is audio-seconds per real-second
-            speed = current_audio_time / elapsed if elapsed > 0 else 0
-            eta = (total_dur - current_audio_time) / speed if speed > 0 else 0
-            ts_str = f"{utils.format_timestamp(current_audio_time)} / {utils.format_timestamp(total_dur)}"
+        if translated_texts:
+            _log_batch_texts(batch_items, batch_texts, translated_texts)
 
-            # Professional Format: Full Text + Timestamps
-            if res:
-                for item, src_text, tgt_text in zip(batch_items, batch_texts, res):
-                    ts = utils.format_timestamp(item["start"])
-                    log(f"  [{ts}] SRC: {src_text}")
-                    log(f"  [{ts}] TGT: {tgt_text}")
+        utils.print_progress_bar(
+            current_audio_time,
+            total_dur,
+            prefix=job_config["prefix_str"],
+            timestamp_str=timestamp,
+            speed=speed,
+            eta=eta,
+        )
 
-            utils.print_progress_bar(
-                current_audio_time, total_dur,
-                prefix=prefix_str,
-                timestamp_str=ts_str,
-                speed=speed,
-                eta=eta
+        _cleanup_intermediate_memory(batch_start + batch_size < len(data))
+
+    return translations
+
+
+def _run_job_batches(data, translator, job_config):
+    """Process all manifest-driven translation batches for a job."""
+    batch_texts = [item["text"] for item in data]
+    batch_size = OPTIMIZER.config["nllb_batch"]
+    translations = []
+    total_dur = data[-1]["end"] if data else 0
+    start_real = time.time()
+
+    for batch_start in range(0, len(batch_texts), batch_size):
+        chunk = batch_texts[batch_start : batch_start + batch_size]
+        translations.extend(
+            _translate_batch_chunk(
+                translator,
+                chunk,
+                job_config["src_code"],
+                job_config["tgt_code"],
             )
+        )
+        current_idx = min(batch_start + batch_size, len(data))
+        current_audio_time = data[current_idx - 1]["end"]
+        speed, eta, timestamp = _build_progress_values(
+            current_audio_time,
+            total_dur,
+            start_real,
+        )
+        utils.print_progress_bar(
+            current_audio_time,
+            total_dur,
+            prefix=job_config["prefix_str"],
+            timestamp_str=timestamp,
+            speed=speed,
+            eta=eta,
+        )
+        _cleanup_intermediate_memory(batch_start + batch_size < len(batch_texts))
 
-            # Aggressive Cleanup to prevent Shared RAM spillover
-            # The driver might page out fragmentary memory if we don't clear it.
-            if i + batch_size < total:  # Don't need to do it on the very last one
-                import gc
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+    return translations
 
-        except Exception as e:
-            log(f"[Isolation] Batch Failed: {e}")
-            raise e
 
-    # 4. Save Output
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(translations, f, ensure_ascii=False, indent=2)
+def run_translation_worker(*worker_args):
+    """Executes the translation job in isolation."""
+    job_config = _build_worker_job(*worker_args)
+    data = _load_segments(job_config["input_file"])
+
+    log(
+        f"[Isolation] Loaded {len(data)} segments for {job_config['lang_label']}.",
+        level="DEBUG",
+    )
+
+    batch_size, translator = _build_worker_runtime(job_config["batch_size"])
+
+    log(f"[Isolation] PID: {os.getpid()} | Batch Size: {batch_size} (Dynamic Scaling)")
+    try:
+        translations = _run_worker_batches(data, translator, batch_size, job_config)
+    except (RuntimeError, ValueError) as e:
+        log(f"[Isolation] Batch Failed: {e}")
+        raise
+
+    _save_worker_output(job_config["output_file"], translations)
 
     log("[Isolation] Success. Worker exiting.", level="DEBUG")
 
@@ -95,108 +233,98 @@ def _translate_batch_chunk(translator, chunk, src_code, tgt_code):
     """Refactored helper for inference."""
     try:
         return translator.translate(chunk, src_code, tgt_code)
-    except Exception as batch_err:
+    except (RuntimeError, ValueError, OSError) as batch_err:
         log(f"    [Batch Error] Chunk failed: {batch_err}", "ERROR")
         return ["Translation Error"] * len(chunk)
 
 
 def _process_single_job(job, idx, total_jobs, translator):
     """Helper to process a single translation job within the batch."""
-    # ... (Setup vars)
-    lang = job["lang"]
-    label = job.get("label", lang)
-    tgt_code = job["tgt_code"]
-    input_file = job["input"]
-    output_file = job["output"]
-    src_code = job.get("src_code")
-
-    log(f"[Isolation] Job {idx + 1}/{total_jobs}: {label} ({tgt_code})")
+    lang = job.get("lang", "<unknown>")
 
     try:
-        with open(input_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        label = job.get("label", lang)
+        job_config = {
+            "lang": lang,
+            "label": label,
+            "tgt_code": job["tgt_code"],
+            "input_file": job["input"],
+            "output_file": job["output"],
+            "src_code": job.get("src_code"),
+            "prefix_str": f"  [Translate {idx + 1}/{total_jobs}] {label} ({job['tgt_code']})",
+        }
 
-        # Reconstruct batch texts
-        batch_texts = [item["text"] for item in data]
-        batch_size = OPTIMIZER.config["nllb_batch"]
-        translations = []
+        log(f"[Isolation] Job {idx + 1}/{total_jobs}: {label} ({job_config['tgt_code']})")
 
-        total_dur = data[-1]["end"] if data else 0
-        start_real = time.time()
+        data = _load_segments(job_config["input_file"])
+        translations = _run_job_batches(data, translator, job_config)
+        _save_job_translations(job_config["output_file"], translations, data)
+        _wait_for_parent_to_consume_output(job_config["output_file"], lang)
 
-        for i in range(0, len(batch_texts), batch_size):
-            chunk = batch_texts[i: i + batch_size]
-
-            # Helper call
-            res = _translate_batch_chunk(translator, chunk, src_code, tgt_code)
-            translations.extend(res)
-
-            # Progress Logic
-            current_idx = min(i + batch_size, len(data))
-            current_audio_time = data[current_idx - 1]["end"]
-            elapsed = time.time() - start_real
-            speed = current_audio_time / elapsed if elapsed > 0 else 0
-            eta = (total_dur - current_audio_time) / speed if speed > 0 else 0
-
-            prefix_str = f"  [Translate {idx + 1}/{total_jobs}] {label} ({tgt_code})"
-            utils.print_progress_bar(
-                current_audio_time, total_dur,
-                prefix=prefix_str,
-                timestamp_str=f"{utils.format_timestamp(current_audio_time)} / {utils.format_timestamp(total_dur)}",
-                speed=speed,
-                eta=eta
-            )
-
-        # ... (Rest of function: Pad, Save, Sync)
-        # Pad if mismatch
-        if len(translations) != len(data):
-            while len(translations) < len(data):
-                translations.append("[Translation Error]")
-
-        # Atomic Save
-        temp_save_path = output_file + ".tmp"
-        with open(temp_save_path, 'w', encoding='utf-8') as f:
-            json.dump(translations, f, ensure_ascii=False)
-
-        if os.path.exists(output_file):
-            os.remove(output_file)
-        os.rename(temp_save_path, output_file)
-
-        # Sync Handshake
-        wait_start = time.time()
-        while os.path.exists(output_file):
-            time.sleep(0.05)
-            if time.time() - wait_start > 10:
-                log(f"[Isolation] Warning: Parent timed out consuming {lang} output.", "WARNING")
-                break
-
-        # Cleanup Memory
-        del translations
-        del data
-        del batch_texts
-
-    except Exception as e:
+    except (OSError, json.JSONDecodeError, RuntimeError, ValueError, KeyError) as e:
         log(f"[Isolation] Job {lang} failed: {e}", "ERROR")
         return
-
-    # Aggressive Cleanup
-    import gc
-    gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
+    finally:
+        # Aggressive Cleanup
+        gc.collect()
+        if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
-    except ImportError:
-        pass
+
+
+def _build_pivot_source_data(data, translations):
+    """Build segment dictionaries from pivot translations."""
+    pivot_data = []
+    for translated_text, item in zip(translations, data):
+        pivot_data.append(
+            {
+                "text": translated_text,
+                "start": item["start"],
+                "end": item["end"],
+            }
+        )
+    return pivot_data
+
+
+def _run_pivot_phase(pivot_job, translator):
+    """Run optional pivot translation before target jobs."""
+    if not pivot_job:
+        return
+
+    try:
+        data = _load_segments(pivot_job["input"])
+        if not data:
+            return
+
+        log("[Isolation] Running pivot pass in batch worker...")
+        job_config = {
+            "src_code": pivot_job["src_code"],
+            "tgt_code": pivot_job["tgt_code"],
+            "prefix_str": "  [Translate Pivot] English",
+        }
+        translations = _run_job_batches(data, translator, job_config)
+        pivot_data = _build_pivot_source_data(data, translations)
+        output_path = pivot_job["output"]
+        output_dir = os.path.dirname(output_path) or "."
+        fd, temp_path = tempfile.mkstemp(dir=output_dir)
+        os.close(fd)
+        with open(temp_path, "w", encoding="utf-8") as temp_handle:
+            json.dump(pivot_data, temp_handle, ensure_ascii=False, indent=2)
+        os.replace(temp_path, output_path)
+
+        if pivot_job.get("emit_en_output") and pivot_job.get("en_output"):
+            _save_job_translations(pivot_job["en_output"], translations, data)
+    except PIVOT_ERROR_TYPES as e:
+        log(f"[Isolation] Pivot phase failed: {e}", "ERROR")
 
 
 def run_batch_translation_worker(manifest_path):
     """Executes multiple translation jobs with a single model load."""
-    with open(manifest_path, 'r', encoding='utf-8') as f:
+    with open(manifest_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
 
     jobs = manifest.get("jobs", [])
-    if not jobs:
+    pivot_job = manifest.get("pivot")
+    if not jobs and not pivot_job:
         log("[Isolation] No jobs in manifest. Exiting.")
         return
 
@@ -207,6 +335,8 @@ def run_batch_translation_worker(manifest_path):
 
     manager = ModelManager()
     translator = manager.get_nllb()
+
+    _run_pivot_phase(pivot_job, translator)
 
     # 2. Process Each Job
     for idx, job in enumerate(jobs):
@@ -224,7 +354,7 @@ def _run_legacy_mode():
             "  python isolated_translator.py input.json output.json src tgt "
             "batch_size label [step_current step_total]"
         )
-        sys.exit(1)
+        return sys.exit(1)
 
     input_file = sys.argv[1]
     output_file = sys.argv[2]
@@ -241,16 +371,13 @@ def _run_legacy_mode():
 
     log("[Isolation] Starting Translation Worker...", level="INFO")
 
-    run_translation_worker(
-        input_file, output_file, src_lang, tgt_lang, batch_size, lang_label, prefix_str
-    )
+    return run_translation_worker(input_file, output_file, src_lang, tgt_lang, batch_size, lang_label, prefix_str)
 
 
 def main():
+    """CLI entrypoint for isolated translation worker."""
     try:
         utils.init_console()
-        global torch
-        import torch
 
         # Mode 1: Batch Mode (Manifest)
         if len(sys.argv) == 3 and sys.argv[1] == "--batch":
@@ -261,7 +388,7 @@ def main():
         # Mode 2: Legacy Single Mode
         _run_legacy_mode()
 
-    except Exception as e:
+    except MAIN_FATAL_ERROR_TYPES as e:
         log(f"[Isolation] FATAL ERROR: {e}")
         traceback.print_exc()
         sys.exit(1)
