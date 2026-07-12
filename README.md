@@ -59,7 +59,7 @@ The system automatically selects one of the following profiles based on your det
 
 This application is built with specific optimizations for high-end hardware but remains backward compatible.
 
-*   **App Engine:** Python 3.12+ Native w/ PyTorch Stable (CUDA 12.8).
+*   **App Engine:** Python 3.12.x Native w/ PyTorch Stable (CUDA 13.2).
 *   **CPU Optimization:** 
     *   **Ryzen 9000 Series (9950X3D):** Detects core count and assigns one FFmpeg thread per core minus OS overhead.
     *   **Instruction Sets:** AVX2/AVX512 optimizations enabled for PyTorch CPU operations.
@@ -148,14 +148,14 @@ graph TD
 
 *   **OS:** Windows 10/11 (64-bit)
 *   **GPU:** NVIDIA RTX 3000/4000/5000 Series (Recommended).
-*   **Python:** 3.12 or newer.
+*   **Python:** 3.12.x only.
 
 ## **📦 Installation**
 
 1.  **Clone the repository.**
 2.  Run the Installer:
     Double-click `install_dependencies.ps1`.
-    *   Automatically fetches **PyTorch Stable** (CUDA 12.8) required for RTX 50-series support.
+    *   Automatically fetches **PyTorch Stable** (CUDA 13.2) required for RTX 50-series support.
     *   Installs FFmpeg and all necessary AI libraries.
 
 

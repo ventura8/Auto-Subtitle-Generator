@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import os
 import sys
 import importlib
+import tempfile
 
 # Ensure modules can be imported
 _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -146,6 +147,69 @@ class TestCoverageModels(unittest.TestCase):
     def test_normalize_translategemma_lang_code(self):
         self.assertEqual(models._normalize_translategemma_lang_code("no"), "nb")
         self.assertEqual(models._normalize_translategemma_lang_code("fi"), "fi")
+
+    def test_ensure_cuda13_cublas_compat_alias_creates_cublas12(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cublas13 = os.path.join(temp_dir, "cublas64_13.dll")
+            cublas12 = os.path.join(temp_dir, "cublas64_12.dll")
+            with open(cublas13, "wb") as handle:
+                handle.write(b"cuda13")
+
+            with patch("modules.models.log") as mock_log:
+                models._ensure_cuda13_cublas_compat_alias([temp_dir])
+
+            self.assertTrue(os.path.exists(cublas12))
+            self.assertTrue(mock_log.called)
+
+    def test_ensure_cuda13_cublas_compat_alias_skips_when_cublas12_exists(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cublas13 = os.path.join(temp_dir, "cublas64_13.dll")
+            cublas12 = os.path.join(temp_dir, "cublas64_12.dll")
+
+            with open(cublas13, "wb") as handle:
+                handle.write(b"cuda13")
+            with open(cublas12, "wb") as handle:
+                handle.write(b"cuda12")
+
+            with patch("modules.models.log") as mock_log:
+                models._ensure_cuda13_cublas_compat_alias([temp_dir])
+
+            with open(cublas12, "rb") as handle:
+                self.assertEqual(handle.read(), b"cuda12")
+            self.assertFalse(mock_log.called)
+
+    def test_prepare_whisper_cuda13_runtime_success(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            site_packages = os.path.join(temp_root, "Lib", "site-packages")
+            torch_lib = os.path.join(site_packages, "torch", "lib")
+            os.makedirs(torch_lib, exist_ok=True)
+
+            with open(os.path.join(torch_lib, "cublas64_13.dll"), "wb") as handle:
+                handle.write(b"cuda13")
+
+            with (
+                patch("modules.models.sys.prefix", temp_root),
+                patch("modules.models.ctypes.CDLL") as mock_cdll,
+                patch("modules.models.log"),
+                patch.dict(os.environ, {"PATH": ""}, clear=False),
+            ):
+                models._prepare_whisper_cuda13_runtime()
+                self.assertIn(torch_lib, os.environ.get("PATH", ""))
+
+            self.assertTrue(os.path.exists(os.path.join(torch_lib, "cublas64_12.dll")))
+            mock_cdll.assert_called_with("cublas64_13.dll")
+
+    def test_prepare_whisper_cuda13_runtime_raises_when_missing_cublas13(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            site_packages = os.path.join(temp_root, "Lib", "site-packages")
+            torch_lib = os.path.join(site_packages, "torch", "lib")
+            os.makedirs(torch_lib, exist_ok=True)
+
+            with patch("modules.models.sys.prefix", temp_root):
+                with self.assertRaises(RuntimeError) as err:
+                    models._prepare_whisper_cuda13_runtime()
+
+            self.assertIn("cublas64_13.dll", str(err.exception))
 
     def test_nllb_translator_load_lazy(self):
         # Test the lazy import logic
@@ -377,6 +441,26 @@ class TestCoverageModels(unittest.TestCase):
             }
             result = mm.get_whisper()
             self.assertIs(result, mock_model)
+
+    def test_model_manager_get_whisper_prepares_cuda13_runtime(self):
+        mm = models.ModelManager()
+        mock_model = MagicMock()
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+        with (
+            patch("modules.models._get_faster_whisper_components", return_value=(mock_whisper_cls, MagicMock())),
+            patch("modules.models._prepare_whisper_cuda13_runtime") as mock_prepare,
+            patch("modules.models.OPTIMIZER") as mock_opt,
+            patch("modules.models.log"),
+        ):
+            mock_opt.config = {
+                "device": "cuda",
+                "whisper_compute": "float16",
+                "whisper_workers": 1,
+                "whisper_batch_size": 1,
+            }
+            result = mm.get_whisper()
+            self.assertIs(result, mock_model)
+            mock_prepare.assert_called_once()
 
     def test_model_manager_get_separator(self):
         mm = models.ModelManager()

@@ -17,19 +17,19 @@ jobs:
     name: "🔍 Static Quality Verification"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Setup Poetry Environment
+        uses: ./.github/actions/setup-poetry-env
         with:
-          python-version: '3.12'
-      - name: Install Poetry
+          python-version: '3.12.13'
+          poetry-version: ${{ env.POETRY_VERSION }}
+      - name: Run PowerShell Lint
+        shell: pwsh
         run: |
-          pip install "poetry==${POETRY_VERSION}"
-      - name: Install Dev Dependencies
-        run: |
-          poetry install --only dev --no-root
+          $scriptPaths = @("./install_dependencies.ps1", "./run_local_pipeline.ps1")
+          & ./.github/scripts/Invoke-PowerShellLint.ps1 -ScriptPaths $scriptPaths
       - name: Run Ruff
         run: |
           poetry run ruff check .
@@ -45,19 +45,14 @@ jobs:
     needs: static_analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Setup Poetry Environment
+        uses: ./.github/actions/setup-poetry-env
         with:
-          python-version: '3.12'
-      - name: Install Poetry
-        run: |
-          pip install "poetry==${POETRY_VERSION}"
-      - name: Install Test Environment
-        run: |
-          poetry install --only dev --no-root
+          python-version: '3.12.13'
+          poetry-version: ${{ env.POETRY_VERSION }}
       - name: Run Tests with Coverage
         run: |
           poetry run pytest --cov=auto_subtitle --cov=modules --cov-branch --cov-report=xml --cov-report=json --cov-report=term --cov-fail-under=90 tests/
@@ -71,7 +66,7 @@ jobs:
           poetry run coverage report --include=modules/translation.py --fail-under=90 -m
           poetry run coverage report --include=modules/utils.py --fail-under=90 -m
       - name: Upload Coverage Artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: coverage-artifacts
           path: |
@@ -84,21 +79,16 @@ jobs:
     needs: technical_validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Setup Poetry Environment
+        uses: ./.github/actions/setup-poetry-env
         with:
-          python-version: '3.12'
-      - name: Install Poetry
-        run: |
-          pip install "poetry==${POETRY_VERSION}"
-      - name: Install Reporting Dependencies
-        run: |
-          poetry install --only dev --no-root
+          python-version: '3.12.13'
+          poetry-version: ${{ env.POETRY_VERSION }}
       - name: Download Coverage Artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: coverage-artifacts
       - name: Generate Badge and Summary

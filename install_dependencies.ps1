@@ -1,10 +1,12 @@
 # Sets up the environment for auto_subtitle.py
 # Optimization: RTX 5090 / CUDA 12.8 Stable
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+$InformationPreference = "Continue"
 
 Set-Location -Path $PSScriptRoot
 
-Write-Host "=== Setting up Auto-Subtitle Generator Environment (RTX 5090 Ready) ===" -ForegroundColor Cyan
+Write-Information "=== Setting up Auto-Subtitle Generator Environment (RTX 5090 Ready) ==="
 
 function Invoke-CheckedCommand {
     param(
@@ -14,22 +16,25 @@ function Invoke-CheckedCommand {
 
     & $Executable @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Command failed: $Executable $($Arguments -join ' ')"
+        throw "Command failed with exit code ${LASTEXITCODE}: $Executable $($Arguments -join ' ')"
     }
 }
 
 # 1. Check for Python
 try {
     $pyVersion = python --version 2>&1
-    Write-Host "Found Python: $pyVersion" -ForegroundColor Green
+    Write-Information "Found Python: $pyVersion"
 }
 catch {
     Write-Warning "Python not found in PATH."
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "Attempting to install Python 3.12..." -ForegroundColor Cyan
+        Write-Information "Attempting to install Python 3.12..."
         try {
             winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
-            Write-Host "`n[!] Python installed. Please restart script." -ForegroundColor Yellow
+            if ($LASTEXITCODE -ne 0) {
+                throw "Winget failed to install Python 3.12."
+            }
+            Write-Information "`n[!] Python installed. Please restart script."
             exit
         }
         catch { Write-Error "Winget failed to install Python." }
@@ -38,9 +43,9 @@ catch {
 }
 
 # 2. Create Virtual Environment
-Write-Host "`nStep 2: Setting up Python Virtual Environment..." -ForegroundColor Yellow
+Write-Information "`nStep 2: Setting up Python Virtual Environment..."
 if (-not (Test-Path "$PSScriptRoot\.venv\Scripts\python.exe")) {
-    Write-Host "Creating virtual environment..."
+    Write-Information "Creating virtual environment..."
     $resolvedPyVersion = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to resolve Python interpreter version."
@@ -57,10 +62,10 @@ if (-not (Test-Path "$PSScriptRoot\.venv\Scripts\python.exe")) {
     }
 
     Invoke-CheckedCommand "python" @("-m", "venv", ".venv")
-    Write-Host "Created virtual environment." -ForegroundColor Green
+    Write-Information "Created virtual environment."
 }
 else {
-    Write-Host "Virtual environment already exists." -ForegroundColor Green
+    Write-Information "Virtual environment already exists."
 }
 
 $VenvPy = "$PSScriptRoot\.venv\Scripts\python.exe"
@@ -85,7 +90,7 @@ if ($venvVersion -ge $maxVersionExclusive) {
 }
 
 # 3. Check for FFmpeg (Local Install)
-Write-Host "`nStep 3: Setting up Local FFmpeg (Full Build)..." -ForegroundColor Yellow
+Write-Information "`nStep 3: Setting up Local FFmpeg (Full Build)..."
 $ffmpegDir = "$PSScriptRoot\.venv\ffmpeg"
 $ffmpegBin = "$ffmpegDir\bin\ffmpeg.exe"
 
@@ -95,10 +100,10 @@ if (-not (Test-Path $ffmpegBin)) {
         $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
         $ffmpegZip = "$PSScriptRoot\ffmpeg.zip"
         
-        Write-Host "Downloading FFmpeg (Master Latest Win64 GPL ZIP)..." -ForegroundColor Cyan
+        Write-Information "Downloading FFmpeg (Master Latest Win64 GPL ZIP)..."
         Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip -UserAgent "NativeHost"
         
-        Write-Host "Extracting FFmpeg..." -ForegroundColor Cyan
+        Write-Information "Extracting FFmpeg..."
         # Extract to venv root temporarily; it creates a subfolder like 'ffmpeg-master-latest-win64-gpl'
         Expand-Archive -Path $ffmpegZip -DestinationPath "$PSScriptRoot\.venv" -Force
         
@@ -110,7 +115,7 @@ if (-not (Test-Path $ffmpegBin)) {
             Rename-Item -Path $extractedDir.FullName -NewName "ffmpeg"
         }
         
-        Write-Host "FFmpeg installed locally in venv." -ForegroundColor Green
+        Write-Information "FFmpeg installed locally in venv."
     }
     catch {
         Write-Error "Failed to download or install FFmpeg: $_"
@@ -122,31 +127,93 @@ if (-not (Test-Path $ffmpegBin)) {
     }
 }
 else {
-    Write-Host "Local FFmpeg already exists." -ForegroundColor Green
+    Write-Information "Local FFmpeg already exists."
 }
 
 # 4. Install Dependencies
-Write-Host "`nStep 4: Installing Dependencies via Poetry..." -ForegroundColor Yellow
+Write-Information "`nStep 4: Installing Dependencies via Poetry..."
 
 try {
+    $setupPhase = "Upgrading pip"
     Invoke-CheckedCommand $VenvPy @("-m", "pip", "install", "--upgrade", "pip")
 
-    Write-Host "Installing Poetry in the virtual environment..." -ForegroundColor Cyan
+    $setupPhase = "Installing Poetry"
+    Write-Information "Installing Poetry in the virtual environment..."
     Invoke-CheckedCommand $VenvPy @("-m", "pip", "install", "poetry")
 
-    Write-Host "Configuring Poetry and installing runtime dependencies..." -ForegroundColor Cyan
+    $setupPhase = "Configuring Poetry"
+    Write-Information "Configuring Poetry and installing runtime dependencies..."
     Invoke-CheckedCommand $VenvPy @("-m", "poetry", "config", "--local", "virtualenvs.in-project", "true")
     Invoke-CheckedCommand $VenvPy @("-m", "poetry", "config", "--local", "virtualenvs.create", "false")
-    Invoke-CheckedCommand $VenvPy @("-m", "poetry", "-v", "install", "--only", "main")
 
-    Write-Host "Dependencies installed successfully." -ForegroundColor Green
+    $lockPath = Join-Path $PSScriptRoot "poetry.lock"
+    if (-not (Test-Path $lockPath)) {
+        $setupPhase = "Generating poetry.lock"
+        Write-Information "poetry.lock not found. Resolving dependencies once to generate lockfile..."
+        Invoke-CheckedCommand $VenvPy @("-m", "poetry", "lock", "--no-interaction")
+    }
+    else {
+        Write-Information "Using existing poetry.lock (skip dependency resolve)."
+    }
+
+    # Use install instead of sync here to avoid uninstalling Poetry from the same environment mid-command.
+    $setupPhase = "Installing runtime dependencies"
+    Invoke-CheckedCommand $VenvPy @("-m", "poetry", "install", "--no-root", "--only", "main", "--no-interaction")
+
+    $setupPhase = "CUDA 13 runtime validation"
+    Write-Information "Validating CUDA 13 BLAS runtime for Faster-Whisper..."
+    $gpuValidationCode = @'
+import ctypes
+import glob
+import os
+import sys
+
+base = os.path.join(sys.prefix, "Lib", "site-packages")
+candidate_dirs = [
+    os.path.join(base, "torch", "lib"),
+    os.path.join(base, "nvidia", "cu13", "bin"),
+    os.path.join(base, "nvidia", "cublas", "bin"),
+    os.path.join(base, "nvidia", "cudnn", "bin"),
+]
+
+for path in candidate_dirs:
+    if not os.path.isdir(path):
+        continue
+    os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):
+        try:
+            os.add_dll_directory(path)
+        except OSError:
+            pass
+
+ctypes.CDLL("cublas64_13.dll")
+from faster_whisper import WhisperModel
+model = WhisperModel("large-v3", device="cuda", compute_type="float16", num_workers=1)
+print("FW_CUDA13_OK")
+del model
+'@
+    $gpuValidationScript = Join-Path $env:TEMP ("validate_fw_cuda13_" + [guid]::NewGuid().ToString("N") + ".py")
+    try {
+        Set-Content -Path $gpuValidationScript -Value $gpuValidationCode -Encoding UTF8
+        Invoke-CheckedCommand $VenvPy @($gpuValidationScript)
+    }
+    finally {
+        if (Test-Path $gpuValidationScript) {
+            Remove-Item $gpuValidationScript -Force
+        }
+    }
+
+    Write-Information "Dependencies installed successfully."
 }
 catch {
-    Write-Error "Failed to install dependencies. Error details: $_"
+    Write-Error "Failed during setup phase '$setupPhase'. Error details: $_"
+    if ($setupPhase -eq "CUDA 13 runtime validation") {
+        Write-Error "CUDA 13 validation failed. Ensure the CUDA 13 torch + cublas stack is installed in .venv."
+    }
 }
 
 # 5. Create Start Batch File
-Write-Host "`nStep 5: Updating Launcher..." -ForegroundColor Yellow
+Write-Information "`nStep 5: Updating Launcher..."
 $batContent = @"
 @echo off
 set PATH=%~dp0.venv\ffmpeg\bin;%PATH%
@@ -156,6 +223,6 @@ pause
 "@
 Set-Content "start.bat" $batContent
 
-Write-Host "`n=== Installation Complete! ===" -ForegroundColor Green
-Write-Host "Run 'start.bat' to use the tool."
+Write-Information "`n=== Installation Complete! ==="
+Write-Information "Run 'start.bat' to use the tool."
 # Read-Host

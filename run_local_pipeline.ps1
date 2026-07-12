@@ -2,6 +2,7 @@ param()
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$InformationPreference = "Continue"
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $repoRoot
@@ -17,7 +18,7 @@ function Invoke-Step {
         [scriptblock]$Action
     )
 
-    Write-Host "==> $Name" -ForegroundColor Cyan
+    Write-Information "==> $Name"
     & $Action
 }
 
@@ -39,12 +40,12 @@ function Invoke-PoetryCommand {
     Invoke-CheckedCommand $VenvPy (@("-m", "poetry") + $Arguments)
 }
 
-function Ensure-Poetry {
+function Initialize-Poetry {
     try {
         Invoke-PoetryCommand @("--version")
     }
     catch {
-        Write-Host "Poetry was not found. Installing Poetry..." -ForegroundColor Yellow
+        Write-Information "Poetry was not found. Installing Poetry..."
         Invoke-CheckedCommand $VenvPy @("-m", "pip", "install", "poetry")
         Invoke-PoetryCommand @("--version")
     }
@@ -55,11 +56,18 @@ $failureMessage = $null
 
 try {
     Invoke-Step "Install Poetry" {
-        Ensure-Poetry
+        Initialize-Poetry
     }
 
     Invoke-Step "Install dev dependencies" {
-        Invoke-PoetryCommand @("-v", "install", "--only", "dev", "--no-root")
+        Invoke-PoetryCommand @("install", "-v", "--only", "dev", "--no-root")
+    }
+
+    Invoke-Step "Run PowerShell lint" {
+        & "$repoRoot\.github\scripts\Invoke-PowerShellLint.ps1" -ScriptPaths @(
+            "$repoRoot\install_dependencies.ps1",
+            "$repoRoot\run_local_pipeline.ps1"
+        )
     }
 
     Invoke-Step "Run Ruff" {
@@ -107,7 +115,7 @@ try {
         )
 
         foreach ($coverageFile in $coverageFiles) {
-            Write-Host "   -> Checking $coverageFile" -ForegroundColor DarkCyan
+            Write-Information "   -> Checking $coverageFile"
             Invoke-PoetryCommand @(
                 "run",
                 "coverage",
@@ -123,13 +131,13 @@ try {
 catch {
     $pipelineFailed = $true
     $failureMessage = $_.Exception.Message
-    Write-Host $failureMessage -ForegroundColor Red
+    Write-Error $failureMessage -ErrorAction Continue
 }
 
 try {
     Invoke-Step "Generate coverage badge and summary" {
         if ($pipelineFailed) {
-            Write-Host "Skipping badge generation because a previous pipeline step failed." -ForegroundColor Yellow
+            Write-Information "Skipping badge generation because a previous pipeline step failed."
             return
         }
 
@@ -143,11 +151,11 @@ try {
 catch {
     $pipelineFailed = $true
     $failureMessage = $_.Exception.Message
-    Write-Host $failureMessage -ForegroundColor Red
+    Write-Error $failureMessage -ErrorAction Continue
 }
 
 if ($pipelineFailed) {
     exit 1
 }
 
-Write-Host "Local pipeline completed successfully." -ForegroundColor Green
+Write-Information "Local pipeline completed successfully."

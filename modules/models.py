@@ -1,9 +1,12 @@
 """Models module for Auto Subtitle Generator."""
 
+import ctypes
 import gc
 import importlib
 import multiprocessing
 import os
+import shutil
+import sys
 import warnings
 
 from . import config
@@ -98,6 +101,71 @@ def _get_separator_class():
     if separator_module is None:
         return None
     return getattr(separator_module, "Separator", None)
+
+
+def _prepare_whisper_cuda13_runtime():
+    """Ensure CUDA 13 BLAS DLL is discoverable before Faster-Whisper GPU init."""
+    site_packages = os.path.join(sys.prefix, "Lib", "site-packages")
+    candidate_paths = [
+        os.path.join(site_packages, "torch", "lib"),
+        os.path.join(site_packages, "nvidia", "cu13", "bin"),
+        os.path.join(site_packages, "nvidia", "cublas", "bin"),
+        os.path.join(site_packages, "nvidia", "cudnn", "bin"),
+    ]
+
+    raw_path = os.environ.get("PATH", "")
+    known = {os.path.normcase(os.path.normpath(entry)) for entry in raw_path.split(os.pathsep) if entry}
+
+    for path in candidate_paths:
+        if not os.path.isdir(path):
+            continue
+
+        normalized = os.path.normcase(os.path.normpath(path))
+        if normalized not in known:
+            os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
+            known.add(normalized)
+
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(path)
+            except OSError:
+                pass
+
+    _ensure_cuda13_cublas_compat_alias(candidate_paths)
+
+    try:
+        ctypes.CDLL("cublas64_13.dll")
+    except OSError as e:
+        raise RuntimeError(
+            "CUDA 13 BLAS runtime missing for Faster-Whisper GPU mode: cublas64_13.dll not loadable. "
+            "Run install_dependencies.ps1 to repair the CUDA 13 runtime stack."
+        ) from e
+
+
+def _ensure_cuda13_cublas_compat_alias(candidate_paths):
+    """Create a local cublas64_12 alias to CUDA 13 BLAS for CT2 compatibility."""
+    dll12 = "cublas64_12.dll"
+    dll13 = "cublas64_13.dll"
+
+    for path in candidate_paths:
+        if os.path.exists(os.path.join(path, dll12)):
+            return
+
+    for path in candidate_paths:
+        source = os.path.join(path, dll13)
+        target = os.path.join(path, dll12)
+        if not os.path.exists(source) or os.path.exists(target):
+            continue
+
+        try:
+            shutil.copy2(source, target)
+            log(
+                "[Whisper] Added CUDA BLAS compatibility alias cublas64_12.dll -> cublas64_13.dll",
+                "WARNING",
+            )
+            return
+        except OSError:
+            continue
 
 
 def _disable_default_max_length(model):
@@ -738,6 +806,8 @@ class ModelManager:
             whisper_model_cls, batched_pipeline_cls = _get_faster_whisper_components()
             if whisper_model_cls is None or batched_pipeline_cls is None:
                 raise RuntimeError("faster_whisper is not installed")
+            if OPTIMIZER.config.get("device") == "cuda":
+                _prepare_whisper_cuda13_runtime()
             model = whisper_model_cls(
                 config.WHISPER_MODEL_SIZE,
                 device=OPTIMIZER.config["device"],
