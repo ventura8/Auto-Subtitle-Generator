@@ -255,10 +255,15 @@ def _cleanup_temp_files(temp_files):
 
 def _run_worker_process(worker_context):
     """Spawns and manages the isolated translation worker process."""
-    cmd = [sys.executable, os.path.join("modules", "isolated_translator.py"), "--batch", worker_context["manifest_path"]]
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    worker_path = os.path.join(project_root, "modules", "isolated_translator.py")
+    cmd = [sys.executable, worker_path, "--batch", worker_context["manifest_path"]]
 
     env = os.environ.copy()
     env["IS_SUBPROCESS"] = "1"
+    # Ensure subprocess can import modules by adding project root to PYTHONPATH
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = project_root if not existing_pythonpath else project_root + os.pathsep + existing_pythonpath
     with subprocess.Popen(cmd, env=env) as proc:
         utils.register_subprocess(proc)
 

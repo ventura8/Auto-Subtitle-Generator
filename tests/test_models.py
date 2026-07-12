@@ -39,10 +39,6 @@ class TestModels(unittest.TestCase):
 
     @patch("torch.cuda.is_available", return_value=False)
     def test_detect_hardware_cpu(self, mock_is_avail):
-        # psutil already mocked globally in conftest.py
-        import psutil
-
-        psutil.virtual_memory.return_value.total = 8 * 1024 * 1024 * 1024
         opt = models.SystemOptimizer()
         opt.detect_hardware(verbose=False)
         self.assertEqual(opt.profile, "CPU_ONLY")

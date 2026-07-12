@@ -21,27 +21,6 @@ sys.modules["transformers"] = m_transformers
 sys.modules["faster_whisper"] = MagicMock()
 sys.modules["audio_separator"] = MagicMock()
 sys.modules["audio_separator.separator"] = MagicMock()
-sys.modules["librosa"] = MagicMock()
-sys.modules["soundfile"] = MagicMock()
-sys.modules["fastdtw"] = MagicMock()
-
-# Globally block real subprocesses
-m_sub = MagicMock()
-m_sub.Popen.return_value.wait.return_value = 0
-m_sub.Popen.return_value.returncode = 0
-m_sub.Popen.return_value.stderr.readline.return_value = ""
-m_sub.Popen.return_value.poll.return_value = 0
-m_sub.Popen.return_value.communicate.return_value = (b"", b"")
-sys.modules["subprocess"] = m_sub
-
-# Patch multiprocessing and psutil for numeric hardware defaults
-m_mp = MagicMock()
-m_mp.cpu_count.return_value = 8
-sys.modules["multiprocessing"] = m_mp
-
-m_ps = MagicMock()
-m_ps.virtual_memory.return_value.total = 16 * 1024**3
-sys.modules["psutil"] = m_ps
 
 # Cross-platform mocks for Linux CI
 if sys.platform != "win32":

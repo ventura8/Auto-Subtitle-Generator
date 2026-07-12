@@ -17,50 +17,112 @@ jobs:
     name: "🔍 Static Quality Verification"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
+
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.3.0
         with:
-          python-version: '3.12'
+          python-version: "3.12.13"
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+            poetry.lock
+
       - name: Install Poetry
         run: |
-          pip install "poetry==${POETRY_VERSION}"
-      - name: Install Dev Dependencies
+          python -m pip install "poetry==${{ env.POETRY_VERSION }}"
+
+      - name: Configure Poetry In-Project Virtualenv
         run: |
-          poetry install --only dev --no-root
+          poetry config virtualenvs.in-project true
+
+      - name: Ensure Poetry lockfile is fresh
+        run: |
+          if [ ! -f poetry.lock ]; then
+            echo "poetry.lock not found. Generating lockfile..."
+            poetry lock --no-interaction
+          elif ! poetry check >/dev/null 2>&1; then
+            echo "poetry.lock is out of date. Regenerating lockfile..."
+            poetry lock --no-interaction
+            poetry check
+          fi
+
+      - name: Install Test Dependencies (main + dev, no ml)
+        run: |
+          poetry install -v --only main,dev --no-root
+
+      - name: Run PowerShell Lint
+        shell: pwsh
+        run: |
+          $scriptPaths = @("./install_dependencies.ps1", "./run_local_pipeline.ps1")
+          & ./.github/scripts/Invoke-PowerShellLint.ps1 -ScriptPaths $scriptPaths
+
+      - name: Run Markdown auto-delinter (mdformat)
+        run: |
+          poetry run mdformat README.md AGENTS.md docs .github
+
+      - name: Run Markdown linter (pymarkdown)
+        run: |
+          poetry run pymarkdown scan README.md AGENTS.md docs .github
+
       - name: Run Ruff
         run: |
-          poetry run ruff check .
+          poetry run ruff check modules auto_subtitle.py tests
+
       - name: Run Flake8
         run: |
-          poetry run flake8 modules auto_subtitle.py
+          poetry run flake8 modules auto_subtitle.py tests
+
       - name: Run Pylint
         run: |
           poetry run pylint modules auto_subtitle.py
 
   technical_validation:
     name: "🧪 Automated Pipeline Validation"
-    needs: static_analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
+
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.3.0
         with:
-          python-version: '3.12'
+          python-version: "3.12.13"
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+            poetry.lock
+
       - name: Install Poetry
         run: |
-          pip install "poetry==${POETRY_VERSION}"
-      - name: Install Test Environment
+          python -m pip install "poetry==${{ env.POETRY_VERSION }}"
+
+      - name: Configure Poetry In-Project Virtualenv
         run: |
-          poetry install --only dev --no-root
+          poetry config virtualenvs.in-project true
+
+      - name: Ensure Poetry lockfile is fresh
+        run: |
+          if [ ! -f poetry.lock ]; then
+            echo "poetry.lock not found. Generating lockfile..."
+            poetry lock --no-interaction
+          elif ! poetry check >/dev/null 2>&1; then
+            echo "poetry.lock is out of date. Regenerating lockfile..."
+            poetry lock --no-interaction
+            poetry check
+          fi
+
+      - name: Install Test Dependencies (main + dev, no ml)
+        run: |
+          poetry install -v --only main,dev --no-root
+
       - name: Run Tests with Coverage
         run: |
           poetry run pytest --cov=auto_subtitle --cov=modules --cov-branch --cov-report=xml --cov-report=json --cov-report=term --cov-fail-under=90 tests/
+
       - name: Enforce Per-File Coverage >= 90%
         run: |
           poetry run coverage report --include=auto_subtitle.py --fail-under=90 -m
@@ -70,8 +132,9 @@ jobs:
           poetry run coverage report --include=modules/transcription.py --fail-under=90 -m
           poetry run coverage report --include=modules/translation.py --fail-under=90 -m
           poetry run coverage report --include=modules/utils.py --fail-under=90 -m
+
       - name: Upload Coverage Artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: coverage-artifacts
           path: |
@@ -81,26 +144,50 @@ jobs:
 
   quality_reporting:
     name: "📊 Analytics & Coverage Reporting"
-    needs: technical_validation
+    needs: [static_analysis, technical_validation]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
+
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.3.0
         with:
-          python-version: '3.12'
+          python-version: "3.12.13"
+          cache: "pip"
+          cache-dependency-path: |
+            pyproject.toml
+            poetry.lock
+
       - name: Install Poetry
         run: |
-          pip install "poetry==${POETRY_VERSION}"
-      - name: Install Reporting Dependencies
+          python -m pip install "poetry==${{ env.POETRY_VERSION }}"
+
+      - name: Configure Poetry In-Project Virtualenv
         run: |
-          poetry install --only dev --no-root
+          poetry config virtualenvs.in-project true
+
+      - name: Ensure Poetry lockfile is fresh
+        run: |
+          if [ ! -f poetry.lock ]; then
+            echo "poetry.lock not found. Generating lockfile..."
+            poetry lock --no-interaction
+          elif ! poetry check >/dev/null 2>&1; then
+            echo "poetry.lock is out of date. Regenerating lockfile..."
+            poetry lock --no-interaction
+            poetry check
+          fi
+
+      - name: Install Test Dependencies (main + dev, no ml)
+        run: |
+          poetry install -v --only main,dev --no-root
+
       - name: Download Coverage Artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: coverage-artifacts
+
       - name: Generate Badge and Summary
         run: |
           poetry run python tests/transform_metrics.py coverage.xml assets/coverage.svg

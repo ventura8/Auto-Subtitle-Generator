@@ -1,10 +1,10 @@
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "auto-subtitle-generator"
-version = "1.1.0"
+version = "1.1.1"
 description = "Auto-Subtitle Generator using Faster Whisper and optional Translation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -21,30 +21,37 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.13"
-torch = { version = "*", source = "pytorch-cu128", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
-torchvision = { version = "*", source = "pytorch-cu128", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
-torchaudio = { version = "*", source = "pytorch-cu128", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
-faster-whisper = "^1.2.1"
-transformers = "^5.0.0"
-sentencepiece = "^0.2.1"
-accelerate = "^1.12.0"
-nvidia-cudnn-cu12 = "^9.18.1"
-nvidia-cublas-cu12 = "12.8.4.1"
-audio-separator = { version = "^0.41.1", extras = ["gpu"] }
 pyyaml = "^6.0.3"
 
+[tool.poetry.group.ml]
+optional = true
+
+[tool.poetry.group.ml.dependencies]
+torch = { version = "2.13.0", source = "pytorch-cu132", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
+torchvision = { version = "0.28.0", source = "pytorch-cu132", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
+torchaudio = { version = "2.11.0", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
+faster-whisper = "^1.2.1"
+transformers = "^5.13.1"
+sentencepiece = "^0.2.2"
+accelerate = "^1.14.0"
+nvidia-cudnn-cu13 = { version = "9.24.0.43", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
+nvidia-cublas = { version = "13.2.2.2", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
+audio-separator = { version = "^0.44.3", extras = ["gpu"] }
+
 [tool.poetry.group.dev.dependencies]
-pytest = "^9.0.2"
-pytest-cov = "^7.0.0"
-mypy = "*"
-radon = "*"
-pylint = "*"
-flake8 = "*"
-ruff = "*"
+pytest = "^9.1.1"
+pytest-cov = "^7.1.0"
+mypy = "^2.2.0"
+radon = "^6.0.1"
+pylint = "^4.0.6"
+flake8 = "^7.3.0"
+ruff = "^0.15.21"
+mdformat = "^1.0.0"
+pymarkdownlnt = "^0.9.39"
 
 [[tool.poetry.source]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 priority = "explicit"
 
 [tool.ruff]

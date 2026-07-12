@@ -61,7 +61,7 @@ def print_banner(optimizer=None):
  /_/   \_\__,_|\__\___/  |____/ \__,_|_.__/  \__|_|\__\___|
 """
     print("=" * 60)
-    print("   AI HYBRID VHS AUDIO RESTORER - v1.1.0")
+    print("   AI HYBRID VHS AUDIO RESTORER - v1.1.1")
     print(f"   Running on: {os_info}")
     print("=" * 60 + "\n")
 

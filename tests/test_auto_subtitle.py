@@ -19,9 +19,8 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         from modules import config, models
         import modules.translation as translation
 
-        # Link globals to centralized mocks
+        # Link globals to centralized heavy-dependency mocks
         auto_subtitle.torch = sys.modules["torch"]
-        auto_subtitle.subprocess = sys.modules["subprocess"]
 
         # Reset any global state in config/models for isolation
         config.USE_VOCAL_SEPARATION = True
