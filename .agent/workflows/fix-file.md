@@ -9,21 +9,20 @@ This workflow is designed to resolve coding issues in a specific file by priorit
 ## Steps
 
 ### 1. Fix Linting Issues
-Always use `autopep8` to resolve simple PEP 8 violations automatically before running checks.
+Use the repository quality stack directly. Do not rely on one-shot auto-fixers that bypass project rules.
 - **Priority**: Finish all lint fixes before moving to tests.
 - **Goal**: Zero linting errors.
 
 ```powershell
-# Turbo fix lints
-autopep8 --in-place --recursive .
-
-# Verify remaining issues
-flake8 <path_to_file> --count --max-line-length=127 --statistics
+poetry run ruff format <path_to_file>
+poetry run ruff check <path_to_file>
+poetry run flake8 <path_to_file>
+poetry run pylint <path_to_file>
 ```
 
 ### 2. Run Tests & Coverage
 Once linting is clean, execute relevant tests with coverage.
-- **Requirement**: Use `./run_tests_with_coverage.ps1` to ensure coverage is captured.
+- **Requirement**: Use `./run_local_pipeline.ps1` for full repository validation.
 - **Single Pass**: If tests fail, analyze the failures and apply fixes immediately.
 
 ### 3. Cross-Platform Compatibility (Mocks)
@@ -36,9 +35,13 @@ After tests pass, check the coverage report.
 - **Badge**: Always generate/update the coverage badge after a successful test run.
 
 ```powershell
-# Run tests and generate report
-./run_tests_with_coverage.ps1
+# Full local gate
+./run_local_pipeline.ps1
 ```
+
+### 5. Suppressions and Security
+- **No suppressions**: never introduce `# noqa`, `# type: ignore`, or warning-ignore filters.
+- **Security**: ensure `bandit -c pyproject.toml -q -r auto_subtitle.py modules -lll -iii` and `pip-audit` pass.
 
 > [!IMPORTANT]
 > Always verify that the coverage percentage in the summary is ≥ 90%. If it drops, add missing tests for the file being touched.

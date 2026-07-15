@@ -30,12 +30,20 @@ this project. Adherence to these rules is mandatory.
 ## 3. 🧹 Code Quality (Zero Tolerance)
 
 - **Complexity Limit**: Cyclomatic Complexity MUST be **< 10**.
-  - ❌ DO NOT use `# noqa: C901`. Refactor the function instead.
+  - ❌ DO NOT use suppression patterns (`# noqa`, `# type: ignore`, warning
+    filter ignores, or ignore-based config knobs). Refactor or type/fix code
+    instead.
 - **Linting**:
+  - ✅ Enforce suppression policy with
+    `python tests/tools/check_no_suppressions.py`.
   - ✅ Run `ruff format --check .` for formatting verification.
   - ✅ Verify with `ruff check .` (must enforce cyclomatic complexity **< 10**
-    via C90), `flake8 modules auto_subtitle.py --max-complexity=10`, and
-    `pylint modules`.
+    via C90 with max complexity 9),
+    `flake8 modules auto_subtitle.py --max-complexity=9`,
+    `pylint modules`, `pylint tests --errors-only`, and
+    the repository test suite.
+  - ✅ Run security checks with `bandit -q -r auto_subtitle.py modules -lll -iii`
+    and `pip-audit`.
   - ✅ Use `run_local_pipeline.ps1` as the canonical local quality gate.
 
 ## 4. ⚡ High-Performance Standards
@@ -62,10 +70,12 @@ ______________________________________________________________________
 
 ## 📚 Detailed Documentation Index
 
-- [Project Overview & Directory Structure](docs/project_overview.md)
-- [Key Logic & Pipeline](docs/pipeline_logic.md)
-- [Hardware Optimization](docs/hardware_optimization.md) (Detailed VRAM/Scaling
+- [Project Overview & Directory Structure](project_overview.md)
+- [Key Logic & Pipeline](pipeline_logic.md)
+- [Hardware Optimization](hardware_optimization.md) (Detailed VRAM/Scaling
   logic)
-- [Development & Standards](docs/development_standards.md) (Detailed
+- [Development & Standards](development_standards.md) (Detailed
   Linting/Testing rules)
-- [Configuration](docs/configuration.md)
+- [Configuration](configuration.md)
+- [Release Notes](releases/v1.1.2.md)
+- [Release Prep Skill](../.github/skills/release-prep/SKILL.md)

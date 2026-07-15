@@ -30,6 +30,11 @@ jobs:
             pyproject.toml
             poetry.lock
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v5.0.0
+        with:
+          node-version: "lts/*"
+
       - name: Install Poetry
         run: |
           python -m pip install "poetry==${{ env.POETRY_VERSION }}"
@@ -53,11 +58,15 @@ jobs:
         run: |
           poetry install -v --only main,dev --no-root
 
+      - name: Enforce zero-suppression policy
+        run: |
+          poetry run python tests/tools/check_no_suppressions.py
+
       - name: Run PowerShell Lint
         shell: pwsh
         run: |
           $scriptPaths = @("./install_dependencies.ps1", "./run_local_pipeline.ps1")
-          & ./.github/scripts/Invoke-PowerShellLint.ps1 -ScriptPaths $scriptPaths
+          & ./.github/scripts/Invoke-PowerShellLint.ps1 -ScriptPaths $scriptPaths -MaxCyclomaticComplexity 9 -MaxNestingDepth 4
 
       - name: Run Markdown auto-delinter (mdformat)
         run: |
@@ -66,6 +75,18 @@ jobs:
       - name: Run Markdown linter (pymarkdown)
         run: |
           poetry run pymarkdown scan README.md AGENTS.md docs .github
+
+      - name: Run isort import order check
+        run: |
+          poetry run isort --check-only --filter-files auto_subtitle.py modules tests
+
+      - name: Run Black format check
+        run: |
+          poetry run black --check auto_subtitle.py modules tests
+
+      - name: Run Taplo format check
+        run: |
+          poetry run taplo format --check pyproject.toml poetry.toml
 
       - name: Run Ruff
         run: |
@@ -78,6 +99,72 @@ jobs:
       - name: Run Pylint
         run: |
           poetry run pylint modules auto_subtitle.py
+
+      - name: Run Pylint on tests (errors-only)
+        run: |
+          PYTHONPATH=. poetry run pylint tests --errors-only
+
+      - name: Run mypy
+        run: |
+          poetry run mypy auto_subtitle.py modules tests
+
+      - name: Run pyright
+        run: |
+          poetry run pyright auto_subtitle.py modules tests
+
+      - name: Run Bandit Security Scan (high severity/high confidence)
+        run: |
+          poetry run bandit -c pyproject.toml -q -r auto_subtitle.py modules -lll -iii
+
+      - name: Run dependency vulnerability scan (pip-audit)
+        run: |
+          poetry run pip-audit
+
+      - name: Run Radon Complexity (A-grade enforced)
+        run: |
+          poetry run radon cc auto_subtitle.py modules tests/modules tests/orchestration -s -a | tee radon_report.txt
+
+          {
+            echo "## Radon Cyclomatic Complexity"
+            echo ""
+            echo '```text'
+            cat radon_report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if grep -E "\s-\s[B-F]\s\(" radon_report.txt >/dev/null; then
+            echo "Radon complexity gate failed. Non-A grades were found." >&2
+            exit 1
+          fi
+
+      - name: Run Radon Maintainability Index (A-grade enforced)
+        run: |
+          poetry run radon mi auto_subtitle.py modules tests/modules tests/orchestration -s | tee radon_mi_report.txt
+
+          {
+            echo "## Radon Maintainability Index (A-grade enforced)"
+            echo ""
+            echo '```text'
+            cat radon_mi_report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if grep -E "\s-\s[B-F]\s\(" radon_mi_report.txt >/dev/null; then
+            echo "Radon MI gate failed. Non-A grades were found." >&2
+            exit 1
+          fi
+
+      - name: Run Radon Halstead Metrics (hal)
+        run: |
+          poetry run radon hal auto_subtitle.py modules tests/modules tests/orchestration | tee radon_hal_report.txt
+
+          {
+            echo "## Radon Halstead Metrics"
+            echo ""
+            echo '```text'
+            cat radon_hal_report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   technical_validation:
     name: "🧪 Automated Pipeline Validation"
@@ -126,11 +213,11 @@ jobs:
       - name: Enforce Per-File Coverage >= 90%
         run: |
           poetry run coverage report --include=auto_subtitle.py --fail-under=90 -m
-          poetry run coverage report --include=modules/config.py --fail-under=90 -m
-          poetry run coverage report --include=modules/isolated_translator.py --fail-under=90 -m
+          poetry run coverage report --include=modules/configuration/config.py --fail-under=90 -m
+          poetry run coverage report --include=modules/pipeline/isolated_translator.py --fail-under=90 -m
           poetry run coverage report --include=modules/models.py --fail-under=90 -m
-          poetry run coverage report --include=modules/transcription.py --fail-under=90 -m
-          poetry run coverage report --include=modules/translation.py --fail-under=90 -m
+          poetry run coverage report --include=modules/pipeline/transcription.py --fail-under=90 -m
+          poetry run coverage report --include=modules/pipeline/translation.py --fail-under=90 -m
           poetry run coverage report --include=modules/utils.py --fail-under=90 -m
 
       - name: Upload Coverage Artifacts
@@ -190,5 +277,5 @@ jobs:
 
       - name: Generate Badge and Summary
         run: |
-          poetry run python tests/transform_metrics.py coverage.xml assets/coverage.svg
+          poetry run python tests/tools/transform_metrics.py coverage.xml assets/coverage.svg
           cat coverage_summary.md >> $GITHUB_STEP_SUMMARY

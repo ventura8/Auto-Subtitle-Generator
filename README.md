@@ -15,6 +15,11 @@ performance on any system.
 > `auto_subtitle.py` script. **Pro Tip:** Just press `Enter` at the prompt to
 > automatically process the `input` folder.
 
+## **📝 Release Notes**
+
+- v1.1.2: [docs/releases/v1.1.2.md](docs/releases/v1.1.2.md)
+- GitHub release body (copy-ready): [docs/releases/v1.1.2-github-release.md](docs/releases/v1.1.2-github-release.md)
+
 ## **🌟 Key Features**
 
 ### **0. AI Contextual Seeding & Prompting**
@@ -263,7 +268,15 @@ Developer note: the local pipeline auto-installs **GitHub CLI** (`gh`) and
 attempts **MCP CLI** setup (`mcp`) for PR review/comment workflows.
 
 This step validates Markdown quality (auto-delint + lint), code linting, and
-tests, enforces coverage threshold, and regenerates coverage artifacts.
+tests, enforces coverage threshold, runs security checks, and regenerates
+coverage artifacts.
+
+It enforces:
+
+- Zero-suppression policy scan (`tests/tools/check_no_suppressions.py`)
+- Ruff + Flake8 + Pylint
+- Bandit (high severity/high confidence) + pip-audit
+- Pytest with warnings-as-errors and 90% coverage gates
 
 The quality gate installs `main + dev` dependencies while excluding the heavy
 `ml` group.

@@ -1,6 +1,8 @@
 ______________________________________________________________________
 
-## name: docs-sync user-invocable: true description: "Use when code, setup, or architecture changes require synchronized updates to README and docs/\*.md files."
+## name: docs-sync user-invocable: true description: Use when documentation synchronization is needed after code/setup/architecture changes, including release notes, AGENTS.md, workflow documentation, and skill documentation updates.
+
+______________________________________________________________________
 
 # Docs Sync Skill
 
@@ -21,6 +23,10 @@ Keep project documentation accurate after code or setup changes.
 - docs/pipeline_logic.md
 - docs/configuration.md
 - docs/development_standards.md
+- docs/releases/\*.md
+- AGENTS.md
+- .agent/workflows/\*.md
+- .github/skills/\*/SKILL.md
 
 ## Guardrails
 

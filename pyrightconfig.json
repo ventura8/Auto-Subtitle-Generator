@@ -1,0 +1,12 @@
+{
+  "include": [
+    "auto_subtitle.py",
+    "modules",
+    "tests"
+  ],
+  "stubPath": "typings",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "off",
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "error"
+}
