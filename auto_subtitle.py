@@ -22,22 +22,18 @@ import os
 import site
 import sys
 import time
-import warnings
+from typing import Any
 
-from modules import config
-from modules import models
-from modules import utils
-from modules.models import ModelManager, OPTIMIZER
-from modules.transcription import transcribe_video_audio
-from modules.translation import translate_segments
+from modules import models, utils
+from modules.configuration import config
+from modules.models import OPTIMIZER, ModelManager
+from modules.pipeline.transcription import transcribe_video_audio
+from modules.pipeline.translation import translate_segments
 from modules.utils import log, print_progress_bar
-
-warnings.filterwarnings("ignore", category=UserWarning, message=".*expandable_segments not supported.*")
-warnings.filterwarnings("ignore", message=".*The following generation flags are not valid.*")
-
 
 # Torch runtime holder; tests may monkeypatch module-level "torch".
 _RUNTIME_STATE = {"torch": None}
+_DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
 def _get_torch_module():
@@ -159,15 +155,77 @@ def _get_nvidia_bin_lib_paths(sp):
     """Internal helper to find bin/lib in nvidia subdirs."""
     paths = []
     nvidia_path = os.path.join(sp, "nvidia")
-    if os.path.exists(nvidia_path):
-        for item in os.listdir(nvidia_path):
-            sub_path = os.path.join(nvidia_path, item)
-            if os.path.isdir(sub_path):
-                for d in ["bin", "lib"]:
-                    p = os.path.join(sub_path, d)
-                    if os.path.exists(p):
-                        paths.append(p)
+    if not os.path.exists(nvidia_path):
+        return paths
+
+    for item in os.listdir(nvidia_path):
+        sub_path = os.path.join(nvidia_path, item)
+        if not os.path.isdir(sub_path):
+            continue
+        paths.extend(_collect_existing_runtime_dirs(sub_path))
     return paths
+
+
+def _collect_existing_runtime_dirs(base_dir):
+    """Collect existing runtime subdirectories used by CUDA providers."""
+    existing = []
+    for dir_name in ["bin", "lib"]:
+        candidate = os.path.join(base_dir, dir_name)
+        if os.path.exists(candidate):
+            existing.append(candidate)
+    return existing
+
+
+def _add_dll_directory_if_supported(path):
+    """Register DLL directory on supported platforms without hard failure."""
+    if not hasattr(os, "add_dll_directory"):
+        return
+    try:
+        handle = os.add_dll_directory(path)
+        if handle is not None:
+            _DLL_DIRECTORY_HANDLES.append(handle)
+    except (AttributeError, OSError):
+        pass
+
+
+def _collect_site_packages_paths():
+    """Collect site-packages paths for runtime DLL discovery."""
+    site_packages = site.getsitepackages()
+    manual_site = os.path.join(sys.prefix, "Lib", "site-packages")
+    if manual_site not in site_packages:
+        site_packages.append(manual_site)
+    return site_packages
+
+
+def _get_or_import_torch_module():
+    """Return cached torch module or import it when available."""
+    torch_module = _get_torch_module()
+    if torch_module is not None:
+        return torch_module
+    # Ensure runtime DLL paths are prepared before importing torch.
+    paths_to_add = []
+    for site_package in _collect_site_packages_paths():
+        paths_to_add.extend(_get_nvidia_bin_lib_paths(site_package))
+    _apply_paths_to_env(paths_to_add)
+    try:
+        torch_module = importlib.import_module("torch")
+        _set_torch_module(torch_module)
+        return torch_module
+    except ImportError:
+        return None
+
+
+def _collect_torch_lib_paths(torch_module):
+    """Collect torch lib paths needed for CUDA runtime DLL discovery."""
+    if torch_module is None or not hasattr(torch_module, "__path__"):
+        return []
+
+    lib_paths = []
+    for package_path in torch_module.__path__:
+        lib_path = os.path.join(package_path, "lib")
+        if os.path.exists(lib_path):
+            lib_paths.append(lib_path)
+    return lib_paths
 
 
 def _apply_paths_to_env(paths):
@@ -175,47 +233,24 @@ def _apply_paths_to_env(paths):
     raw_path = os.environ.get("PATH", "")
     normalized_entries = {os.path.normcase(os.path.normpath(entry)) for entry in raw_path.split(os.pathsep) if entry}
 
-    for p in paths:
-        normalized_p = os.path.normcase(os.path.normpath(p))
-        if normalized_p not in normalized_entries:
-            os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
-            normalized_entries.add(normalized_p)
-            if hasattr(os, "add_dll_directory"):
-                try:
-                    os.add_dll_directory(p)
-                except (AttributeError, OSError):
-                    pass
+    for path in paths:
+        _add_dll_directory_if_supported(path)
+        normalized_path = os.path.normcase(os.path.normpath(path))
+        if normalized_path in normalized_entries:
+            continue
+        os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
+        normalized_entries.add(normalized_path)
 
 
 def load_nvidia_paths():
     """Adds Torch/NVIDIA DLLs to PATH to fix ONNX Runtime 'CUDAExecutionProvider not available'."""
     paths_to_add = []
+    for site_package in _collect_site_packages_paths():
+        paths_to_add.extend(_get_nvidia_bin_lib_paths(site_package))
 
-    # 1. Site Packages
-    site_packages = site.getsitepackages()
-    manual_site = os.path.join(sys.prefix, "Lib", "site-packages")
-    if manual_site not in site_packages:
-        site_packages.append(manual_site)
+    torch_module = _get_or_import_torch_module()
+    paths_to_add.extend(_collect_torch_lib_paths(torch_module))
 
-    for sp in site_packages:
-        paths_to_add.extend(_get_nvidia_bin_lib_paths(sp))
-
-    # 2. Torch libs
-    torch_module = _get_torch_module()
-    if torch_module is None:
-        try:
-            torch_module = importlib.import_module("torch")
-            _set_torch_module(torch_module)
-        except ImportError:
-            torch_module = None
-
-    if torch_module is not None and hasattr(torch_module, "__path__"):
-        for q in torch_module.__path__:
-            lib_path = os.path.join(q, "lib")
-            if os.path.exists(lib_path):
-                paths_to_add.append(lib_path)
-
-    # 3. Apply
     _apply_paths_to_env(paths_to_add)
 
     try:
@@ -231,32 +266,79 @@ def load_nvidia_paths():
 
 def _check_resume(folder, base_name, forced_lang=None):
     """Checks if a valid SRT exists to skip transcription."""
-    if forced_lang:
-        srt_path = os.path.join(folder, f"{base_name}.{forced_lang}.srt")
-        if os.path.exists(srt_path):
-            segs = utils.parse_srt(srt_path)
-            if segs:
-                log(f"  [Resume] Found valid SRT: {srt_path}")
-                return segs, forced_lang, srt_path
-            log(f"  [Resume] SRT {srt_path} is empty or corrupted. Skipping.", "WARNING")
-        return None, None, None
-    # Check commonly generated ones
-    for lang_code in ["en", "ro", "es", "fr"]:
-        srt_path = os.path.join(folder, f"{base_name}.{lang_code}.srt")
-        if os.path.exists(srt_path):
-            segs = utils.parse_srt(srt_path)
-            if segs:
-                log(f"  [Resume] Found valid SRT: {srt_path}")
-                return segs, lang_code, srt_path
-            log(f"  [Resume] SRT {srt_path} is empty or corrupted. Skipping.", "WARNING")
+    candidates = _get_resume_candidates(folder, base_name, forced_lang)
+    for lang_code in candidates:
+        if not lang_code:
+            continue
+        segments, srt_path = _read_resume_srt(folder, base_name, lang_code)
+        if segments:
+            return segments, lang_code, srt_path
 
     return None, None, None
+
+
+def _get_resume_candidates(folder, base_name, forced_lang):
+    """Return resume-language candidates honoring forced and recorded source language."""
+    if forced_lang:
+        return [forced_lang]
+
+    recorded_source_lang = _read_recorded_source_language(folder, base_name)
+    return [recorded_source_lang] if recorded_source_lang else []
+
+
+def _read_resume_srt(folder, base_name, lang_code):
+    """Read and validate a candidate resume SRT file."""
+    srt_path = os.path.join(folder, f"{base_name}.{lang_code}.srt")
+    if not os.path.exists(srt_path):
+        return None, srt_path
+
+    segments = utils.parse_srt(srt_path)
+    if segments:
+        log(f"  [Resume] Found valid SRT: {srt_path}")
+        return segments, srt_path
+
+    log(f"  [Resume] SRT {srt_path} is empty or corrupted. Skipping.", "WARNING")
+    return None, srt_path
+
+
+def _get_source_language_artifact_path(folder, base_name):
+    """Return sidecar path used to persist the detected source language."""
+    return os.path.join(folder, f"{base_name}.source_lang.txt")
+
+
+def _read_recorded_source_language(folder, base_name):
+    """Read previously recorded source language for resume purposes."""
+    artifact_path = _get_source_language_artifact_path(folder, base_name)
+    if not os.path.exists(artifact_path):
+        return None
+    try:
+        with open(artifact_path, "r", encoding="utf-8") as file_handle:
+            return file_handle.read().strip() or None
+    except OSError:
+        return None
+
+
+def _write_recorded_source_language(folder, base_name, src_lang):
+    """Persist detected source language for safe resume selection."""
+    artifact_path = _get_source_language_artifact_path(folder, base_name)
+    temp_path = f"{artifact_path}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as file_handle:
+            file_handle.write(src_lang)
+        os.replace(temp_path, artifact_path)
+    except OSError:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def _get_output_filenames(video_path, folder, forced_lang):
     """Determines filenames based on video path and language."""
     base_name = os.path.splitext(os.path.basename(video_path))[0]
-    final_output = os.path.abspath(os.path.join(folder, f"{base_name}_multilang.mp4"))
+    _, extension = os.path.splitext(video_path)
+    final_output = os.path.abspath(os.path.join(folder, f"{base_name}_multilang{extension}"))
 
     lang = forced_lang or "en"
     srt_path = os.path.abspath(os.path.join(folder, f"{base_name}.{lang}.srt"))
@@ -267,7 +349,7 @@ def _get_output_filenames(video_path, folder, forced_lang):
 def embed_subtitles(video_path, srt_files):
     """Embeds all subtitle tracks into the video container using FFmpeg."""
     if not srt_files:
-        return
+        return None
 
     dir_name = os.path.dirname(video_path)
     file_name = os.path.basename(video_path)
@@ -275,34 +357,12 @@ def embed_subtitles(video_path, srt_files):
     normalized_ext = ext.lower()
     output_path = os.path.join(dir_name, f"{name_no_ext}_multilang{ext}")
 
-    cmd = [utils.FFMPEG_CMD, "-y", "-i", video_path]
-
-    for srt, _, _ in srt_files:
-        cmd.extend(["-sub_charenc", "UTF-8", "-i", srt])
-
-    cmd.extend(["-map", "0:v", "-map", "0:a"])
-    for i in range(len(srt_files)):
-        cmd.extend(["-map", f"{i + 1}"])
-
-    cmd.extend(
-        [
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-c:s",
-            "mov_text" if normalized_ext in [".mp4", ".m4v", ".mov"] else "srt",
-        ]
-    )
-
-    for i, (_, lang, label) in enumerate(srt_files):
-        cmd.extend([f"-metadata:s:s:{i}", f"language={lang}", f"-metadata:s:s:{i}", f"title={label}"])
-
-    cmd.extend(["-loglevel", "info", output_path])
+    cmd = _build_embed_command(video_path, srt_files, normalized_ext, output_path)
 
     try:
         total_dur = utils.get_audio_duration(video_path)
         utils.run_ffmpeg_progress(cmd, "  [Finalizing] Muxing Video", total_dur)
+        return output_path
     except (OSError, RuntimeError, ValueError) as e:
         log(f"Embedding failed: {e}", "ERROR")
         if os.path.exists(output_path):
@@ -310,6 +370,52 @@ def embed_subtitles(video_path, srt_files):
                 os.remove(output_path)
             except OSError:
                 pass
+        return None
+
+
+def _build_embed_command(video_path, srt_files, normalized_ext, output_path):
+    """Build FFmpeg command for multi-language subtitle muxing."""
+    cmd = [utils.FFMPEG_CMD, "-y", "-i", video_path]
+    for track in srt_files:
+        srt_path = track[0]
+        cmd.extend(["-sub_charenc", "UTF-8", "-i", srt_path])
+
+    cmd.extend(["-map", "0:v", "-map", "0:a"])
+    for index in range(len(srt_files)):
+        cmd.extend(["-map", f"{index + 1}"])
+
+    subtitle_codec = "mov_text" if normalized_ext in [".mp4", ".m4v", ".mov"] else "srt"
+    cmd.extend(["-c:v", "copy", "-c:a", "copy", "-c:s", subtitle_codec])
+    cmd.extend(_build_embed_metadata_args(srt_files))
+    cmd.extend(["-loglevel", "info", output_path])
+    return cmd
+
+
+def _build_embed_metadata_args(srt_files):
+    """Build subtitle metadata arguments for language and track title."""
+    metadata_args = []
+    for index, track in enumerate(srt_files):
+        _, lang, label, *optional = track
+        mux_lang = optional[0] if optional else lang
+        metadata_args.extend(
+            [
+                f"-metadata:s:s:{index}",
+                f"language={mux_lang}",
+                f"-metadata:s:s:{index}",
+                f"title={label}",
+            ]
+        )
+    return metadata_args
+
+
+def _to_mux_language_code(lang):
+    """Convert ISO language key into ISO 639-2/B-like 3-letter mux code."""
+    lang_info = config.TARGET_LANGUAGES.get(lang)
+    if isinstance(lang_info, dict) and lang_info.get("code"):
+        nllb_code = lang_info["code"]
+    else:
+        nllb_code = config.ISO_TO_NLLB.get(lang, "eng_Latn")
+    return nllb_code.split("_", maxsplit=1)[0] if nllb_code else lang
 
 
 def _obtain_segments(transcription_context, model_mgr, forced_lang, forced_prompt):
@@ -337,92 +443,151 @@ def _obtain_segments(transcription_context, model_mgr, forced_lang, forced_promp
 
 def _finalize_video_processing(video_path, folder, base_name, src_lang, src_srt_path):
     """Internal helper to gather SRTs, embed them, and cleanup."""
-    # Gather all generated SRTs
+    generated_srts = _collect_generated_srt_tracks(folder, base_name, src_lang, src_srt_path)
+    return embed_subtitles(video_path, generated_srts)
+
+
+def _collect_generated_srt_tracks(folder, base_name, src_lang, src_srt_path):
+    """Collect source and translated SRT tracks for final muxing."""
     generated_srts = []
-    # Add Source
     if os.path.exists(src_srt_path):
         src_label = config.TARGET_LANGUAGES.get(src_lang, {}).get("label", src_lang.upper())
-        generated_srts.append((src_srt_path, src_lang, src_label))
+        generated_srts.append((src_srt_path, src_lang, src_label, _to_mux_language_code(src_lang)))
 
-    # Add Translations
     for lang, info in config.TARGET_LANGUAGES.items():
-        if lang == src_lang:
-            continue
-        lang_srt = os.path.join(folder, f"{base_name}.{lang}.srt")
-        if os.path.exists(lang_srt):
-            label = info.get("label", lang.upper()) if isinstance(info, dict) else lang.upper()
-            generated_srts.append((lang_srt, lang, label))
+        track = _build_translation_srt_track(folder, base_name, src_lang, lang, info)
+        if track is not None:
+            generated_srts.append(track)
 
-    embed_subtitles(video_path, generated_srts)
+    return generated_srts
+
+
+def _build_translation_srt_track(folder, base_name, src_lang, lang, info):
+    """Build one translated SRT track tuple or return None when unavailable."""
+    if lang == src_lang:
+        return None
+
+    lang_srt = os.path.join(folder, f"{base_name}.{lang}.srt")
+    if not os.path.exists(lang_srt):
+        return None
+    if not utils.validate_srt(lang_srt):
+        log(f"  [Mux] Skipping invalid translated SRT: {lang_srt}", "WARNING")
+        return None
+
+    label = info.get("label", lang.upper()) if isinstance(info, dict) else lang.upper()
+    return (lang_srt, lang, label, _to_mux_language_code(lang))
+
+
+def _build_transcription_context(folder, base_name, video_path):
+    """Build context payload passed into transcription/resume helper."""
+    return {
+        "folder": folder,
+        "base_name": base_name,
+        "video_path": video_path,
+    }
+
+
+def _prepare_source_srt_path(folder, base_name, src_lang, source_artifact_path, segments):
+    """Resolve source subtitle path from resumed artifact or persist newly generated SRT."""
+    src_srt_path = os.path.join(folder, f"{base_name}.{src_lang}.srt")
+    if _is_reused_srt_artifact(source_artifact_path):
+        _write_recorded_source_language(folder, base_name, src_lang)
+        log("  [Resume] Reusing existing subtitle file. Continuing translation and muxing.", "INFO")
+        return source_artifact_path
+    if _save_source_srt_file(segments, src_srt_path):
+        _write_recorded_source_language(folder, base_name, src_lang)
+        return src_srt_path
+    return None
+
+
+def _save_source_srt_file(segments, src_srt_path):
+    """Persist source SRT and return True on success."""
+    try:
+        utils.save_srt(segments, src_srt_path)
+        return True
+    except (OSError, ValueError) as e:
+        log(f"  [Error] Failed to save source SRT: {e}", "ERROR")
+        return False
+
+
+def _is_reused_srt_artifact(source_artifact_path):
+    """Return True when the transcription step reused an existing SRT artifact."""
+    return bool(source_artifact_path and source_artifact_path.endswith(".srt"))
+
+
+def _clear_cuda_cache_if_available():
+    """Proactively clear CUDA cache before heavy translation model loads."""
+    gc.collect()
+    torch_module = _get_torch_module()
+    if torch_module is not None and hasattr(torch_module, "cuda") and torch_module.cuda.is_available():
+        torch_module.cuda.empty_cache()
+
+
+def _run_translation_step(segments, src_lang, model_mgr, folder, base_name):
+    """Run translation stage and return True when it completes successfully."""
+    try:
+        model_mgr.offload_whisper()
+        model_mgr.offload_separator()
+        _clear_cuda_cache_if_available()
+        translate_segments(segments, src_lang, model_mgr, folder, base_name)
+        return True
+    except (RuntimeError, OSError, ValueError) as e:
+        log(f"Translation failed: {e}", "ERROR")
+        return False
+
+
+def _process_video_pipeline(video_path, model_mgr, pipeline_context):
+    """Run transcription, translation, and muxing stages for one video."""
+    utils.init_console()
+    forced_lang = pipeline_context["forced_lang"]
+    forced_prompt = pipeline_context["forced_prompt"]
+    folder = pipeline_context["folder"]
+    base_name = pipeline_context["base_name"]
+
+    transcription_context = _build_transcription_context(folder, base_name, video_path)
+    segments, src_lang, source_artifact_path = _obtain_segments(
+        transcription_context,
+        model_mgr,
+        forced_lang,
+        forced_prompt,
+    )
+
+    if not segments:
+        log("No speech detected.", "WARNING")
+        return [], None, None
+
+    src_srt_path = _prepare_source_srt_path(folder, base_name, src_lang, source_artifact_path, segments)
+    if src_srt_path is None:
+        return None, None, None
+
+    if not _run_translation_step(segments, src_lang, model_mgr, folder, base_name):
+        return None, None, None
+    finalized_output_path = _finalize_video_processing(video_path, folder, base_name, src_lang, src_srt_path)
+    if not finalized_output_path:
+        return None, None, None
+    return segments, src_lang, finalized_output_path
 
 
 def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
     """Orchestrates the full processing pipeline for a single video."""
     config.load_config(OPTIMIZER, log)
     folder = os.path.dirname(video_path) or "."
-    final_output, _source_srt_path, base_name = _get_output_filenames(video_path, folder, None)
+    output_path, _source_srt_path, base_name = _get_output_filenames(video_path, folder, None)
 
     # Check if this video is already done
-    if os.path.exists(final_output):
-        log(f"  [Skip] Output already exists: {final_output}", "INFO")
-        return None, None, final_output
+    if os.path.exists(output_path):
+        log(f"  [Skip] Output already exists: {output_path}", "INFO")
+        return None, None, output_path
 
     try:
-        utils.init_console()
-        # Step 1: Transcribe (or Resume)
-        transcription_context = {
+        pipeline_context = {
+            "forced_lang": forced_lang,
+            "forced_prompt": forced_prompt,
             "folder": folder,
             "base_name": base_name,
-            "video_path": video_path,
+            "output_path": output_path,
         }
-        segments, src_lang, source_artifact_path = _obtain_segments(
-            transcription_context,
-            model_mgr,
-            forced_lang,
-            forced_prompt,
-        )
-
-        if not segments:
-            log("No speech detected.", "WARNING")
-            utils.cleanup_temp_files(folder, base_name, os.path.basename(video_path))
-            # Fix: Return 3 values as expected by callers
-            return [], None, None
-
-        src_srt_path = os.path.join(folder, f"{base_name}.{src_lang}.srt")
-        if source_artifact_path and source_artifact_path.endswith(".srt"):
-            log("  [Resume] Reusing existing subtitle file. Continuing translation and muxing.", "INFO")
-            src_srt_path = source_artifact_path
-        else:
-            # Immediate Save: Source SRT
-            try:
-                utils.save_srt(segments, src_srt_path)
-            except (OSError, ValueError) as e:
-                log(f"  [Error] Failed to save source SRT: {e}", "ERROR")
-                return None, None, None
-
-        # Step 2: Translate
-        try:
-            # Proactively offload transcription/separation models to clear VRAM
-            model_mgr.offload_whisper()
-            model_mgr.offload_separator()
-
-            # FORCE CLEAN STATE (Paranoid Mode)
-            gc.collect()
-            torch_module = _get_torch_module()
-            if torch_module is not None and hasattr(torch_module, "cuda") and torch_module.cuda.is_available():
-                torch_module.cuda.empty_cache()
-
-            # Refactored: Calls module function
-            translate_segments(segments, src_lang, model_mgr, folder, base_name)
-        except (RuntimeError, OSError, ValueError) as e:
-            log(f"Translation failed: {e}", "ERROR")
-            # Continue to finalizing even if translation fails
-
-        # Step 3: Finalize (Embed Subtitles)
-        _finalize_video_processing(video_path, folder, base_name, src_lang, src_srt_path)
-
-        # Return results for callers (e.g. tests)
-        return segments, src_lang, final_output
+        return _process_video_pipeline(video_path, model_mgr, pipeline_context)
 
     except (RuntimeError, OSError, ValueError, TypeError, KeyError) as e:
         log(f"Processing failed for {video_path}: {e}", "ERROR")

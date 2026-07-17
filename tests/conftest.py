@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 from unittest.mock import MagicMock
 
 torch_mock = MagicMock()
@@ -27,8 +27,8 @@ if sys.platform != "win32":
     sys.modules["winreg"] = MagicMock()
     import ctypes
 
-    if not hasattr(ctypes, "windll"):
-        ctypes.windll = MagicMock()
+    if getattr(ctypes, "windll", None) is None:
+        setattr(ctypes, "windll", MagicMock())
 
 # Standard pytest hook to fix sys.path
 _p = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

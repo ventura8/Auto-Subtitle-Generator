@@ -14,9 +14,169 @@ function Invoke-CheckedCommand {
         [string[]]$Arguments
     )
 
-    & $Executable @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $Executable $($Arguments -join ' ')"
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+
+    try {
+        $quotedArguments = @(
+            $Arguments | ForEach-Object {
+                if ($_ -match "\s") {
+                    '"' + ($_ -replace '"', '\"') + '"'
+                }
+                else {
+                    $_
+                }
+            }
+        )
+
+        $process = Start-Process `
+            -FilePath $Executable `
+            -ArgumentList $quotedArguments `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+
+        foreach ($outputLine in Get-Content -Path $stdoutPath -ErrorAction SilentlyContinue) {
+            Write-Information $outputLine
+        }
+
+        foreach ($outputLine in Get-Content -Path $stderrPath -ErrorAction SilentlyContinue) {
+            Write-Information $outputLine
+        }
+
+        if ($process.ExitCode -ne 0) {
+            throw "Command failed with exit code $($process.ExitCode): $Executable $($Arguments -join ' ')"
+        }
+    }
+    finally {
+        if (Test-Path $stdoutPath) {
+            Remove-Item $stdoutPath -Force
+        }
+        if (Test-Path $stderrPath) {
+            Remove-Item $stderrPath -Force
+        }
+    }
+}
+
+function Install-PowerShellLintDependency {
+    $requiredVersion = "1.22.0"
+
+    $installedModule = Get-Module -ListAvailable -Name PSScriptAnalyzer |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+
+    if ($installedModule -and $installedModule.Version -eq [version]$requiredVersion) {
+        Write-Information "PSScriptAnalyzer is already installed."
+        return
+    }
+
+    Write-Information "Installing PSScriptAnalyzer for PowerShell lint gates..."
+    $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+    if (-not $psGallery) {
+        try {
+            Register-PSRepository -Default -ErrorAction Stop
+            $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+        }
+        catch {
+            throw "PSGallery is not registered. Register it or enable PowerShellGet defaults before installing PSScriptAnalyzer."
+        }
+    }
+
+    if (-not $psGallery) {
+        throw "PSGallery is unavailable after registration attempt. Cannot install PSScriptAnalyzer."
+    }
+
+    if ($psGallery.Name -ne "PSGallery" -or $psGallery.SourceLocation -notlike "https://www.powershellgallery.com/api/v2*") {
+        throw "PSGallery repository configuration is unexpected. Refusing to install PSScriptAnalyzer from an unverified source."
+    }
+
+    Install-Module PSScriptAnalyzer -Scope CurrentUser -RequiredVersion $requiredVersion -Force -Repository PSGallery
+}
+
+function Install-Cuda12Compatibility {
+    param([string]$PythonExecutable)
+
+    Write-Information "Provisioning CUDA 12 compatibility runtime for Faster-Whisper..."
+
+    $compatPackages = @(
+        "nvidia-cuda-runtime-cu12",
+        "nvidia-cublas-cu12",
+        "nvidia-cudnn-cu12"
+    )
+
+    try {
+        Invoke-CheckedCommand $PythonExecutable (@("-m", "pip", "install", "--upgrade") + $compatPackages)
+    }
+    catch {
+        Write-Warning "CUDA 12 compatibility packages were not fully installed via pip: $_"
+        Write-Warning "Attempting local CUDA compatibility shim fallback..."
+    }
+
+    $compatScript = @'
+import os
+import shutil
+import sys
+
+base = os.path.join(sys.prefix, "Lib", "site-packages")
+candidates = [
+    os.path.join(base, "torch", "lib"),
+    os.path.join(base, "nvidia", "cu12", "bin"),
+    os.path.join(base, "nvidia", "cublas", "bin"),
+    os.path.join(base, "nvidia", "cudnn", "bin"),
+    os.path.join(base, "nvidia", "cuda_runtime", "bin"),
+    os.path.join(base, "nvidia", "cu13", "bin"),
+]
+
+for path in candidates:
+    if not os.path.isdir(path):
+        continue
+    if hasattr(os, "add_dll_directory"):
+        try:
+            os.add_dll_directory(path)
+        except OSError:
+            pass
+
+def has_cuda12_blas() -> bool:
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "cublas64_12.dll")):
+            return True
+    return False
+
+if has_cuda12_blas():
+    print("CUDA12_RUNTIME_OK")
+    raise SystemExit(0)
+
+source = None
+for path in candidates:
+    candidate = os.path.join(path, "cublas64_13.dll")
+    if os.path.isfile(candidate):
+        source = candidate
+        break
+
+if source is None:
+    raise RuntimeError("Neither cublas64_12.dll nor cublas64_13.dll was found in known runtime directories")
+
+shim_dir = os.path.join(base, "nvidia", "cuda12_compat", "bin")
+os.makedirs(shim_dir, exist_ok=True)
+target = os.path.join(shim_dir, "cublas64_12.dll")
+
+if not os.path.isfile(target):
+    shutil.copy2(source, target)
+
+print("CUDA12_RUNTIME_SHIMMED")
+'@
+
+    $compatScriptPath = Join-Path $env:TEMP ("ensure_cuda12_compat_" + [guid]::NewGuid().ToString("N") + ".py")
+    try {
+        Set-Content -Path $compatScriptPath -Value $compatScript -Encoding UTF8
+        Invoke-CheckedCommand $PythonExecutable @($compatScriptPath)
+    }
+    finally {
+        if (Test-Path $compatScriptPath) {
+            Remove-Item $compatScriptPath -Force
+        }
     }
 }
 
@@ -160,20 +320,24 @@ try {
     $setupPhase = "Installing runtime dependencies"
     Invoke-CheckedCommand $VenvPy @("-m", "poetry", "install", "--no-root", "--with", "ml", "--without", "dev", "--no-interaction")
 
-    $setupPhase = "CUDA 13 runtime validation"
-    Write-Information "Validating CUDA 13 BLAS runtime for Faster-Whisper..."
+    $setupPhase = "CUDA 12 compatibility provisioning"
+    Install-Cuda12Compatibility -PythonExecutable $VenvPy
+
+    $setupPhase = "Faster-Whisper GPU runtime validation"
+    Write-Information "Validating Faster-Whisper GPU runtime..."
     $gpuValidationCode = @'
-import ctypes
-import glob
 import os
 import sys
 
 base = os.path.join(sys.prefix, "Lib", "site-packages")
 candidate_dirs = [
     os.path.join(base, "torch", "lib"),
+    os.path.join(base, "nvidia", "cu12", "bin"),
     os.path.join(base, "nvidia", "cu13", "bin"),
     os.path.join(base, "nvidia", "cublas", "bin"),
     os.path.join(base, "nvidia", "cudnn", "bin"),
+    os.path.join(base, "nvidia", "cuda_runtime", "bin"),
+    os.path.join(base, "nvidia", "cuda12_compat", "bin"),
 ]
 
 for path in candidate_dirs:
@@ -186,13 +350,12 @@ for path in candidate_dirs:
         except OSError:
             pass
 
-ctypes.CDLL("cublas64_13.dll")
 from faster_whisper import WhisperModel
 model = WhisperModel("large-v3", device="cuda", compute_type="float16", num_workers=1)
-print("FW_CUDA13_OK")
+print("FW_GPU_RUNTIME_OK")
 del model
 '@
-    $gpuValidationScript = Join-Path $env:TEMP ("validate_fw_cuda13_" + [guid]::NewGuid().ToString("N") + ".py")
+    $gpuValidationScript = Join-Path $env:TEMP ("validate_fw_gpu_runtime_" + [guid]::NewGuid().ToString("N") + ".py")
     try {
         Set-Content -Path $gpuValidationScript -Value $gpuValidationCode -Encoding UTF8
         Invoke-CheckedCommand $VenvPy @($gpuValidationScript)
@@ -207,13 +370,20 @@ del model
 }
 catch {
     Write-Error "Failed during setup phase '$setupPhase'. Error details: $_"
-    if ($setupPhase -eq "CUDA 13 runtime validation") {
-        Write-Error "CUDA 13 validation failed. Ensure the CUDA 13 torch + cublas stack is installed in .venv."
+    if ($setupPhase -eq "Faster-Whisper GPU runtime validation") {
+        Write-Error "Faster-Whisper GPU validation failed. Ensure required CUDA runtime DLLs (for example cublas64_12.dll) are present in .venv and rerun install_dependencies.ps1."
+    }
+    if ($setupPhase -eq "CUDA 12 compatibility provisioning") {
+        Write-Error "CUDA 12 compatibility provisioning failed. The installer attempted both dependency installation and local shim creation but could not provide cublas64_12.dll."
     }
 }
 
-# 5. Create Start Batch File
-Write-Information "`nStep 5: Updating Launcher..."
+# 5. Install PowerShell lint dependencies
+Write-Information "`nStep 5: Installing PowerShell lint dependencies..."
+Install-PowerShellLintDependency
+
+# 6. Create Start Batch File
+Write-Information "`nStep 6: Updating Launcher..."
 $batContent = @"
 @echo off
 set PATH=%~dp0.venv\ffmpeg\bin;%PATH%

@@ -27,6 +27,8 @@ This repository includes Copilot workspace customizations and reusable skills.
   for docs quality.
 - .github/skills/pr-comment-resolution/SKILL.md: PR comment resolution workflow
   for CodeRabbit and human review feedback using GitHub CLI + MCP.
+- .github/skills/release-prep/SKILL.md: release preparation workflow that
+  derives version from the current branch name.
 
 ## Recommended Usage
 
@@ -39,6 +41,14 @@ This repository includes Copilot workspace customizations and reusable skills.
 1. Use markdown-quality when updating README/docs/.github markdown content.
 1. Use pr-comment-resolution when addressing PR review feedback and resolving
    CodeRabbit/human comments.
+1. Use release-prep when preparing a version release and GitHub release notes.
+
+## Enforcement Notes
+
+- `run_local_pipeline.ps1` is the canonical local gate and enforces no-suppression,
+  lint, type, security, test, and coverage checks.
+- Do not introduce suppression directives (`# noqa`, `# type: ignore`, warning
+  ignore filters).
 
 ## Notes
 

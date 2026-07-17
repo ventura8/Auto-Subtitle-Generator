@@ -20,14 +20,28 @@ automatic hardware detection to maximize performance.
 ├── run_local_pipeline.ps1      # Local quality gate (lint + tests + coverage)
 ├── modules/                    # Core logic and AI models
 │   ├── __init__.py
-│   ├── config.py               # Internal configuration & constants
-│   ├── models.py               # AI model wrappers (Whisper, NLLB,
-│   │                           # TranslateGemma) and Optimizer
-│   ├── utils.py                # Logging, FFmpeg, and file utilities
-│   └── isolated_translator.py  # Isolated worker process for
-│                               # translation jobs and pivot flow
+│   ├── configuration/          # Runtime configuration loading/validation
+│   ├── media/                  # FFmpeg and hardware-related helpers
+│   ├── pipeline/               # Transcription/translation stages
+│   ├── runtime/                # Logging and progress/runtime utilities
+│   ├── subtitles/              # Subtitle IO and timestamp helpers
+│   ├── models.py               # AI model wrappers + optimizer
+│   └── utils.py                # Shared utility helpers
 ├── docs/                       # Technical documentation
 │   └── releases/               # Versioned release notes
 ├── tests/                      # Pytest suite
+├── .github/workflows/ci.yml    # CI mirror of lint/type/security/test gates
 └── assets/                     # Logos and media
 ```
+
+## ✅ Quality Gate Summary
+
+- Canonical local gate: `run_local_pipeline.ps1`
+- Enforced checks: suppression scanner, markdown checks, Ruff, Flake8, Pylint,
+  Bandit, pip-audit, pytest coverage, per-file coverage threshold
+
+## 🚢 Release Artifacts
+
+- Versioned release notes live in `docs/releases/vX.Y.Z.md`.
+- GitHub release body drafts live in
+  `docs/releases/vX.Y.Z-github-release.md`.

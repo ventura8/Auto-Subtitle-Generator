@@ -32,12 +32,20 @@ Thumbs.db
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.pyright/
 .cache/
 .coverage
 .coverage.*
 coverage.json
 coverage.xml
 coverage_summary.md
+radon_report.txt
+radon_mi_report.txt
+radon_hal_report.txt
+pipeline_full.log
+pipeline_run.log
+subtitle_gen.log
+.eslintcache
 htmlcov/
 test_debug.txt
 test_debug.log
@@ -46,6 +54,7 @@ test_result.txt
 result.log
 test_failure.log
 *.log
+pipeline_full.log
 run_tests_debug.py
 
 # --- Generated Content ---
@@ -61,5 +70,6 @@ input/
 debug_test_logs.txt
 single_test.txt
 sanitized*.txt
+*.source_lang.txt
 ffmpeg.zip
 start.bat

@@ -28,9 +28,62 @@ function Invoke-CheckedCommand {
         [string[]]$Arguments
     )
 
-    & $Executable @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed: $Executable $($Arguments -join ' ')"
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $Executable
+        $quotedArguments = @(
+            $Arguments | ForEach-Object {
+                if ($_ -eq "") {
+                    '""'
+                }
+                elseif ($_ -match '[\s"]') {
+                    '"' + ($_ -replace '"', '\\"') + '"'
+                }
+                else {
+                    $_
+                }
+            }
+        )
+        $psi.Arguments = $quotedArguments -join ' '
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $psi
+        $null = $process.Start()
+
+        $stdoutText = $process.StandardOutput.ReadToEnd()
+        $stderrText = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+
+        Set-Content -Path $stdoutPath -Value $stdoutText -Encoding UTF8
+        Set-Content -Path $stderrPath -Value $stderrText -Encoding UTF8
+
+        foreach ($outputLine in Get-Content -Path $stdoutPath -ErrorAction SilentlyContinue) {
+            Write-Information $outputLine
+        }
+
+        foreach ($outputLine in Get-Content -Path $stderrPath -ErrorAction SilentlyContinue) {
+            Write-Information $outputLine
+        }
+
+        if ($exitCode -ne 0) {
+            throw "Command failed: $Executable $($Arguments -join ' ')"
+        }
+    }
+    finally {
+        if (Test-Path $stdoutPath) {
+            Remove-Item $stdoutPath -Force
+        }
+        if (Test-Path $stderrPath) {
+            Remove-Item $stderrPath -Force
+        }
     }
 }
 
@@ -66,29 +119,141 @@ function Install-WingetPackage {
     throw "winget failed to install $DisplayName ($PackageId). Output: $wingetOutput"
 }
 
-function Install-McpCliTooling {
-    if (Test-CommandAvailable "mcp") {
-        Write-Information "MCP CLI is already available."
+function Add-NodePathsToSessionPath {
+    $nodeCandidatePaths = @(
+        "$env:ProgramFiles\nodejs",
+        "$env:LOCALAPPDATA\Programs\nodejs"
+    )
+
+    foreach ($path in $nodeCandidatePaths) {
+        if (-not (Test-Path $path)) {
+            continue
+        }
+
+        $currentPathEntries = @($env:PATH -split ';' | Where-Object { $_ })
+        if ($currentPathEntries -contains $path) {
+            continue
+        }
+
+        $env:PATH = "$path;$env:PATH"
+    }
+}
+
+function Add-PathEntryIfMissing {
+    param([string]$PathEntry)
+
+    if (-not $PathEntry) {
         return
     }
+
+    if (-not (Test-Path $PathEntry)) {
+        return
+    }
+
+    $currentPathEntries = @($env:PATH -split ';' | Where-Object { $_ })
+    if ($currentPathEntries -contains $PathEntry) {
+        return
+    }
+
+    $env:PATH = "$PathEntry;$env:PATH"
+}
+
+function Add-NpmGlobalBinToSessionPath {
+    if (-not (Test-CommandAvailable "npm")) {
+        return
+    }
+
+    $npmPrefix = ((& npm prefix -g 2>$null) | Out-String).Trim()
+    if (-not $npmPrefix) {
+        return
+    }
+
+    Add-PathEntryIfMissing $npmPrefix
+}
+
+function Test-NpmGlobalPackageInstalled {
+    param([string]$PackageName)
 
     if (-not (Test-CommandAvailable "npm")) {
-        Write-Warning "npm not found. Skipping MCP CLI auto-install. Install Node.js LTS to enable MCP CLI setup."
-        return
+        return $false
     }
 
-    Write-Information "Installing MCP CLI via npm..."
-    & npm install -g @modelcontextprotocol/cli
+    $null = & npm list -g $PackageName --depth=0 2>$null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-NodeToolingIfMissing {
+    if (Test-CommandAvailable "npm") {
+        Add-NpmGlobalBinToSessionPath
+        return $true
+    }
+
+    Write-Information "npm not found. Attempting automatic Node.js LTS installation via winget..."
+
+    try {
+        Install-WingetPackage "OpenJS.NodeJS.LTS" "Node.js LTS"
+    }
+    catch {
+        Write-Warning "Automatic Node.js LTS install failed: $_"
+        return $false
+    }
+
+    Add-NodePathsToSessionPath
+    Add-NpmGlobalBinToSessionPath
+    return (Test-CommandAvailable "npm")
+}
+
+function Test-McpCommandAvailable {
+    return ((Test-CommandAvailable "mcp") -or (Test-CommandAvailable "mcp-inspector"))
+}
+
+function Test-McpPackageInstalledButCommandMissing {
+    if (-not (Test-NpmGlobalPackageInstalled "@modelcontextprotocol/inspector")) {
+        return $false
+    }
+
+    Add-NpmGlobalBinToSessionPath
+    return (-not (Test-McpCommandAvailable))
+}
+
+function Install-McpInspectorPackage {
+    Write-Information "Installing MCP inspector CLI via npm..."
+    & npm install -g @modelcontextprotocol/inspector
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Failed to install MCP CLI via npm. You can install it manually later."
+        Write-Warning "Failed to install MCP inspector via npm. You can install it manually later."
+        return $false
+    }
+
+    return $true
+}
+
+function Install-McpCliTooling {
+    if (-not (Install-NodeToolingIfMissing)) {
+        Write-Warning "npm is still unavailable after automatic setup attempt. Install Node.js LTS manually, then re-run this pipeline."
         return
     }
 
-    if (Test-CommandAvailable "mcp") {
-        Write-Information "MCP CLI installed successfully."
+    Add-NpmGlobalBinToSessionPath
+
+    if (Test-McpCommandAvailable) {
+        Write-Information "MCP tooling is already available."
+        return
+    }
+
+    if (Test-McpPackageInstalledButCommandMissing) {
+        Write-Warning "MCP inspector is installed globally, but no command was detected in PATH for this session. Open a new terminal and re-run the pipeline."
+        return
+    }
+
+    if (-not (Install-McpInspectorPackage)) {
+        return
+    }
+
+    if (Test-McpCommandAvailable) {
+        Write-Information "MCP tooling installed successfully."
     }
     else {
-        Write-Warning "MCP CLI package installed but 'mcp' command was not detected in PATH for this session."
+        Write-Warning "MCP package installed but no MCP command was detected in PATH for this session."
     }
 }
 
@@ -109,23 +274,25 @@ function Initialize-Poetry {
     }
 }
 
-function Test-PoetryLockFresh {
-    $null = & $VenvPy -m poetry check
-    return ($LASTEXITCODE -eq 0)
+function Test-DevDependenciesAvailable {
+    try {
+        Invoke-PoetryCommand @("install", "--only", "main,dev", "--no-root")
+        return $true
+    }
+    catch {
+        Write-Warning "Failed to synchronize main/dev dependencies: $_"
+        return $false
+    }
 }
 
-function Invoke-PoetryLockRefresh {
-    if (-not (Test-Path "$repoRoot\poetry.lock")) {
-        Write-Information "poetry.lock not found. Generating lockfile..."
-        Invoke-PoetryCommand @("lock", "--no-interaction")
-        return
-    }
+function Invoke-PoetryLockRegenerate {
+    Write-Information "Regenerating poetry.lock from pyproject.toml..."
+    Invoke-PoetryCommand @("lock", "--regenerate", "--no-interaction")
+    Invoke-PoetryCommand @("check")
+}
 
-    if (-not (Test-PoetryLockFresh)) {
-        Write-Information "poetry.lock is out of date. Regenerating lockfile..."
-        Invoke-PoetryCommand @("lock", "--no-interaction")
-        Invoke-PoetryCommand @("check")
-    }
+function Test-PoetryLockIsValid {
+    Invoke-PoetryCommand @("check")
 }
 
 $pipelineFailed = $false
@@ -136,37 +303,48 @@ try {
         Initialize-Poetry
     }
 
-    Invoke-Step "Install developer PR review tooling (GitHub CLI + MCP CLI)" {
-        if (-not (Test-CommandAvailable "gh")) {
-            Install-WingetPackage "GitHub.cli" "GitHub CLI"
-        }
-        else {
-            Write-Information "GitHub CLI is already available."
-        }
+    Invoke-Step "Validate Poetry lockfile" {
+        Test-PoetryLockIsValid
+    }
 
+    Invoke-Step "Report optional developer PR review tooling (GitHub CLI + MCP CLI)" {
         if (Test-CommandAvailable "gh") {
             $ghVersion = (& gh --version | Select-Object -First 1)
             if ($ghVersion) {
-                Write-Information "Detected: $ghVersion"
+                Write-Information "Detected optional GitHub CLI: $ghVersion"
             }
         }
+        else {
+            Write-Information "Optional GitHub CLI not found (quality gate continues)."
+        }
 
-        Install-McpCliTooling
+        if (Test-McpCommandAvailable) {
+            Write-Information "Detected optional MCP tooling in PATH."
+        }
+        else {
+            Write-Information "Optional MCP tooling not found (quality gate continues)."
+        }
     }
 
-    Invoke-Step "Ensure Poetry lockfile is fresh" {
-        Invoke-PoetryLockRefresh
+    Invoke-Step "Ensure test dependencies (main + dev, no ml)" {
+        if (Test-DevDependenciesAvailable) {
+            Write-Information "Main/dev dependencies synchronized successfully."
+        }
+        else {
+            throw "Unable to synchronize main/dev dependencies."
+        }
     }
 
-    Invoke-Step "Install test dependencies (main + dev, no ml)" {
-        Invoke-PoetryCommand @("install", "-v", "--only", "main,dev", "--no-root")
+    Invoke-Step "Enforce zero-suppression policy" {
+        Invoke-PoetryCommand @("run", "python", "tests/tools/check_no_suppressions.py")
     }
 
     Invoke-Step "Run PowerShell lint" {
         & "$repoRoot\.github\scripts\Invoke-PowerShellLint.ps1" -ScriptPaths @(
+            "$repoRoot\.github\scripts\Invoke-PowerShellLint.ps1",
             "$repoRoot\install_dependencies.ps1",
             "$repoRoot\run_local_pipeline.ps1"
-        )
+        ) -MaxCyclomaticComplexity 9 -MaxNestingDepth 4
     }
 
     Invoke-Step "Run Markdown auto-delinter (mdformat)" {
@@ -175,6 +353,18 @@ try {
 
     Invoke-Step "Run Markdown linter (pymarkdown)" {
         Invoke-PoetryCommand @("run", "pymarkdown", "scan", "README.md", "AGENTS.md", "docs", ".github")
+    }
+
+    Invoke-Step "Run isort import order check" {
+        Invoke-PoetryCommand @("run", "isort", "--check-only", "--filter-files", "auto_subtitle.py", "modules", "tests")
+    }
+
+    Invoke-Step "Run Black format check" {
+        Invoke-PoetryCommand @("run", "black", "--check", "auto_subtitle.py", "modules", "tests")
+    }
+
+    Invoke-Step "Run Taplo format check" {
+        Invoke-PoetryCommand @("run", "taplo", "format", "--check", "pyproject.toml", "poetry.toml")
     }
 
     Invoke-Step "Run Ruff" {
@@ -191,6 +381,167 @@ try {
 
     Invoke-Step "Run Pylint" {
         Invoke-PoetryCommand @("run", "pylint", "modules", "auto_subtitle.py")
+    }
+
+    Invoke-Step "Run Pylint on tests (errors-only)" {
+        $env:PYTHONPATH = "."
+        Invoke-PoetryCommand @("run", "pylint", "tests", "--errors-only")
+    }
+
+    Invoke-Step "Run mypy" {
+        Invoke-PoetryCommand @("run", "mypy", "auto_subtitle.py", "modules", "tests")
+    }
+
+    Invoke-Step "Run pyright" {
+        Invoke-PoetryCommand @("run", "pyright", "auto_subtitle.py", "modules", "tests")
+    }
+
+    Invoke-Step "Run Bandit security scan (high severity/high confidence)" {
+        Invoke-PoetryCommand @("run", "bandit", "-c", "pyproject.toml", "-q", "-r", "auto_subtitle.py", "modules", "-lll", "-iii")
+    }
+
+    Invoke-Step "Run dependency vulnerability scan (pip-audit)" {
+        $auditRequirementsPath = [System.IO.Path]::GetTempFileName()
+        $lockParserPath = [System.IO.Path]::GetTempFileName()
+        $lockParser = @"
+import sys
+import tomllib
+from pathlib import Path
+
+lock_data = tomllib.loads(Path("poetry.lock").read_text(encoding="utf-8"))
+packages = lock_data.get("package", [])
+selected_by_name = {}
+for package in packages:
+    groups = set(package.get("groups", []))
+    if not groups.intersection({"main", "ml"}):
+        continue
+    name = package.get("name")
+    version = package.get("version")
+    if not name or not version:
+        continue
+    # Keep one pinned version per package name for pip-audit requirements input.
+    if name not in selected_by_name:
+        selected_by_name[name] = version
+
+lines = [f"{name}=={version}" for name, version in sorted(selected_by_name.items())]
+Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+"@
+        try {
+            Set-Content -Path $lockParserPath -Value $lockParser -Encoding UTF8
+            Invoke-CheckedCommand $VenvPy @($lockParserPath, $auditRequirementsPath)
+            Invoke-PoetryCommand @("run", "pip-audit", "--requirement", $auditRequirementsPath, "--no-deps", "--disable-pip")
+        }
+        finally {
+            if (Test-Path $lockParserPath) {
+                Remove-Item $lockParserPath -Force
+            }
+            if (Test-Path $auditRequirementsPath) {
+                Remove-Item $auditRequirementsPath -Force
+            }
+        }
+    }
+
+    Invoke-Step "Run Radon complexity (A-grade enforced)" {
+        $radonArgs = @(
+            "-m",
+            "poetry",
+            "run",
+            "radon",
+            "cc",
+            "auto_subtitle.py",
+            "modules",
+            "tests/modules",
+            "tests/orchestration",
+            "-s",
+            "-a"
+        )
+
+        $radonOutput = (& $VenvPy @radonArgs 2>&1) | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            throw "Command failed: $VenvPy $($radonArgs -join ' ')"
+        }
+
+        Set-Content -Path "$repoRoot\radon_report.txt" -Value $radonOutput -Encoding UTF8
+        Write-Information $radonOutput
+
+        $nonAGrades = @(
+            ($radonOutput -split "`r?`n") |
+                Where-Object { $_ -match "\s-\s[B-F]\s\(" }
+        )
+        if ($nonAGrades.Count -gt 0) {
+            Write-Error "Radon found non-A complexity grades:" -ErrorAction Continue
+            foreach ($line in $nonAGrades) {
+                Write-Error "  $line" -ErrorAction Continue
+            }
+            throw "Radon complexity gate failed. All functions/methods must be grade A."
+        }
+    }
+
+    Invoke-Step "Run Radon maintainability index (A-grade enforced)" {
+        $radonMiArgs = @(
+            "-m",
+            "poetry",
+            "run",
+            "radon",
+            "mi",
+            "auto_subtitle.py",
+            "modules",
+            "tests/modules",
+            "tests/orchestration",
+            "-s"
+        )
+
+        $radonMiOutput = (& $VenvPy @radonMiArgs 2>&1) | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            throw "Command failed: $VenvPy $($radonMiArgs -join ' ')"
+        }
+
+        Set-Content -Path "$repoRoot\radon_mi_report.txt" -Value $radonMiOutput -Encoding UTF8
+        Write-Information $radonMiOutput
+
+        $nonAGrades = @(
+            ($radonMiOutput -split "`r?`n") |
+                ForEach-Object {
+                    $line = $_
+                    $match = [regex]::Match($line, "\s-\s([A-F])\s\(")
+                    if ($match.Success) {
+                        $grade = $match.Groups[1].Value
+                        if ($grade -ne "A") {
+                            $line
+                        }
+                    }
+                }
+        )
+
+        if ($nonAGrades.Count -gt 0) {
+            Write-Error "Radon MI gate failed. Non-A grades were found:" -ErrorAction Continue
+            foreach ($line in $nonAGrades) {
+                Write-Error "  $line" -ErrorAction Continue
+            }
+            throw "Radon MI gate failed. All files must have A-grade maintainability."
+        }
+    }
+
+    Invoke-Step "Run Radon Halstead metrics (hal)" {
+        $radonHalArgs = @(
+            "-m",
+            "poetry",
+            "run",
+            "radon",
+            "hal",
+            "auto_subtitle.py",
+            "modules",
+            "tests/modules",
+            "tests/orchestration"
+        )
+
+        $radonHalOutput = (& $VenvPy @radonHalArgs 2>&1) | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            throw "Command failed: $VenvPy $($radonHalArgs -join ' ')"
+        }
+
+        Set-Content -Path "$repoRoot\radon_hal_report.txt" -Value $radonHalOutput -Encoding UTF8
+        Write-Information $radonHalOutput
     }
 
     Invoke-Step "Run tests with coverage" {
@@ -213,11 +564,11 @@ try {
     Invoke-Step "Enforce per-file coverage >= 90%" {
         $coverageFiles = @(
             "auto_subtitle.py",
-            "modules/config.py",
-            "modules/isolated_translator.py",
+            "modules/configuration/config.py",
+            "modules/pipeline/isolated_translator.py",
             "modules/models.py",
-            "modules/transcription.py",
-            "modules/translation.py",
+            "modules/pipeline/transcription.py",
+            "modules/pipeline/translation.py",
             "modules/utils.py"
         )
 
@@ -252,7 +603,8 @@ try {
             throw "coverage.xml was not generated by the test step."
         }
 
-        Invoke-PoetryCommand @("run", "python", "tests/transform_metrics.py", "coverage.xml", "assets/coverage.svg")
+        Invoke-PoetryCommand @("run", "genbadge", "coverage", "-i", "coverage.xml", "-o", "assets/coverage.svg")
+        Invoke-PoetryCommand @("run", "python", "tests/tools/transform_metrics.py", "coverage.xml")
     }
 }
 catch {

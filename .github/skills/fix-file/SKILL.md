@@ -1,6 +1,8 @@
 ______________________________________________________________________
 
-## name: fix-file user-invocable: true description: "Use when you need to fix one file end-to-end: lint, test impact, and apply minimal safe changes for this project."
+## name: fix-file user-invocable: true description: Use when you need a targeted single-file fix workflow for one file end-to-end, including lint checks, impacted tests, and minimal safe edits.
+
+______________________________________________________________________
 
 # Fix File Skill
 
@@ -18,10 +20,12 @@ Apply the smallest safe fix to a target file and validate it.
 ## Commands
 
 ```powershell
-poetry run ruff check .
-poetry run ruff format --check .
+poetry run python tests/tools/check_no_suppressions.py
+poetry run ruff check <target_file_path>
+poetry run ruff format --check <target_file_path>
 poetry run flake8 <target_file_path>
-poetry run pytest tests/
+poetry run pytest <target_test_path>
+.\run_local_pipeline.ps1
 ```
 
 ## Project-Specific Guardrails
@@ -30,3 +34,4 @@ poetry run pytest tests/
 - Do not weaken shutdown and process cleanup behavior.
 - Preserve resume and atomic-save semantics.
 - Keep complexity below 10.
+- Never add suppression patterns (`noqa`, `type: ignore`, warning-ignore filters).
