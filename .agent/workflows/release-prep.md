@@ -1,6 +1,6 @@
----
-description: Prepare release artifacts, docs sync, and commit metadata from branch-derived version.
----
+______________________________________________________________________
+
+## description: Prepare release artifacts, docs sync, and commit metadata from branch-derived version.
 
 # Release Prep Workflow
 

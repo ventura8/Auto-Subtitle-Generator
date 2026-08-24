@@ -1,32 +1,28 @@
 ______________________________________________________________________
 
-## name: run-local-pipeline user-invocable: true description: Use when contributors or agents need to run the canonical full local validation gate covering all checks end-to-end.
-
-______________________________________________________________________
+## name: run-local-pipeline description: Execute local pipeline checks, linting, security scans, unit tests, code coverage gates (>=90%), and metric reports on Windows/PowerShell.
 
 # Run Local Pipeline Skill
+
+Use this skill to run the canonical full validation gate covering all checks end-to-end.
 
 ## Goal
 
 Execute the project quality gate exactly as contributors do locally.
 
-## Workflow
-
-1. Ensure dependencies are installed with Poetry.
-1. Run the pipeline script.
-1. Capture failures and map them to actionable file-level fixes.
-
 ## Command
 
 ```powershell
-./run_local_pipeline.ps1
+.\run_local_pipeline.ps1
 ```
 
 ## Success Criteria
 
-- Markdown auto-delint and lint checks pass.
-- Zero-suppression policy check passes.
-- Lint and type checks pass.
-- Security checks pass.
-- Tests pass.
-- Coverage output is generated and badge update step succeeds.
+- Zero-suppression check passes (`check_no_suppressions.py`).
+- Markdown auto-delint and scan pass (`mdformat` + `pymarkdown`).
+- Ruff formatting and linting pass.
+- Flake8, Pylint, Mypy, and Pyright pass.
+- Bandit and Pip-audit security checks pass.
+- Radon Cyclomatic Complexity (< 10) and Maintainability Index (A-rank) pass.
+- Test suite passes with $\\ge 90%$ overall and per-file coverage.
+- Coverage badge and summary reports are generated.

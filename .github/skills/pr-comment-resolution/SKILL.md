@@ -1,43 +1,27 @@
 ______________________________________________________________________
 
-## name: pr-comment-resolution user-invocable: true description: "Use when resolving pull request review comments (CodeRabbit + human) with GitHub CLI and MCP tooling while enforcing detailed replies before any thread is closed."
+## name: pr-comment-resolution description: Resolve PR review feedback from CodeRabbit and human reviewers using gh CLI / MCP, verifying validity before making edits, and replying with rationale before closing threads.
 
 # PR Comment Resolution Skill
 
 ## Goal
 
-Resolve all PR feedback with a traceable workflow that combines GitHub CLI and
-MCP review/comment tools.
+Resolve PR feedback with a rigorous, traceable workflow combining GitHub CLI and MCP review tools.
 
-## Workflow
+## Hard Rules
 
-1. Enumerate open PR review threads and comments from both CodeRabbit and human
-   reviewers.
-1. Reproduce and fix each requested change with minimal, safe edits.
-1. Post a detailed response per comment describing:
-   - what changed,
-   - why the change is correct,
-   - which files/tests validate the fix.
-1. Only mark a comment/thread resolved after the detailed response is posted.
-1. Repeat until no unresolved review comments remain.
+1. **Verify validity first**: Classify each comment as Valid, Not Valid, or Blocked before editing code.
+1. **Reply before resolving**: Always post a clear reply detailing what changed or why the suggestion was skipped.
+1. **No silent skips**: Address all open conversation threads.
+1. **Preserve repository invariants**: No suppressions, complexity < 10, >= 90% per-file test coverage.
 
-## Commands and Tools
+## Commands
 
 ```powershell
-# Inspect review comments via GitHub CLI
-gh pr view <pr-number> --comments
+# View comments and reviews
+gh pr view --comments
+gh pr view --json comments,reviews
 
-# Optional JSON inspection for automation
-gh pr view <pr-number> --json comments,reviews,reviewThreads
+# Query review threads via GraphQL with pagination support
+gh api graphql --paginate -F owner=":owner" -F repo=":repo" -F prNumber=<number> -f query='query($owner: String!, $repo: String!, $prNumber: Int!, $endCursor: String) { repository(owner: $owner, name: $repo) { pullRequest(number: $prNumber) { reviewThreads(first: 50, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { id isResolved comments(first: 50) { pageInfo { hasNextPage endCursor } nodes { id body author { login } } } } } } } }'
 ```
-
-- Use MCP Git tools for structured PR review flows when available.
-- Prefer MCP comment/review actions when they improve traceability.
-- Use GitHub CLI fallback commands when MCP capability is unavailable.
-
-## Guardrails
-
-- Never close a PR comment/thread without first posting a detailed reply.
-- Treat CodeRabbit comments with the same rigor as human reviewer comments.
-- Keep responses concrete and implementation-specific (avoid generic acknowledgments).
-- Preserve existing project constraints (Windows safety, model loading, resume/atomic writes).

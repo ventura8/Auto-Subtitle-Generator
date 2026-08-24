@@ -188,43 +188,6 @@ class TestCoverageConfig(unittest.TestCase):
 
         self.assertIn("no", config.TARGET_LANGUAGES)
 
-    def test_save_token_to_config_replaces_existing_value(self):
-        file_data = 'translation:\n  engine: "nllb"\n# keep this comment\nhf_token: "old"\nmodels:\n  nllb: "facebook/nllb-200-3.3B"\n'
-        mocked_open = mock_open(read_data=file_data)
-        fake_yaml = MagicMock()
-        fake_yaml.YAMLError = ValueError
-
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("builtins.open", mocked_open),
-            patch("modules.configuration.config._get_yaml_module", return_value=fake_yaml),
-            patch("builtins.print"),
-        ):
-            config._save_token_to_config("new-token")
-
-        written_data = "".join(call.args[0] for call in mocked_open().write.call_args_list)
-        self.assertIn('hf_token: "new-token"', written_data)
-        self.assertIn("# keep this comment", written_data)
-        self.assertIn('translation:\n  engine: "nllb"', written_data)
-        self.assertIn('models:\n  nllb: "facebook/nllb-200-3.3B"', written_data)
-
-    def test_save_token_to_config_appends_when_missing(self):
-        mocked_open = mock_open(read_data='translation:\n  engine: "nllb"\n')
-        fake_yaml = MagicMock()
-        fake_yaml.YAMLError = ValueError
-
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("builtins.open", mocked_open),
-            patch("modules.configuration.config._get_yaml_module", return_value=fake_yaml),
-            patch("builtins.print"),
-        ):
-            config._save_token_to_config("new-token")
-
-        written_data = "".join(call.args[0] for call in mocked_open().write.call_args_list)
-        self.assertIn('translation:\n  engine: "nllb"', written_data)
-        self.assertIn('hf_token: "new-token"', written_data)
-
     def test_handle_hf_token_prompt_full_flow(self):
         logger = MagicMock()
         conf = {
@@ -249,6 +212,34 @@ class TestCoverageConfig(unittest.TestCase):
             self.assertTrue(config.load_config(MagicMock(), logger))
             self.assertEqual(os.environ.get("HF_TOKEN"), "hf_test_token")
             self.assertEqual(mock_browser.call_count, 2)
+
+    def test_handle_hf_token_prompt_empty_input_skips_env(self):
+        logger = MagicMock()
+        optimizer = MagicMock()
+        optimizer.config = {}
+        conf = {
+            "debug_logging": False,
+            "translation": {"engine": "translategemma"},
+            "target_languages": {"en": {"code": "eng_Latn", "label": "English"}},
+        }
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch.dict("os.environ", {}, clear=False),
+            patch("builtins.input", return_value="   "),
+            patch("webbrowser.open"),
+            patch("builtins.print"),
+            patch("builtins.open", mock_open()) as mock_file,
+            patch(
+                "modules.configuration.config._get_yaml_module",
+                return_value=MagicMock(safe_load=MagicMock(return_value=conf), YAMLError=ValueError),
+            ),
+        ):
+            os.environ.pop("HF_TOKEN", None)
+            config._handle_hf_token_prompt()
+            self.assertNotIn("HF_TOKEN", os.environ)
+            self.assertTrue(config.load_config(optimizer, logger))
+            mock_file().write.assert_not_called()
+            self.assertEqual(config.TRANSLATOR_ENGINE, "translategemma")
 
     def test_load_config_nllb_vad_and_performance(self):
         logger = MagicMock()

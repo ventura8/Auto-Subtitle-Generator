@@ -1,29 +1,31 @@
 ______________________________________________________________________
 
-## applyTo: "tests/\*\*/\*.py" description: "Use when creating or updating tests for unit, coverage, and pipeline behavior in this project."
+## applyTo: "tests/\*\*/\*.py" description: Use when creating or updating tests for unit, coverage, and pipeline behavior in this project.
 
 # Test Instructions
 
 ## Coverage and Scope
 
-- Cover behavioral changes with focused tests in tests/.
-- Keep tests deterministic and isolated from network/hardware dependencies.
-- Prefer mocking external processes and heavy model calls.
+- Cover behavioral changes with focused tests in `tests/`.
+- Maintain overall and per-file test coverage $\\ge 90%$.
+- Keep tests deterministic, fast, and isolated from live GPU/external network dependencies.
+- Prefer mocking external boundaries (FFmpeg, CUDA device queries, HuggingFace downloads).
+- Never mock internal owned modules.
 
 ## Platform Compatibility
 
-- Keep tests compatible with Windows and Linux where practical.
-- For platform-specific attributes, use safe mocking patterns that tolerate
-  missing attributes.
+- Keep tests compatible with Windows and Linux.
+- When mocking platform-specific attributes (`os.add_dll_directory`, `ctypes.windll`), always use `mock.patch(..., create=True)`.
 
-## Assertions
+## Assertions & Quality
 
-- Assert user-visible behavior and outputs, not internal implementation details
-  unless required.
-- Add negative-path tests for failures in FFmpeg/process/model flows where
-  relevant.
+- Assert user-visible behavior and outputs, not fragile internal implementation details.
+- Add negative-path tests for failures in FFmpeg, process crashes, and invalid inputs.
+- Never add `# noqa` or `# type: ignore` to test code.
 
 ## Validation Commands
 
-- Primary: poetry run pytest tests/
-- Full gate: run_local_pipeline.ps1
+```powershell
+poetry run pytest tests/
+.\run_local_pipeline.ps1
+```
