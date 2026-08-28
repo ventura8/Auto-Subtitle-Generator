@@ -63,6 +63,35 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         self.assertIsNotNone(translation_module)
         auto_subtitle.log("  [Diagnostic] All AI mocks and modules verified.")
 
+    def test_parse_cli_args_defaults_and_explicit(self):
+        args = auto_subtitle.parse_cli_args(["video.mp4", "--lang", "ro", "--prompt", "Hello", "--cpu"])
+        self.assertEqual(args.input_path, "video.mp4")
+        self.assertEqual(args.lang, "ro")
+        self.assertEqual(args.prompt, "Hello")
+        self.assertTrue(args.cpu)
+
+    def test_is_usable_language_filtering(self):
+        self.assertTrue(auto_subtitle._is_usable_language("en"))
+        self.assertTrue(auto_subtitle._is_usable_language("ro"))
+        self.assertFalse(auto_subtitle._is_usable_language(None))
+        self.assertFalse(auto_subtitle._is_usable_language(""))
+        self.assertFalse(auto_subtitle._is_usable_language("   "))
+        self.assertFalse(auto_subtitle._is_usable_language("und"))
+        self.assertFalse(auto_subtitle._is_usable_language("undetermined"))
+        self.assertFalse(auto_subtitle._is_usable_language("unknown"))
+        self.assertFalse(auto_subtitle._is_usable_language("UNKNOWN"))
+
+    def test_get_input_files_with_parsed_args_namespace(self):
+        ns = argparse.Namespace(input_path="custom.mp4", lang="es", prompt="Test prompt", cpu=False)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("os.path.isdir", return_value=False),
+        ):
+            files, lang, prompt = auto_subtitle.get_input_files(parsed_args=ns)
+            self.assertEqual(files, [os.path.abspath("custom.mp4")])
+            self.assertEqual(lang, "es")
+            self.assertEqual(prompt, "Test prompt")
+
     def test_get_input_files_single_video(self):
         with (
             patch("os.path.isfile", return_value=True),
@@ -115,7 +144,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         mock_extract.assert_called_once_with(video_path)
         mock_save_srt.assert_called_once_with([mock_seg], expected_src_srt)
         mock_translate.assert_called_once_with([mock_seg], "en", mock_mgr, expected_folder, "video")
-        mock_embed.assert_called_once_with(video_path, [])
+        mock_embed.assert_called_once_with(video_path, [], "en")
         mock_cleanup.assert_called_once_with(expected_folder, "video", "video.mp4")
 
     def test_resume_processing_from_existing_files(self):
@@ -318,14 +347,39 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
     def test_main_no_files(self):
         with (
+            patch("auto_subtitle.parse_cli_args", return_value=argparse.Namespace(input_path=None, lang=None, prompt=None, cpu=False)),
             patch("auto_subtitle.get_input_files", return_value=([], None, None)),
             patch("auto_subtitle.init_ai_engine"),
             patch("auto_subtitle.setup_environment"),
+            patch("auto_subtitle.models.OPTIMIZER.detect_hardware"),
+            patch("auto_subtitle.utils.print_banner") as m_banner,
             patch("auto_subtitle.log"),
             patch("sys.exit") as m_exit,
         ):
             auto_subtitle.main()
             m_exit.assert_called_with(0)
+            # Regression: the startup banner must still print when no videos are found.
+            m_banner.assert_called_once()
+
+    def test_main_input_path_not_found_exits_cleanly(self):
+        with (
+            patch(
+                "auto_subtitle.parse_cli_args",
+                return_value=argparse.Namespace(input_path="ghost", lang=None, prompt=None, cpu=False),
+            ),
+            patch("auto_subtitle.get_input_files", side_effect=FileNotFoundError("ghost")),
+            patch("auto_subtitle.init_ai_engine"),
+            patch("auto_subtitle.setup_environment"),
+            patch("auto_subtitle.models.OPTIMIZER.detect_hardware"),
+            patch("auto_subtitle.utils.print_banner"),
+            patch("auto_subtitle.log"),
+            patch("sys.exit", side_effect=SystemExit) as m_exit,
+        ):
+            # Regression: an invalid input path must exit cleanly, not raise an
+            # unhandled FileNotFoundError traceback out of main().
+            with self.assertRaises(SystemExit):
+                auto_subtitle.main()
+            m_exit.assert_called_once_with(1)
 
     def test_main_with_files(self):
         # Run main() with minimal mocks to cover get_input_files and setup_environment
@@ -390,6 +444,8 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
             # Verify metadata
             self.assertIn("language=en", cmd)
             self.assertIn("language=es", cmd)
+            self.assertIn("-metadata:s:v:0", cmd)
+            self.assertIn("-metadata:s:a:0", cmd)
 
     def test_init_engine_failures(self):
         # Cover ImportError inside _init_* functions
@@ -415,6 +471,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
     def test_nvidia_path_loading(self):
         # Cover load_nvidia_paths and _get_nvidia_bin_lib_paths
         # We need to mock os.path.exists and os.listdir to simulate NVIDIA folders
+        from modules.runtime import nvidia_paths
 
         def os_exists_side_effect(path):
             if "nvidia" in path or "site-packages" in path or "lib" in path:
@@ -434,7 +491,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
             with patch("auto_subtitle.torch") as m_torch:
                 m_torch.__path__ = ["/site-packages/torch"]
 
-                auto_subtitle.load_nvidia_paths()
+                nvidia_paths.load_nvidia_paths(m_torch)
 
                 # Check that paths were added
                 self.assertTrue(len(os.environ["PATH"]) > 0)
@@ -442,6 +499,15 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                 # Logic: /site-packages/nvidia/cudnn/bin, lib...
                 # We expect multiple add_dll_directory calls
                 m_add_dll.assert_called()
+
+    def test_bootstrap_cpu_env(self):
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0"}, clear=False):
+            auto_subtitle.bootstrap_cpu_env(["--cpu"])
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "")
+
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0"}, clear=False):
+            auto_subtitle.bootstrap_cpu_env(["--lang", "en"])
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "0")
 
 
 if __name__ == "__main__":

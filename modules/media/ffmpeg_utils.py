@@ -2,6 +2,7 @@
 
 import gc
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -11,14 +12,61 @@ from ..runtime.progress import print_progress_bar
 from ..subtitles.timestamp_utils import parse_timestamp
 
 
-def get_ffmpeg_paths():
-    """Returns paths to FFmpeg binaries, preferring local venv installation."""
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    venv_ffmpeg = os.path.join(base, ".venv", "ffmpeg", "bin", "ffmpeg.exe")
-    venv_ffprobe = os.path.join(base, ".venv", "ffmpeg", "bin", "ffprobe.exe")
+def _resolve_ffmpeg_pair(bin_dir, ext):
+    """Return (ffmpeg, ffprobe) paths from a candidate directory, or None."""
+    ffmpeg_path = os.path.join(bin_dir, f"ffmpeg{ext}")
+    ffprobe_path = os.path.join(bin_dir, f"ffprobe{ext}")
+    if (
+        os.path.isfile(ffmpeg_path)
+        and os.access(ffmpeg_path, os.X_OK)
+        and os.path.isfile(ffprobe_path)
+        and os.access(ffprobe_path, os.X_OK)
+    ):
+        return ffmpeg_path, ffprobe_path
+    return None
 
-    if os.path.exists(venv_ffmpeg) and os.path.exists(venv_ffprobe):
-        return venv_ffmpeg, venv_ffprobe
+
+def _iter_ffmpeg_candidates():
+    """Yield (bin_dir, extension) candidates for local FFmpeg discovery."""
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    extensions = [".exe"] if sys.platform == "win32" else [""]
+    bin_dirs = [
+        os.path.join(base, ".venv", "ffmpeg", "bin"),
+        os.path.join(base, ".venv", "Scripts"),
+        os.path.join(base, ".venv", "bin"),
+        # The active environment may differ from the repository-root .venv.
+        os.path.join(sys.prefix, "ffmpeg", "bin"),
+        os.path.join(sys.prefix, "Scripts"),
+        os.path.join(sys.prefix, "bin"),
+    ]
+    for bin_dir in bin_dirs:
+        for ext in extensions:
+            yield bin_dir, ext
+
+
+def _resolve_installed_ffmpeg_pair():
+    """Return the PATH-resolved ffmpeg/ffprobe pair when both are installed."""
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    if ffmpeg_path and ffprobe_path:
+        return ffmpeg_path, ffprobe_path
+    return None
+
+
+def get_ffmpeg_paths():
+    """Returns paths to FFmpeg binaries, preferring an installed system FFmpeg.
+
+    Project rule: an installed dependency always wins over a bundled or
+    locally built copy, matching install_dependencies.sh, which also probes
+    the system FFmpeg first. The bundled venv copies are only a fallback.
+    """
+    installed_pair = _resolve_installed_ffmpeg_pair()
+    if installed_pair is not None:
+        return installed_pair
+    for bin_dir, ext in _iter_ffmpeg_candidates():
+        pair = _resolve_ffmpeg_pair(bin_dir, ext)
+        if pair is not None:
+            return pair
     return "ffmpeg", "ffprobe"
 
 
@@ -182,3 +230,16 @@ def _raise_ffmpeg_failure(return_code, cmd):
     if isinstance(error_cls, type) and issubclass(error_cls, BaseException):
         raise error_cls(return_code, cmd)
     raise RuntimeError(f"FFmpeg command failed with return code {return_code}: {cmd}")
+
+
+def build_primary_media_metadata_args(src_lang):
+    """Tag copied primary media streams with the detected source language."""
+    from ..configuration import config
+
+    source_language = config.to_mux_language_code(src_lang)
+    return [
+        "-metadata:s:v:0",
+        f"language={source_language}",
+        "-metadata:s:a:0",
+        f"language={source_language}",
+    ]

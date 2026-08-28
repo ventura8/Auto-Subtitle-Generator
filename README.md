@@ -17,8 +17,8 @@ performance on any system.
 
 ## **📝 Release Notes**
 
-- v1.1.2: [docs/releases/v1.1.2.md](docs/releases/v1.1.2.md)
-- GitHub release body (copy-ready): [docs/releases/v1.1.2-github-release.md](docs/releases/v1.1.2-github-release.md)
+- v1.2.0: [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md)
+- GitHub release body (copy-ready): [docs/releases/v1.2.0_github_description.md](docs/releases/v1.2.0_github_description.md)
 
 ## **🌟 Key Features**
 
@@ -146,6 +146,10 @@ global reach:
 - **Atomic Saves:** Subtitles are saved to disk *immediately* after each
   individual language is translated, preventing data loss if the process is
   interrupted.
+- **Model Download Integrity & Auto-Recovery:** Every downloaded AI model and
+  tokenizer checkpoint (`BS-Roformer`, `Faster-Whisper`, `NLLB`,
+  `TranslateGemma`) automatically detects corrupted or truncated downloads,
+  purges the stale cache, and re-downloads cleanly without crashing.
 - **Intelligent Skip:**
   - Automatically skips videos that already have a final `_multilang` output for
     the same container extension.
@@ -196,26 +200,33 @@ graph TD
 
 ## **🛠️ Prerequisites**
 
-- **OS:** Windows 10/11 (64-bit)
+- **OS:** Windows, Linux, or macOS (64-bit).
 - **GPU:** NVIDIA RTX 3000/4000/5000 Series (Recommended).
 - **Python:** 3.12.x only.
 
 ## **📦 Installation**
 
 1. **Clone the repository.**
-1. Run the Installer: Double-click `install_dependencies.ps1`.
-   - Automatically fetches **PyTorch Stable** (CUDA 13.2) required for RTX
-     50-series support.
-   - Installs FFmpeg and the **production runtime profile** (`main + ml` Poetry
-     groups).
+1. Install **FFmpeg** on your system (e.g., via `choco install ffmpeg` on Windows,
+   your Linux package manager, or Homebrew on macOS) as a prerequisite before running
+   `install_dependencies.ps1` or `install_dependencies.sh`.
+1. Run the platform installer:
+   - **Windows:** `./install_dependencies.ps1`
+   - **Linux, macOS, or WSL2:** `./install_dependencies.sh`
+1. The installer fetches the production runtime profile (`main + ml`). On
+   supported NVIDIA systems, PyTorch uses the CUDA 13.2 runtime (with RTX
+   50-series support). The installer keeps any Faster-Whisper compatibility
+   runtime isolated from the CUDA 13 libraries.
 
 ### **Dependency Profiles**
 
 - **Production runtime**: installs `main + ml` groups (heavy AI stack included).
-  - Used by `install_dependencies.ps1`.
+  - Used by `install_dependencies.ps1` and `install_dependencies.sh`.
+- `install_dependencies.sh` accepts an optional comma-separated group list, for
+  example `./install_dependencies.sh ml,dev`; only `ml` and `dev` are valid.
 - **Test/local quality gate**: installs `main + dev` groups **without** `ml`.
-  - Used by `run_local_pipeline.ps1` to validate logic against real light
-    dependencies without GPU-heavy packages.
+  - Used by `run_local_pipeline.ps1` and `run_local_pipeline.sh` to validate
+    logic against real light dependencies without GPU-heavy packages.
 
 ## **🎮 Usage**
 

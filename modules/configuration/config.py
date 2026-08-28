@@ -238,6 +238,88 @@ NLLB_PREFIX_TO_ISO = {
     "pes": "fa",
 }
 
+# Mapping from ISO 639-1 / 2-letter codes to standard ISO 639-2 (3-letter) codes for container metadata
+ISO_639_1_TO_639_2 = {
+    "ar": "ara",
+    "fa": "fas",
+    "ms": "msa",
+    "mg": "mlg",
+    "sw": "swa",
+    "az": "aze",
+    "lv": "lav",
+    "no": "nor",
+    "nb": "nob",
+    "nn": "nno",
+    "zh": "zho",
+    "ja": "jpn",
+    "ko": "kor",
+    "de": "deu",
+    "fr": "fra",
+    "es": "spa",
+    "it": "ita",
+    "pt": "por",
+    "ru": "rus",
+    "hi": "hin",
+    "ro": "ron",
+    "tr": "tur",
+    "vi": "vie",
+    "pl": "pol",
+    "nl": "nld",
+    "id": "ind",
+    "uk": "ukr",
+    "th": "tha",
+    "cs": "ces",
+    "hu": "hun",
+    "sv": "swe",
+    "el": "ell",
+    "da": "dan",
+    "fi": "fin",
+    "bg": "bul",
+    "hr": "hrv",
+    "sr": "srp",
+    "sk": "slk",
+    "sl": "slv",
+    "lt": "lit",
+    "et": "est",
+    "he": "heb",
+    "en": "eng",
+}
+
+# Specific NLLB 3-letter prefixes mapped to standard ISO 639-2 codes
+NLLB_PREFIX_TO_ISO639_2 = {
+    "arb": "ara",
+    "pes": "fas",
+    "zsm": "msa",
+    "plt": "mlg",
+    "swh": "swa",
+    "azj": "aze",
+    "lvs": "lav",
+    "nob": "nob",
+}
+
+
+def to_mux_language_code(lang: str | None) -> str:
+    """Convert language code to a standard ISO 639-2 3-letter container metadata code."""
+    if not lang:
+        return "und"
+
+    iso_639_2 = ISO_639_1_TO_639_2.get(lang)
+    if iso_639_2:
+        return iso_639_2
+
+    prefix = _get_mux_language_prefix(lang)
+    return NLLB_PREFIX_TO_ISO639_2.get(prefix, prefix)
+
+
+def _get_mux_language_prefix(lang: str) -> str:
+    """Return the NLLB language prefix used for container metadata mapping."""
+    lang_info = TARGET_LANGUAGES.get(lang)
+    if isinstance(lang_info, dict) and lang_info.get("code"):
+        nllb_code = lang_info["code"]
+    else:
+        nllb_code = ISO_TO_NLLB.get(lang, "")
+    return nllb_code.split("_", maxsplit=1)[0] if nllb_code else lang
+
 
 # =============================================================================
 # LOADING LOGIC

@@ -57,11 +57,13 @@ class TestIsolatedTranslator(unittest.TestCase):
         self.assertEqual(mock_proc.call_count, 1)
 
     @patch("modules.pipeline.isolated_translator.utils.print_progress_bar")
+    @patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "out.tmp"))
+    @patch("modules.pipeline.isolated_translator.os.close")
     @patch("modules.pipeline.isolated_translator.time.sleep")
     @patch("os.replace")
     @patch("os.remove")
     @patch("os.path.exists")
-    def test_process_single_job(self, mock_exists, mock_remove, mock_replace, mock_sleep, mock_print):
+    def test_process_single_job(self, mock_exists, mock_remove, mock_replace, mock_sleep, mock_close, mock_mkstemp, mock_print):
         from modules.pipeline import isolated_translator
 
         # Mock translator
@@ -87,12 +89,17 @@ class TestIsolatedTranslator(unittest.TestCase):
         # Verify file write to satisfy unused variable lint
         m_open().write.assert_called()
 
+    @patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "out.tmp"))
+    @patch("modules.pipeline.isolated_translator.os.close")
+    @patch("os.replace")
     @patch("modules.pipeline.isolated_translator.ModelManager")
     @patch("modules.pipeline.isolated_translator.config.load_config")
     @patch("modules.pipeline.isolated_translator.OPTIMIZER")
     @patch("modules.utils.print_progress_bar")
     @patch("modules.pipeline.isolated_translator.log")
-    def test_run_translation_worker_direct(self, mock_log, mock_print, mock_opt, mock_load, mock_mm):
+    def test_run_translation_worker_direct(
+        self, mock_log, mock_print, mock_opt, mock_load, mock_mm, mock_replace, mock_close, mock_mkstemp
+    ):
         from modules.pipeline import isolated_translator
 
         # Mocking data
@@ -107,6 +114,7 @@ class TestIsolatedTranslator(unittest.TestCase):
             isolated_translator.run_translation_worker("in.json", "out.json", "eng_Latn", "spa_Latn", 1, "Spanish", " [Prefix]")
 
         mock_translator.translate.assert_called()
+        mock_replace.assert_called()
         # Verify it validates the write
         m_open().write.assert_called()
 

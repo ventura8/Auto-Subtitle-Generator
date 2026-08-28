@@ -19,21 +19,22 @@ import importlib
 import logging
 import multiprocessing
 import os
-import site
 import sys
 import time
-from typing import Any
 
 from modules import models, utils
 from modules.configuration import config
+from modules.media.ffmpeg_utils import build_primary_media_metadata_args
 from modules.models import OPTIMIZER, ModelManager
 from modules.pipeline.transcription import transcribe_video_audio
 from modules.pipeline.translation import translate_segments
+from modules.runtime import nvidia_paths
+from modules.runtime.bootstrap import bootstrap_cpu_env
+from modules.subtitles.discovery import find_existing_srt_languages
 from modules.utils import log, print_progress_bar
 
 # Torch runtime holder; tests may monkeypatch module-level "torch".
 _RUNTIME_STATE = {"torch": None}
-_DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
 def _get_torch_module():
@@ -70,6 +71,7 @@ def _init_torch_and_hardware(step, total_steps):
     """Initializes PyTorch and hardware detection."""
     # Step 1: PyTorch
     try:
+        nvidia_paths.prepare_nvidia_paths()
         torch_module = importlib.import_module("torch")
         if _get_torch_module() is None:
             _set_torch_module(torch_module)
@@ -91,7 +93,7 @@ def _init_nvidia_and_transformers(step, total_steps):
     """Initializes NVIDIA paths and Transformers."""
     # Step 3: NVIDIA Paths
     step += 1
-    load_nvidia_paths()
+    nvidia_paths.load_nvidia_paths(_get_torch_module())
     _render_init_progress(step, total_steps, "Configuring NVIDIA Runtime")
 
     # Step 4: Transformers
@@ -151,114 +153,6 @@ def init_ai_engine():
         _render_init_progress(step, total_steps, "Initialization Complete")
 
 
-def _get_nvidia_bin_lib_paths(sp):
-    """Internal helper to find bin/lib in nvidia subdirs."""
-    paths = []
-    nvidia_path = os.path.join(sp, "nvidia")
-    if not os.path.exists(nvidia_path):
-        return paths
-
-    for item in os.listdir(nvidia_path):
-        sub_path = os.path.join(nvidia_path, item)
-        if not os.path.isdir(sub_path):
-            continue
-        paths.extend(_collect_existing_runtime_dirs(sub_path))
-    return paths
-
-
-def _collect_existing_runtime_dirs(base_dir):
-    """Collect existing runtime subdirectories used by CUDA providers."""
-    existing = []
-    for dir_name in ["bin", "lib"]:
-        candidate = os.path.join(base_dir, dir_name)
-        if os.path.exists(candidate):
-            existing.append(candidate)
-    return existing
-
-
-def _add_dll_directory_if_supported(path):
-    """Register DLL directory on supported platforms without hard failure."""
-    if not hasattr(os, "add_dll_directory"):
-        return
-    try:
-        handle = os.add_dll_directory(path)
-        if handle is not None:
-            _DLL_DIRECTORY_HANDLES.append(handle)
-    except (AttributeError, OSError):
-        pass
-
-
-def _collect_site_packages_paths():
-    """Collect site-packages paths for runtime DLL discovery."""
-    site_packages = site.getsitepackages()
-    manual_site = os.path.join(sys.prefix, "Lib", "site-packages")
-    if manual_site not in site_packages:
-        site_packages.append(manual_site)
-    return site_packages
-
-
-def _get_or_import_torch_module():
-    """Return cached torch module or import it when available."""
-    torch_module = _get_torch_module()
-    if torch_module is not None:
-        return torch_module
-    # Ensure runtime DLL paths are prepared before importing torch.
-    paths_to_add = []
-    for site_package in _collect_site_packages_paths():
-        paths_to_add.extend(_get_nvidia_bin_lib_paths(site_package))
-    _apply_paths_to_env(paths_to_add)
-    try:
-        torch_module = importlib.import_module("torch")
-        _set_torch_module(torch_module)
-        return torch_module
-    except ImportError:
-        return None
-
-
-def _collect_torch_lib_paths(torch_module):
-    """Collect torch lib paths needed for CUDA runtime DLL discovery."""
-    if torch_module is None or not hasattr(torch_module, "__path__"):
-        return []
-
-    lib_paths = []
-    for package_path in torch_module.__path__:
-        lib_path = os.path.join(package_path, "lib")
-        if os.path.exists(lib_path):
-            lib_paths.append(lib_path)
-    return lib_paths
-
-
-def _apply_paths_to_env(paths):
-    """Internal helper to update PATH and DLL directories."""
-    raw_path = os.environ.get("PATH", "")
-    normalized_entries = {os.path.normcase(os.path.normpath(entry)) for entry in raw_path.split(os.pathsep) if entry}
-
-    for path in paths:
-        _add_dll_directory_if_supported(path)
-        normalized_path = os.path.normcase(os.path.normpath(path))
-        if normalized_path in normalized_entries:
-            continue
-        os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
-        normalized_entries.add(normalized_path)
-
-
-def load_nvidia_paths():
-    """Adds Torch/NVIDIA DLLs to PATH to fix ONNX Runtime 'CUDAExecutionProvider not available'."""
-    paths_to_add = []
-    for site_package in _collect_site_packages_paths():
-        paths_to_add.extend(_get_nvidia_bin_lib_paths(site_package))
-
-    torch_module = _get_or_import_torch_module()
-    paths_to_add.extend(_collect_torch_lib_paths(torch_module))
-
-    _apply_paths_to_env(paths_to_add)
-
-    try:
-        importlib.import_module("onnxruntime")
-    except ImportError:
-        pass
-
-
 # =============================================================================
 # PIPELINE FUNCTIONS
 # =============================================================================
@@ -278,12 +172,32 @@ def _check_resume(folder, base_name, forced_lang=None):
 
 
 def _get_resume_candidates(folder, base_name, forced_lang):
-    """Return resume-language candidates honoring forced and recorded source language."""
-    if forced_lang:
+    """Return resume-language candidates honoring forced, recorded, and existing SRT files."""
+    if _is_usable_language(forced_lang):
         return [forced_lang]
 
     recorded_source_lang = _read_recorded_source_language(folder, base_name)
-    return [recorded_source_lang] if recorded_source_lang else []
+    discovered_languages = find_existing_srt_languages(folder, base_name)
+    return _prioritize_recorded_language(recorded_source_lang, discovered_languages)
+
+
+def _prioritize_recorded_language(recorded_source_lang, discovered_languages):
+    """Put a usable recorded language first and retain other usable discoveries."""
+    usable_languages = _get_usable_languages(discovered_languages)
+    if not _is_usable_language(recorded_source_lang):
+        return usable_languages
+    return [recorded_source_lang, *[lang for lang in usable_languages if lang != recorded_source_lang]]
+
+
+def _get_usable_languages(languages):
+    """Return discovered language codes excluding unknown markers."""
+    return [language for language in languages if _is_usable_language(language)]
+
+
+def _is_usable_language(language):
+    """Return whether a language value identifies a language rather than an unknown marker."""
+    normalized = str(language or "").strip().lower()
+    return bool(normalized) and normalized not in {"und", "undetermined", "unknown"}
 
 
 def _read_resume_srt(folder, base_name, lang_code):
@@ -313,7 +227,8 @@ def _read_recorded_source_language(folder, base_name):
         return None
     try:
         with open(artifact_path, "r", encoding="utf-8") as file_handle:
-            return file_handle.read().strip() or None
+            language = file_handle.read().strip()
+            return language if _is_usable_language(language) else None
     except OSError:
         return None
 
@@ -346,7 +261,7 @@ def _get_output_filenames(video_path, folder, forced_lang):
     return final_output, srt_path, base_name
 
 
-def embed_subtitles(video_path, srt_files):
+def embed_subtitles(video_path, srt_files, src_lang=None):
     """Embeds all subtitle tracks into the video container using FFmpeg."""
     if not srt_files:
         return None
@@ -357,7 +272,7 @@ def embed_subtitles(video_path, srt_files):
     normalized_ext = ext.lower()
     output_path = os.path.join(dir_name, f"{name_no_ext}_multilang{ext}")
 
-    cmd = _build_embed_command(video_path, srt_files, normalized_ext, output_path)
+    cmd = _build_embed_command(video_path, srt_files, normalized_ext, output_path, src_lang)
 
     try:
         total_dur = utils.get_audio_duration(video_path)
@@ -373,7 +288,7 @@ def embed_subtitles(video_path, srt_files):
         return None
 
 
-def _build_embed_command(video_path, srt_files, normalized_ext, output_path):
+def _build_embed_command(video_path, srt_files, normalized_ext, output_path, src_lang=None):
     """Build FFmpeg command for multi-language subtitle muxing."""
     cmd = [utils.FFMPEG_CMD, "-y", "-i", video_path]
     for track in srt_files:
@@ -386,6 +301,7 @@ def _build_embed_command(video_path, srt_files, normalized_ext, output_path):
 
     subtitle_codec = "mov_text" if normalized_ext in [".mp4", ".m4v", ".mov"] else "srt"
     cmd.extend(["-c:v", "copy", "-c:a", "copy", "-c:s", subtitle_codec])
+    cmd.extend(build_primary_media_metadata_args(src_lang if src_lang else srt_files[0][1]))
     cmd.extend(_build_embed_metadata_args(srt_files))
     cmd.extend(["-loglevel", "info", output_path])
     return cmd
@@ -406,16 +322,6 @@ def _build_embed_metadata_args(srt_files):
             ]
         )
     return metadata_args
-
-
-def _to_mux_language_code(lang):
-    """Convert ISO language key into ISO 639-2/B-like 3-letter mux code."""
-    lang_info = config.TARGET_LANGUAGES.get(lang)
-    if isinstance(lang_info, dict) and lang_info.get("code"):
-        nllb_code = lang_info["code"]
-    else:
-        nllb_code = config.ISO_TO_NLLB.get(lang, "eng_Latn")
-    return nllb_code.split("_", maxsplit=1)[0] if nllb_code else lang
 
 
 def _obtain_segments(transcription_context, model_mgr, forced_lang, forced_prompt):
@@ -444,7 +350,7 @@ def _obtain_segments(transcription_context, model_mgr, forced_lang, forced_promp
 def _finalize_video_processing(video_path, folder, base_name, src_lang, src_srt_path):
     """Internal helper to gather SRTs, embed them, and cleanup."""
     generated_srts = _collect_generated_srt_tracks(folder, base_name, src_lang, src_srt_path)
-    return embed_subtitles(video_path, generated_srts)
+    return embed_subtitles(video_path, generated_srts, src_lang)
 
 
 def _collect_generated_srt_tracks(folder, base_name, src_lang, src_srt_path):
@@ -452,7 +358,7 @@ def _collect_generated_srt_tracks(folder, base_name, src_lang, src_srt_path):
     generated_srts = []
     if os.path.exists(src_srt_path):
         src_label = config.TARGET_LANGUAGES.get(src_lang, {}).get("label", src_lang.upper())
-        generated_srts.append((src_srt_path, src_lang, src_label, _to_mux_language_code(src_lang)))
+        generated_srts.append((src_srt_path, src_lang, src_label, config.to_mux_language_code(src_lang)))
 
     for lang, info in config.TARGET_LANGUAGES.items():
         track = _build_translation_srt_track(folder, base_name, src_lang, lang, info)
@@ -475,7 +381,7 @@ def _build_translation_srt_track(folder, base_name, src_lang, lang, info):
         return None
 
     label = info.get("label", lang.upper()) if isinstance(info, dict) else lang.upper()
-    return (lang_srt, lang, label, _to_mux_language_code(lang))
+    return (lang_srt, lang, label, config.to_mux_language_code(lang))
 
 
 def _build_transcription_context(folder, base_name, video_path):
@@ -598,15 +504,19 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
         utils.cleanup_temp_files(folder, base_name, os.path.basename(video_path))
 
 
-def get_input_files():
-    """Parses command line args or prompts user for input."""
+def parse_cli_args(cli_args=None):
+    """Parses command line arguments for the application."""
     parser = argparse.ArgumentParser(description="Auto Subtitle Generator")
     parser.add_argument("input_path", nargs="?", help="Video file or folder path")
     parser.add_argument("--lang", help="Force source language (e.g., 'en', 'ro')")
     parser.add_argument("--prompt", help="Custom initial prompt for Whisper")
     parser.add_argument("--cpu", action="store_true", help="Force CPU usage")
+    return parser.parse_args(cli_args)
 
-    args = parser.parse_args()
+
+def get_input_files(parsed_args=None):
+    """Parses command line args or prompts user for input."""
+    args = parsed_args if parsed_args is not None else parse_cli_args()
 
     if args.cpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -619,6 +529,7 @@ def get_input_files():
 
 def setup_environment():
     """Global setup for multiprocessing and signals."""
+    bootstrap_cpu_env()
     multiprocessing.freeze_support()
     utils.init_console()
     utils.setup_signal_handlers()
@@ -665,21 +576,42 @@ def process_video_batch(video_files, model_mgr, forced_lang, forced_prompt):
     )
 
 
-def main():
-    """Initialize environment and process all discovered videos."""
-    print("[AI ENGINE INITIALIZATION]")
-    _render_init_progress(0, INIT_TOTAL_STEPS, "Starting", "RUN")
-    setup_environment()
-    init_ai_engine()
+def _show_startup_banner(args):
+    """Detect hardware and print the startup banner before any input handling.
+
+    Torch is imported at module load, so detection here is cheap. Running it
+    up front keeps the banner the first thing a user sees while still leaving
+    the expensive engine initialization behind the input checks.
+    """
+    if args.cpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    models.OPTIMIZER.detect_hardware(verbose=False)
     utils.print_banner(models.OPTIMIZER)
 
-    video_files, forced_lang, forced_prompt = get_input_files()
+
+def main():
+    """Initialize environment and process all discovered videos."""
+    setup_environment()
+    args = parse_cli_args()
+
+    _show_startup_banner(args)
+
+    try:
+        video_files, forced_lang, forced_prompt = get_input_files(args)
+    except FileNotFoundError:
+        # file_utils already logs the CRITICAL "Path not found" message; just
+        # exit cleanly instead of letting the traceback surface to the user.
+        sys.exit(1)
 
     if not video_files:
         log("No video files found.", "WARNING")
         sys.exit(0)
 
     log(f"Found {len(video_files)} videos to process.", "INFO")
+
+    print("[AI ENGINE INITIALIZATION]")
+    _render_init_progress(0, INIT_TOTAL_STEPS, "Starting", "RUN")
+    init_ai_engine()
 
     model_mgr = ModelManager()
     process_video_batch(video_files, model_mgr, forced_lang, forced_prompt)

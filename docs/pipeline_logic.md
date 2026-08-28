@@ -41,6 +41,13 @@
 - **Role**: Lazy loader for heavy AI models, ensuring they reside in memory
   once.
 
+### `modules/runtime/model_cache.py` (Model Download Integrity & Auto-Recovery)
+
+- **Role**: Detects corrupt or incomplete model checkpoints across BS-Roformer,
+  Faster-Whisper, NLLB, and TranslateGemma.
+- **Auto-Recovery**: Automatically purges stale/corrupted disk caches and
+  triggers a clean re-download transparently before inference.
+
 ### `run_batch_translation_worker` (defined in `modules/isolated_translator.py`)
 
 - **Role**: Runs optional pivot translation and all target jobs in one worker

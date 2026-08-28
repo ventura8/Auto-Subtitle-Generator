@@ -1,0 +1,28 @@
+FROM ubuntu:26.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    git \
+    build-essential \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv to manage hermetic Python 3.12 on Ubuntu 26.04
+COPY --from=ghcr.io/astral-sh/uv:0.6.14 /uv /uvx /root/.local/bin/
+ENV PATH="/root/.local/bin:$PATH"
+ENV UV_PYTHON_INSTALL_DIR="/opt/uv/python"
+RUN uv python install 3.12.13
+
+WORKDIR /app
+COPY . /app
+
+RUN chmod +x install_dependencies.sh start.sh run_local_pipeline.sh
+RUN ./install_dependencies.sh ml,dev
+RUN useradd --create-home --uid 1000 appuser && chown -R appuser:appuser /app
+
+USER appuser
+CMD [".venv/bin/python", "-m", "pytest", "tests/e2e/test_real_pipeline.py", "-v"]

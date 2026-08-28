@@ -1,4 +1,6 @@
 import os
+import signal
+import sys
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -69,7 +71,8 @@ class TestCoverageUtils(unittest.TestCase):
     def test_setup_signal_handlers(self):
         with patch("signal.signal") as mock_sig, patch("sys.platform", "linux"):
             utils.setup_signal_handlers()
-            self.assertEqual(mock_sig.call_count, 2)
+            expected_count = 3 if hasattr(signal, "SIGHUP") else 2
+            self.assertEqual(mock_sig.call_count, expected_count)
 
     def test_setup_signal_handlers_windows(self):
         windll_stub = MagicMock()
@@ -115,16 +118,26 @@ class TestCoverageUtils(unittest.TestCase):
                 utils.print_progress_bar(50, 100)
 
     def test_get_ffmpeg_paths_fallback(self):
-        with patch("os.path.exists", return_value=False):
+        # No installed FFmpeg and no bundled copy: fall back to bare command names.
+        with (
+            patch("modules.media.ffmpeg_utils.shutil.which", return_value=None),
+            patch("os.path.isfile", return_value=False),
+        ):
             ffmpeg, ffprobe = utils.get_ffmpeg_paths()
             self.assertEqual(ffmpeg, "ffmpeg")
             self.assertEqual(ffprobe, "ffprobe")
 
     def test_get_ffmpeg_paths_local_venv(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        expected_ffmpeg = os.path.join(root, ".venv", "ffmpeg", "bin", "ffmpeg.exe")
-        expected_ffprobe = os.path.join(root, ".venv", "ffmpeg", "bin", "ffprobe.exe")
-        with patch("os.path.exists", return_value=True):
+        ext = ".exe" if sys.platform == "win32" else ""
+        expected_ffmpeg = os.path.join(root, ".venv", "ffmpeg", "bin", f"ffmpeg{ext}")
+        expected_ffprobe = os.path.join(root, ".venv", "ffmpeg", "bin", f"ffprobe{ext}")
+        # No installed FFmpeg, so the bundled venv copy is used.
+        with (
+            patch("modules.media.ffmpeg_utils.shutil.which", return_value=None),
+            patch("os.path.isfile", return_value=True),
+            patch("os.access", return_value=True),
+        ):
             ffmpeg, ffprobe = utils.get_ffmpeg_paths()
             self.assertEqual(ffmpeg, expected_ffmpeg)
             self.assertEqual(ffprobe, expected_ffprobe)
