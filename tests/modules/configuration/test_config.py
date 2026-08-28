@@ -130,6 +130,14 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.get_nllb_code("es"), "spa_Latn")  # fallback
         self.assertEqual(config.get_nllb_code("unknown"), "eng_Latn")  # default
 
+    def test_to_mux_language_code(self):
+        self.assertEqual(config.to_mux_language_code("ar"), "ara")
+        self.assertEqual(config.to_mux_language_code("fa"), "fas")
+        self.assertEqual(config.to_mux_language_code("en"), "eng")
+        self.assertEqual(config.to_mux_language_code("ro"), "ron")
+        self.assertEqual(config.to_mux_language_code(""), "und")
+        self.assertEqual(config.to_mux_language_code(None), "und")
+
 
 if __name__ == "__main__":
     unittest.main()

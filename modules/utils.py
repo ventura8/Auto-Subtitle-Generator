@@ -62,28 +62,43 @@ def cleanup_temp_files(folder, base_name, video_filename):
                     time.sleep(0.5)
 
 
+TEMP_EXTENSIONS = (".wav", ".mp3", ".json", ".tmp")
+
+
 def _is_temp_file(filename, base_name, video_filename):
-    """Checks if a file is a temporary file related to the video."""
+    """Checks if a file is a temporary file related to the video.
+
+    Only filenames this pipeline is known to generate are eligible for
+    cleanup. An anonymous "tmp*" file with no extension has no ownership
+    evidence and may be unrelated user data, so it is never deleted.
+    """
     if filename == video_filename:
         return False
-    is_temp_name = _has_temp_name_prefix(filename, base_name)
-    if not is_temp_name:
-        return False
-    return _has_temp_extension(filename)
+    return _has_temp_name_prefix(filename, base_name) and filename.endswith(TEMP_EXTENSIONS)
+
+
+def _is_known_temp_manifest_or_srt(filename, base_name):
+    """Return True if filename matches known manifest or tmp output patterns."""
+    known_files = (f"{base_name}.manifest.json", f"{base_name}.common_input.json")
+    if filename in known_files:
+        return True
+    return filename.startswith(f"{base_name}.") and filename.endswith(".tmp")
 
 
 def _has_temp_name_prefix(filename, base_name):
     """Return True when filename matches known temp naming prefixes."""
     expected_prefix = f"{base_name}_temp"
-    has_expected_temp_prefix = filename.startswith(expected_prefix) and (
-        len(filename) == len(expected_prefix) or filename[len(expected_prefix)] in {"_", "."}
-    )
-    return has_expected_temp_prefix or filename.startswith(f".temp_output.{base_name}.") or filename.startswith(f".temp_input.{base_name}")
+    if filename.startswith(expected_prefix) and (len(filename) == len(expected_prefix) or filename[len(expected_prefix)] in {"_", "."}):
+        return True
+    prefixes = (f".temp_output.{base_name}.", f".temp_input.{base_name}")
+    if filename.startswith(prefixes):
+        return True
+    return _is_known_temp_manifest_or_srt(filename, base_name)
 
 
 def _has_temp_extension(filename):
     """Return True for known temporary media/manifest extensions."""
-    return filename.endswith(".wav") or filename.endswith(".mp3") or filename.endswith(".json")
+    return filename.endswith(TEMP_EXTENSIONS)
 
 
 __all__ = [

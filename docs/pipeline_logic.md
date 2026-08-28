@@ -31,6 +31,14 @@
 - **Contextual Seeding**: Automatically uses the video filename as the initial
   prompt context.
 
+### Resume candidate selection (orchestrated in `auto_subtitle.py`)
+
+- **Role**: Reuses valid source SRT files to avoid repeating transcription.
+- **Translation safety**: When the recorded source language is available,
+  configured translation-target SRT files are excluded from source candidates.
+  If the recorded source is unavailable, existing SRT discovery remains a
+  fallback for resumability.
+
 ### `SystemOptimizer` (defined in `modules/models.py`)
 
 - **Role**: Auto-detects hardware and sets performance profiles (ULTRA, HIGH,
@@ -40,6 +48,13 @@
 
 - **Role**: Lazy loader for heavy AI models, ensuring they reside in memory
   once.
+
+### `modules/runtime/model_cache.py` (Model Download Integrity & Auto-Recovery)
+
+- **Role**: Detects corrupt or incomplete model checkpoints across BS-Roformer,
+  Faster-Whisper, NLLB, and TranslateGemma.
+- **Auto-Recovery**: Automatically purges stale/corrupted disk caches and
+  triggers a clean re-download transparently before inference.
 
 ### `run_batch_translation_worker` (defined in `modules/isolated_translator.py`)
 

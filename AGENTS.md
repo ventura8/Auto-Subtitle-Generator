@@ -48,7 +48,17 @@ ______________________________________________________________________
   - `modules/pipeline/translation.py`
   - `modules/utils.py`
 
-### 4. Canonical Local Quality Gate
+### 4. Mandatory Documentation Synchronization (Strict)
+
+- **ALWAYS** update all relevant `.md` documentation files (`AGENTS.md`, `README.md`,
+  `docs/`, `.github/instructions/`, and `.agents/skills/`) whenever code,
+  architecture, model behaviors, flags, or workflows are modified.
+- Never complete a task or change without synchronizing the corresponding markdown
+  docs to prevent documentation drift.
+- Ensure all updated markdown files pass `mdformat` auto-formatting and
+  `pymarkdown scan` checks.
+
+### 5. Canonical Local Quality Gate
 
 - `.\run_local_pipeline.ps1` is the canonical gate. It executes:
   1. Suppression scanner (`check_no_suppressions.py`).
@@ -60,6 +70,24 @@ ______________________________________________________________________
   1. Test suite execution with coverage (`pytest --cov`).
   1. Per-file $\\ge 90%$ coverage verification.
   1. Badge and metric generation (`genbadge`, `transform_metrics.py`).
+
+### 6. Prefer Installed Dependencies Over Built Ones (Mandatory)
+
+- Always resolve an external binary or library from the **system/environment
+  installation first**. A bundled, vendored, or locally built copy is only ever
+  a **fallback** when nothing is installed.
+- Rationale: installed packages receive OS security updates, match the host's
+  architecture and codec/driver set, and avoid shipping a stale duplicate that
+  silently diverges from what the installer verified.
+- Discovery order for any external tool is therefore:
+  1. `shutil.which(...)` / `PATH` lookup (installed).
+  1. Bundled or venv-local copies (built).
+  1. A bare command name as a last-resort fallback.
+- Installer scripts and runtime discovery **must agree** on this order.
+  `install_dependencies.sh` probes the system FFmpeg before the venv copy, so
+  `modules/media/ffmpeg_utils.get_ffmpeg_paths()` must do the same.
+- Do not add a build/vendor step for a dependency that can be installed via the
+  platform package manager or an existing wheel.
 
 ______________________________________________________________________
 
@@ -81,6 +109,12 @@ ______________________________________________________________________
    - Subtitle outputs (`.srt`, `.vtt`, `.txt`) are written to temporary files
      and atomically renamed.
    - Existing outputs are safely skipped when valid subtitles already exist.
+1. **Model Download Integrity & Auto-Recovery**:
+   - Every downloaded AI model and tokenizer checkpoint (`audio-separator`,
+     `faster-whisper`, `nllb`, `translategemma`) incorporates auto-detection of
+     corrupted/truncated downloads (`is_corrupt_model_error`), automated cache
+     purging (`modules/runtime/model_cache.py`), and transparent re-download
+     recovery before inference.
 
 ______________________________________________________________________
 

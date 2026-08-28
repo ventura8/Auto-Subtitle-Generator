@@ -1,0 +1,15 @@
+.venv/
+.git/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+tests/fixtures/temp*
+radon_report.txt
+coverage.xml
+coverage.json
+.coverage
+.env
+.env.*
+.ssh/

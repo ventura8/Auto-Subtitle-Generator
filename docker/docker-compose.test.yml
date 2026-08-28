@@ -1,0 +1,49 @@
+services:
+  ubuntu_test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ubuntu
+    container_name: auto_subtitle_ubuntu_test
+
+  macos_test:
+    # This image must contain a provisioned dockurr/macos guest with Remote
+    # Login enabled and the configured SSH_USER public key authorized.
+    image: "${MACOS_SSH_IMAGE:-auto-subtitle-macos-ssh-test}"
+    container_name: auto_subtitle_macos_test
+    environment:
+      VERSION: "sonoma"
+      RAM_SIZE: "8G"
+      CPU_CORES: "4"
+    devices:
+      - /dev/kvm
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "127.0.0.1:5900:5900"
+      - "127.0.0.1:8006:8006"
+      # Authenticated command channel forwarded to the guest's SSH daemon.
+      - "127.0.0.1:2222:22"
+    volumes:
+      - ../:/shared
+
+  windows_test:
+    image: dockurr/windows
+    container_name: auto_subtitle_windows_test
+    environment:
+      VERSION: "win11"
+      USERNAME: "${SSH_USER:-Docker}"
+      RAM_SIZE: "8G"
+      CPU_CORES: "4"
+    devices:
+      - /dev/kvm
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "127.0.0.1:8007:8006"
+      - "127.0.0.1:3389:3389/tcp"
+      - "127.0.0.1:3389:3389/udp"
+      # Authenticated command channel forwarded to the guest's SSH daemon.
+      - "127.0.0.1:2223:22"
+    volumes:
+      - ../:/shared
+      - ${WINDOWS_OEM_DIR:-./windows-oem}:/oem:ro

@@ -135,14 +135,27 @@ def _resolve_worker_translator(manager):
     raise RuntimeError(f"Unsupported translation engine for isolated worker: {config.TRANSLATOR_ENGINE}")
 
 
+def _discard_temp_file(temp_path):
+    """Safely unlink a temporary file on disk if present."""
+    if temp_path and os.path.exists(temp_path):
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+
 def _save_worker_output(output_file, translations):
     """Persist translated worker output to disk."""
     output_dir = os.path.dirname(output_file) or "."
-    fd, temp_path = tempfile.mkstemp(dir=output_dir)
+    fd, temp_path = tempfile.mkstemp(dir=output_dir, prefix=f"{os.path.basename(output_file)}.", suffix=".tmp")
     os.close(fd)
-    with open(temp_path, "w", encoding="utf-8") as temp_handle:
-        json.dump(translations, temp_handle, ensure_ascii=False, indent=2)
-    os.replace(temp_path, output_file)
+    try:
+        with open(temp_path, "w", encoding="utf-8") as temp_handle:
+            json.dump(translations, temp_handle, ensure_ascii=False, indent=2)
+        os.replace(temp_path, output_file)
+    except Exception:
+        _discard_temp_file(temp_path)
+        raise
 
 
 def _save_job_translations(output_file, translations, data):
@@ -151,11 +164,15 @@ def _save_job_translations(output_file, translations, data):
         raise RuntimeError(f"Translation count mismatch for {output_file}: {len(translations)} != {len(data)}")
 
     output_dir = os.path.dirname(output_file) or "."
-    fd, temp_save_path = tempfile.mkstemp(dir=output_dir)
+    fd, temp_save_path = tempfile.mkstemp(dir=output_dir, prefix=f"{os.path.basename(output_file)}.", suffix=".tmp")
     os.close(fd)
-    with open(temp_save_path, "w", encoding="utf-8") as temp_handle:
-        json.dump(translations, temp_handle, ensure_ascii=False)
-    os.replace(temp_save_path, output_file)
+    try:
+        with open(temp_save_path, "w", encoding="utf-8") as temp_handle:
+            json.dump(translations, temp_handle, ensure_ascii=False)
+        os.replace(temp_save_path, output_file)
+    except Exception:
+        _discard_temp_file(temp_save_path)
+        raise
 
 
 def _wait_for_parent_to_consume_output(output_file, lang):
@@ -424,11 +441,15 @@ def _build_pivot_job_config(pivot_job):
 def _save_pivot_output_atomic(output_path, pivot_data):
     """Persist pivot intermediate data via atomic temp-file replace."""
     output_dir = os.path.dirname(output_path) or "."
-    fd, temp_path = tempfile.mkstemp(dir=output_dir)
+    fd, temp_path = tempfile.mkstemp(dir=output_dir, prefix=f"{os.path.basename(output_path)}.", suffix=".tmp")
     os.close(fd)
-    with open(temp_path, "w", encoding="utf-8") as temp_handle:
-        json.dump(pivot_data, temp_handle, ensure_ascii=False, indent=2)
-    os.replace(temp_path, output_path)
+    try:
+        with open(temp_path, "w", encoding="utf-8") as temp_handle:
+            json.dump(pivot_data, temp_handle, ensure_ascii=False, indent=2)
+        os.replace(temp_path, output_path)
+    except Exception:
+        _discard_temp_file(temp_path)
+        raise
 
 
 def _save_optional_pivot_english_output(pivot_job, translations, data):
@@ -518,6 +539,7 @@ def main():
     """CLI entrypoint for isolated translation worker."""
     try:
         utils.init_console()
+        utils.setup_signal_handlers()
 
         # Mode 1: Batch Mode (Manifest)
         if len(sys.argv) == 3 and sys.argv[1] == "--batch":

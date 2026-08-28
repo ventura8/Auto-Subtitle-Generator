@@ -70,6 +70,56 @@ Create two release docs under `docs/releases/`:
 .\run_local_pipeline.ps1
 ```
 
+### 5.5. Author Commit Title and Detailed Description
+
+Before committing, write a **conventional commit** with:
+
+- **Title** (≤ 72 chars): `release: vX.Y.Z – <one-line summary of biggest change>`
+- **Detailed description**: multiline body covering:
+  - What changed (features, fixes, refactors)
+  - Cross-platform / CI/CD improvements
+  - Quality gate results (coverage %, linter grades)
+  - Breaking changes (if any) prefixed with `BREAKING CHANGE:`
+
+Template:
+
+```text
+release: vX.Y.Z – <summary>
+
+## What's new
+- ...
+
+## Cross-platform & CI
+- ...
+
+## Quality gates
+- Coverage: XX.X% (threshold ≥ 90%)
+- Linters: ✅ zero warnings
+- Type checkers: ✅ zero errors
+- Radon complexity: ✅ A-grade (CC ≤ 5); project complexity threshold: CC < 10
+
+## Breaking changes
+<!-- Choose one of the following and remove the other: -->
+- None
+<!-- OR (standalone footer, no list marker):
+BREAKING CHANGE: <description>
+
+Alternatively use the title notation: release!: vX.Y.Z – <summary>
+-->
+```
+
+Stage and commit with this message:
+
+```bash
+poetry check --lock
+git add pyproject.toml poetry.lock pytest.ini docs/ README.md AGENTS.md .agents/skills/ \
+  docker/ tests/ modules/ auto_subtitle.py install_dependencies.sh \
+  run_local_pipeline.ps1 run_local_pipeline.sh start.sh .dockerignore \
+  .github/workflows/ci.yml .github/workflows/release.yml
+git diff --cached
+git commit -m "release: vX.Y.Z – <summary>" -m "<detailed body>"
+```
+
 ### 6. Commit and Tag
 
 Prepare clear, descriptive commit messages summarising the release features,
