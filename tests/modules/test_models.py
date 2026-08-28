@@ -69,6 +69,83 @@ class TestModels(unittest.TestCase):
         self.assertEqual(opt.config["translategemma_batch"], 24)
         self.assertEqual(opt.config["translategemma_max_new_tokens"], 192)
 
+    def test_system_optimizer_detect_hardware_mps_high_memory(self):
+        opt = models.SystemOptimizer()
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = False
+        mock_torch.backends.mps.is_available.return_value = True
+
+        with (
+            patch("modules.models.torch", mock_torch),
+            patch(
+                "os.sysconf",
+                side_effect=lambda name: 4096 if name == "SC_PAGE_SIZE" else (64 * 1024**3 // 4096),
+                create=True,
+            ),
+        ):
+            opt.detect_hardware(verbose=False)
+
+        self.assertEqual(opt.gpu_name, "Apple Silicon (MPS)")
+        # Only half of the 64 GB unified pool is treated as usable GPU memory,
+        # and the resulting profile is capped below the dedicated-VRAM ULTRA tier.
+        self.assertEqual(opt.vram_gb, 32)
+        self.assertEqual(opt.profile, "HIGH")
+        self.assertEqual(opt.config["nllb_batch"], 8)
+        self.assertEqual(opt.config["translategemma_batch"], 8)
+
+    def test_system_optimizer_detect_hardware_mps_low_memory(self):
+        opt = models.SystemOptimizer()
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = False
+        mock_torch.backends.mps.is_available.return_value = True
+
+        with (
+            patch("modules.models.torch", mock_torch),
+            patch(
+                "os.sysconf",
+                side_effect=lambda name: 4096 if name == "SC_PAGE_SIZE" else (16 * 1024**3 // 4096),
+                create=True,
+            ),
+        ):
+            opt.detect_hardware(verbose=False)
+
+        self.assertEqual(opt.gpu_name, "Apple Silicon (MPS)")
+        # Half of the 16 GB unified pool lands below the HIGH threshold.
+        self.assertEqual(opt.vram_gb, 8)
+        self.assertEqual(opt.profile, "MID")
+        self.assertEqual(opt.config["nllb_batch"], 6)
+
+    def test_system_optimizer_detect_hardware_mps_non_positive_memory(self):
+        opt = models.SystemOptimizer()
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = False
+        mock_torch.backends.mps.is_available.return_value = True
+
+        with (
+            patch("modules.models.torch", mock_torch),
+            patch("os.sysconf", side_effect=OSError("Not supported"), create=True),
+        ):
+            opt.detect_hardware(verbose=False)
+
+        self.assertEqual(opt.gpu_name, "Apple Silicon (MPS)")
+        self.assertEqual(opt.vram_gb, 0)
+        self.assertEqual(opt.profile, "CPU_ONLY")
+
+    def test_is_cuda_runtime_missing_error_linux_and_windows(self):
+        self.assertTrue(models._is_cuda_runtime_missing_error(RuntimeError("libcublas.so.12: cannot open shared object file")))
+        self.assertTrue(models._is_cuda_runtime_missing_error(RuntimeError("libcudnn.so.9: cannot open shared object file")))
+        self.assertTrue(models._is_cuda_runtime_missing_error(RuntimeError("cublas64_12.dll was not found")))
+        self.assertTrue(models._is_cuda_runtime_missing_error(RuntimeError("Could not load library cublas64_130_0.dll")))
+        self.assertTrue(models._is_cuda_runtime_missing_error(RuntimeError("cudart64_130_0 not found")))
+        self.assertTrue(models._is_cuda_runtime_missing_error(RuntimeError("cublas64_13.dll was not found")))
+        self.assertFalse(models._is_cuda_runtime_missing_error(RuntimeError("Some other random error")))
+
+    def test_cuda_runtime_installation_guidance_is_platform_aware(self):
+        with patch("sys.platform", "win32"):
+            self.assertIn("install_dependencies.ps1", models._cuda_runtime_installation_guidance())
+        with patch("sys.platform", "linux"):
+            self.assertIn("install_dependencies.sh", models._cuda_runtime_installation_guidance())
+
     def test_resolve_hardware_profile(self):
         self.assertEqual(models._resolve_hardware_profile(32), "ULTRA")
         self.assertEqual(models._resolve_hardware_profile(12), "HIGH")
@@ -101,6 +178,21 @@ class TestModels(unittest.TestCase):
         self.assertEqual(fake_module.WhisperModel.call_count, 2)
         self.assertEqual(fake_module.WhisperModel.call_args_list[0].kwargs["device"], "cuda")
         self.assertEqual(fake_module.WhisperModel.call_args_list[1].kwargs["device"], "cpu")
+
+    def test_whisper_model_falls_back_to_cpu_for_cudnn_component_dlls(self):
+        for dll_name in ("cudnn_ops64_9.dll", "cudnn_cnn64_9.dll"):
+            with self.subTest(dll_name=dll_name):
+                fake_module = MagicMock()
+                cpu_model = MagicMock()
+                fake_module.WhisperModel.side_effect = [RuntimeError(dll_name), cpu_model]
+                mock_torch = MagicMock()
+                mock_torch.cuda.is_available.return_value = True
+
+                with patch("modules.models._import_module", return_value=fake_module), patch("modules.models.torch", mock_torch):
+                    wrapper = models.WhisperModel()
+
+                self.assertIs(wrapper._model, cpu_model)
+                self.assertEqual(fake_module.WhisperModel.call_args_list[1].kwargs["device"], "cpu")
 
     def test_whisper_model_transcribe_falls_back_to_cpu_on_lazy_cuda_failure(self):
         gpu_model = MagicMock()
@@ -359,15 +451,133 @@ class TestModels(unittest.TestCase):
         with patch("modules.translators.common.torch", None):
             self.assertIsNone(nllb_backend._resolve_device_map())
 
-    def test_load_nllb_model_fallback(self):
-        auto_model = MagicMock()
-        auto_model.from_pretrained.side_effect = [OSError("net"), "ok"]
+    def test_nllb_uses_mps_for_model_and_encoded_inputs(self):
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = False
+        mock_torch.backends.mps.is_available.return_value = True
+        encoded_value = MagicMock()
 
-        with patch("modules.translators.nllb._resolve_device_map", return_value="cuda"):
+        with patch("modules.translators.nllb.torch", mock_torch), patch("modules.translators.common.torch", mock_torch):
+            self.assertEqual(nllb_backend._build_nllb_model_kwargs()["device_map"], "mps")
+            self.assertEqual(nllb_backend._resolve_nllb_execution_device(MagicMock(device="cpu")), "cpu")
+            nllb_backend._move_nllb_encoded_to_device({"input_ids": encoded_value}, None)
+
+        encoded_value.to.assert_called_once_with("mps")
+
+    def test_load_nllb_model_corrupt_cache_recovery(self):
+        auto_model = MagicMock()
+        auto_model.from_pretrained.side_effect = [
+            RuntimeError("invalid safetensors header"),
+            "recovered_model",
+        ]
+
+        with patch("modules.translators.common.purge_hf_model_cache") as mock_purge:
             loaded = nllb_backend._load_nllb_model(auto_model)
 
-        self.assertEqual(loaded, "ok")
+        self.assertEqual(loaded, "recovered_model")
+        mock_purge.assert_called_once()
         self.assertEqual(auto_model.from_pretrained.call_count, 2)
+
+    def test_load_nllb_tokenizer_corrupt_cache_recovery(self):
+        tokenizer_cls = MagicMock()
+        tokenizer_cls.from_pretrained.side_effect = [
+            ValueError("piece size is not valid"),
+            "recovered_tok",
+        ]
+
+        with patch("modules.translators.common.purge_hf_model_cache") as mock_purge:
+            loaded = nllb_backend._load_nllb_tokenizer(tokenizer_cls)
+
+        self.assertEqual(loaded, "recovered_tok")
+        mock_purge.assert_called_once()
+        self.assertEqual(tokenizer_cls.from_pretrained.call_count, 2)
+
+    def test_load_translategemma_model_corrupt_cache_recovery(self):
+        auto_model = MagicMock()
+        auto_model.from_pretrained.side_effect = [
+            RuntimeError("file is not a valid safetensors archive"),
+            "recovered_gemma",
+        ]
+
+        with patch("modules.translators.common.purge_hf_model_cache") as mock_purge:
+            loaded = translategemma_backend._load_translategemma_model(auto_model)
+
+        self.assertEqual(loaded, "recovered_gemma")
+        mock_purge.assert_called_once()
+        self.assertEqual(auto_model.from_pretrained.call_count, 2)
+
+    def test_load_translategemma_tokenizer_corrupt_cache_recovery(self):
+        auto_tokenizer = MagicMock()
+        auto_tokenizer.from_pretrained.side_effect = [
+            RuntimeError("corrupt or incomplete"),
+            "recovered_tok",
+        ]
+
+        with patch("modules.translators.common.purge_hf_model_cache") as mock_purge:
+            loaded = translategemma_backend._load_translategemma_tokenizer(auto_tokenizer)
+
+        self.assertEqual(loaded, "recovered_tok")
+        mock_purge.assert_called_once()
+        self.assertEqual(auto_tokenizer.from_pretrained.call_count, 2)
+
+    def test_is_corrupt_checkpoint_error(self):
+        self.assertTrue(models._is_corrupt_checkpoint_error(RuntimeError("PytorchStreamReader failed reading zip archive")))
+        self.assertTrue(models._is_corrupt_checkpoint_error(RuntimeError("failed finding central directory")))
+        self.assertFalse(models._is_corrupt_checkpoint_error(RuntimeError("out of memory")))
+
+    def test_purge_cached_separator_checkpoint(self):
+        fake_files = ["test_model.ckpt", "test_model.yaml", "other.ckpt"]
+        with (
+            patch("os.path.isdir", side_effect=lambda d: d == "/fake/dir"),
+            patch("os.listdir", return_value=fake_files),
+            patch("os.remove") as mock_remove,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            self.assertEqual(mock_remove.call_count, 2)
+
+    def test_separator_model_retries_on_corrupt_checkpoint(self):
+        fake_module = MagicMock()
+        mock_sep_instance = MagicMock()
+        mock_sep_instance.model_file_dir = "/tmp/fake-models"
+        mock_sep_instance.load_model.side_effect = [
+            RuntimeError("PytorchStreamReader failed reading zip archive: failed finding central directory"),
+            None,
+        ]
+        fake_module.Separator.return_value = mock_sep_instance
+
+        with (
+            patch("modules.models._import_module", return_value=fake_module),
+            patch("modules.models._purge_cached_separator_checkpoint") as mock_purge,
+        ):
+            wrapper = models.SeparatorModel(output_dir="/fake/out")
+
+        self.assertEqual(mock_sep_instance.load_model.call_count, 2)
+        mock_purge.assert_called_once()
+        self.assertIs(wrapper._separator, mock_sep_instance)
+
+    def test_purge_whisper_model_cache(self):
+        with patch("os.path.isdir", return_value=True), patch("shutil.rmtree") as mock_rmtree:
+            models._purge_whisper_model_cache("large-v3")
+            mock_rmtree.assert_called_once()
+
+    def test_whisper_model_retries_on_corrupt_checkpoint(self):
+        fake_module = MagicMock()
+        mock_whisper_inst = MagicMock()
+        fake_module.WhisperModel.side_effect = [
+            RuntimeError("invalid safetensors header or bad zip file"),
+            mock_whisper_inst,
+        ]
+
+        with (
+            patch("modules.models._import_module", return_value=fake_module),
+            patch("modules.models._purge_whisper_model_cache") as mock_purge,
+            patch("modules.models._should_try_cuda_whisper", return_value=False),
+        ):
+            wrapper = models.WhisperModel()
+
+        self.assertEqual(fake_module.WhisperModel.call_count, 2)
+        mock_purge.assert_called_once()
+        self.assertIs(wrapper._model, mock_whisper_inst)
 
 
 if __name__ == "__main__":

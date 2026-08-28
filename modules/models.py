@@ -4,11 +4,15 @@ import gc
 import importlib
 import logging
 import os
+import sys
 from collections import namedtuple
 from typing import Any
 
 from .configuration import config
-from .runtime.optional_imports import load_optional_torch
+from .runtime.model_cache import is_corrupt_model_error as _is_corrupt_checkpoint_error
+from .runtime.model_cache import purge_separator_checkpoint as _purge_cached_separator_checkpoint
+from .runtime.model_cache import purge_whisper_model_cache as _purge_whisper_model_cache
+from .runtime.optional_imports import is_mps_available, load_optional_torch
 from .translators import nllb as nllb_backend
 from .translators import translategemma as translategemma_backend
 
@@ -17,10 +21,23 @@ LOGGER = logging.getLogger(__name__)
 
 Segment = namedtuple("Segment", ["start", "end", "text"])
 
+# Apple Silicon unified memory is shared with the OS; treat only half as GPU memory.
+UNIFIED_MEMORY_USABLE_FRACTION = 0.5
+
 
 def _import_module(module_name):
     """Import module lazily by name to keep optional dependencies optional."""
     return importlib.import_module(module_name)
+
+
+def _detect_system_memory_gb() -> int:
+    """Detect total system memory in gigabytes using POSIX sysconf when available."""
+    if not hasattr(os, "sysconf"):
+        return 0
+    try:
+        return int(getattr(os, "sysconf")("SC_PAGE_SIZE") * getattr(os, "sysconf")("SC_PHYS_PAGES") / (1024**3))
+    except (AttributeError, ValueError, OSError):
+        return 0
 
 
 class SystemOptimizer:
@@ -46,19 +63,27 @@ class SystemOptimizer:
         """Reset optimizer tunables to default values."""
         self.config = dict(self._default_config)
 
+    def _detect_mps_or_cpu(self):
+        """Fallback detection for Apple Silicon MPS or generic CPU."""
+        if is_mps_available(torch):
+            usable_gb = _usable_unified_memory_gb(_detect_system_memory_gb())
+            profile = _resolve_mps_profile(usable_gb) if usable_gb > 0 else "CPU_ONLY"
+            return "Apple Silicon (MPS)", usable_gb, profile
+        return "CPU", 0, "CPU_ONLY"
+
+    def _detect_gpu_props(self):
+        """Detect GPU properties from available acceleration backends."""
+        if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            name = getattr(props, "name", "CUDA GPU")
+            vram = int(getattr(props, "total_memory", 0) / (1024**3))
+            return name, vram, _resolve_hardware_profile(vram)
+        return self._detect_mps_or_cpu()
+
     def detect_hardware(self, verbose=False):
         """Populate hardware fields and keep profile-derived defaults stable."""
         _ = verbose
-        if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            self.gpu_name = getattr(props, "name", "CUDA GPU")
-            self.vram_gb = int(getattr(props, "total_memory", 0) / (1024**3))
-            self.profile = _resolve_hardware_profile(self.vram_gb)
-        else:
-            self.gpu_name = "CPU"
-            self.vram_gb = 0
-            self.profile = "CPU_ONLY"
-
+        self.gpu_name, self.vram_gb, self.profile = self._detect_gpu_props()
         self._apply_profile_tuning()
 
     def _apply_profile_tuning(self):
@@ -105,6 +130,21 @@ def _resolve_hardware_profile(vram_gb):
     return "MID"
 
 
+def _usable_unified_memory_gb(total_memory_gb):
+    """Return the share of Apple Silicon unified memory usable by the GPU.
+
+    Unified memory is shared with the OS and every other process, so only a
+    conservative fraction may be treated as GPU memory.
+    """
+    return int(total_memory_gb * UNIFIED_MEMORY_USABLE_FRACTION)
+
+
+def _resolve_mps_profile(usable_memory_gb):
+    """Resolve an MPS profile, capped below the dedicated-VRAM ULTRA tier."""
+    profile = _resolve_hardware_profile(usable_memory_gb)
+    return "HIGH" if profile == "ULTRA" else profile
+
+
 class WhisperModel:
     """Thin Faster-Whisper wrapper used by transcription orchestration."""
 
@@ -146,7 +186,18 @@ class SeparatorModel:
         self._output_dir = output_dir
         # Ask audio-separator to generate only vocals to avoid creating instrumental stems.
         self._separator = separator(output_dir=output_dir, output_single_stem="Vocals")
-        self._separator.load_model(model_filename=config.AUDIO_SEPARATOR_MODEL_ID)
+        self._load_separator_model()
+
+    def _load_separator_model(self):
+        """Load separator model checkpoint with automatic corrupt cache cleanup."""
+        try:
+            self._separator.load_model(model_filename=config.AUDIO_SEPARATOR_MODEL_ID)
+        except (RuntimeError, OSError, ValueError, KeyError) as error:
+            if not _is_corrupt_checkpoint_error(error):
+                raise
+            LOGGER.warning("Audio separator checkpoint file appears corrupt (%s). Purging and retrying download...", error)
+            _purge_cached_separator_checkpoint(config.AUDIO_SEPARATOR_MODEL_ID, getattr(self._separator, "model_file_dir", None))
+            self._separator.load_model(model_filename=config.AUDIO_SEPARATOR_MODEL_ID)
 
     def separate(self, audio_input_path):
         """Run separator and return output stem paths."""
@@ -249,13 +300,20 @@ def _cleanup_torch_cache():
 
 
 def _is_cuda_runtime_missing_error(error: Exception) -> bool:
-    """Detect known CUDA runtime/DLL load failures from CTranslate2/Faster-Whisper."""
+    """Detect known CUDA runtime/DLL/so load failures from CTranslate2/Faster-Whisper."""
     message = str(error).lower()
     known_tokens = (
-        "cublas64_12.dll",
-        "cudnn64_9.dll",
+        "cublas64_12",
+        "cudnn",
         "cudart64_12",
-        "cannot be loaded",
+        # CUDA 13.x Windows runtime names (substring match covers cublas64_13.dll,
+        # cublas64_130_0.dll, cudart64_130_0, etc.)
+        "cublas64_13",
+        "cudart64_13",
+        "libcudart.so",
+        "libcublas",
+        "libcudnn",
+        "cuda driver version is insufficient",
     )
     return any(token in message for token in known_tokens)
 
@@ -283,8 +341,27 @@ def _should_try_cuda_whisper() -> bool:
     return bool(torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available())
 
 
+def _cuda_runtime_installation_guidance():
+    """Return platform-appropriate CUDA runtime installation guidance."""
+    if sys.platform == "win32":
+        return "Run install_dependencies.ps1 to install required CUDA runtime DLLs."
+    return "Run ./install_dependencies.sh to install the required CUDA runtime libraries."
+
+
 def _load_whisper_model(faster_whisper_model):
-    """Load Faster-Whisper with CUDA first and deterministic CPU fallback."""
+    """Load Faster-Whisper with CUDA first and deterministic CPU fallback, auto-recovering from corrupted downloads."""
+    try:
+        return _load_whisper_model_internal(faster_whisper_model)
+    except (RuntimeError, OSError, ValueError) as error:
+        if _is_corrupt_checkpoint_error(error):
+            LOGGER.warning("Faster-Whisper model cache appears corrupt (%s). Purging cache and retrying download...", error)
+            _purge_whisper_model_cache(config.WHISPER_MODEL_SIZE)
+            return _load_whisper_model_internal(faster_whisper_model)
+        raise
+
+
+def _load_whisper_model_internal(faster_whisper_model):
+    """Load Faster-Whisper model with GPU or CPU strategy."""
     if not _should_try_cuda_whisper():
         return _build_cpu_whisper_model(faster_whisper_model), True
 
@@ -294,8 +371,8 @@ def _load_whisper_model(faster_whisper_model):
         if not _is_cuda_runtime_missing_error(error):
             raise
         LOGGER.warning(
-            "Faster-Whisper CUDA runtime is unavailable (%s). Falling back to CPU int8. "
-            "Run install_dependencies.ps1 to install required CUDA runtime DLLs.",
+            "Faster-Whisper CUDA runtime is unavailable (%s). Falling back to CPU int8. %s",
             error,
+            _cuda_runtime_installation_guidance(),
         )
         return _build_cpu_whisper_model(faster_whisper_model), True

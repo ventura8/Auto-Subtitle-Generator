@@ -1,59 +1,249 @@
 name: Release
 
-# Trigger on version tags like v1.0.0, v1.2.3, etc.
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
   contents: read
 
+env:
+  PYTHON_VERSION: "3.12"
+  APP_NAME: AutoSubtitleGenerator
+
 jobs:
+  windows:
+    name: "Windows executable (${{ matrix.asset_arch }})"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            asset_arch: x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build standalone executable
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip poetry pyinstaller
+          poetry config virtualenvs.create false
+          poetry install --no-root --with ml
+          pyinstaller --noconfirm --clean --onefile --name $env:APP_NAME --collect-all faster_whisper --collect-all ctranslate2 --collect-all transformers --collect-all tokenizers --collect-all torch --collect-all audio_separator auto_subtitle.py
+      - name: Verify executable starts
+        shell: pwsh
+        run: .\dist\$env:APP_NAME.exe --help
+      - name: Process generated speech with the executable
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          choco install ffmpeg --no-progress -y
+          Add-Type -AssemblyName System.Speech
+          $speaker = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $speaker.SetOutputToWaveFile((Join-Path $PWD 'release-test.wav'))
+          $speaker.Speak('This is a release artifact subtitle test.')
+          $speaker.Dispose()
+          ffmpeg -y -f lavfi -i color=c=black:s=320x240:d=4 -i release-test.wav -shortest -c:v libx264 -c:a aac release-test.mp4
+          "whisper:`n  model_size: tiny.en`n  language: en`n  use_prompt: false`n  use_vocal_separation: false`ntarget_languages: {}" | Set-Content config.yaml
+          .\dist\$env:APP_NAME.exe release-test.mp4 --cpu --lang en
+          if (-not (Test-Path release-test.en.srt) -or -not (Test-Path release-test_multilang.mp4)) { throw 'The executable did not produce subtitle outputs.' }
+      - name: Label executable architecture
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: Move-Item ".\dist\$env:APP_NAME.exe" ".\dist\auto-subtitle-generator-$env:RELEASE_TAG-${{ matrix.asset_arch }}.exe"
+      - uses: actions/upload-artifact@ea165f80b2ae95d4b4a6e0dae68197aa634c9d5f # v4.6.2
+        with:
+          name: release-windows-${{ matrix.asset_arch }}
+          path: dist/auto-subtitle-generator-${{ github.ref_name }}-${{ matrix.asset_arch }}.exe
+          if-no-files-found: error
+
+  linux:
+    name: "Linux native packages (${{ matrix.asset_arch }})"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            package_arch: amd64
+            asset_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            package_arch: arm64
+            asset_arch: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build portable executable directory
+        run: |
+          python -m pip install --upgrade pip poetry pyinstaller
+          poetry config virtualenvs.create false
+          poetry install --no-root --with ml
+          pyinstaller --noconfirm --clean --onedir --name "$APP_NAME" --collect-all faster_whisper --collect-all ctranslate2 --collect-all transformers --collect-all tokenizers --collect-all torch --collect-all audio_separator auto_subtitle.py
+          mkdir -p package-root/opt/auto-subtitle-generator package-root/usr/bin
+          cp -a "dist/$APP_NAME/." package-root/opt/auto-subtitle-generator/
+          printf '%s\n' '#!/bin/sh' 'exec /opt/auto-subtitle-generator/AutoSubtitleGenerator "$@"' > package-root/usr/bin/auto-subtitle-generator
+          chmod +x package-root/usr/bin/auto-subtitle-generator
+      - name: Install latest native package builder
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+      - name: Build packages for six Linux targets
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          cat > nfpm.yaml <<EOF
+          name: auto-subtitle-generator
+          arch: ${{ matrix.package_arch }}
+          platform: linux
+          version: ${version}
+          section: video
+          priority: optional
+          maintainer: Sergiu Alexandrescu
+          description: Local-first AI subtitle generation.
+          depends:
+            - ffmpeg
+          overrides:
+            deb:
+              depends:
+                - ffmpeg
+            rpm:
+              depends:
+                - ffmpeg
+            archlinux:
+              depends:
+                - ffmpeg
+          contents:
+            - src: package-root/
+              dst: /
+          EOF
+          mkdir release-assets
+          nfpm="$(go env GOPATH)/bin/nfpm"
+          target="${VERSION}-${{ matrix.asset_arch }}"
+          "$nfpm" package --config nfpm.yaml --packager deb --target "release-assets/auto-subtitle-generator-${target}-ubuntu.deb"
+          cp "release-assets/auto-subtitle-generator-${target}-ubuntu.deb" "release-assets/auto-subtitle-generator-${target}-debian.deb"
+          "$nfpm" package --config nfpm.yaml --packager rpm --target "release-assets/auto-subtitle-generator-${target}-fedora.rpm"
+          cp "release-assets/auto-subtitle-generator-${target}-fedora.rpm" "release-assets/auto-subtitle-generator-${target}-rhel.rpm"
+          cp "release-assets/auto-subtitle-generator-${target}-fedora.rpm" "release-assets/auto-subtitle-generator-${target}-opensuse.rpm"
+          "$nfpm" package --config nfpm.yaml --packager archlinux --target "release-assets/auto-subtitle-generator-${target}-archlinux.pkg.tar.zst"
+      - name: Verify Debian package installation and launch
+        run: |
+          sudo apt-get update && sudo apt-get install -y ./release-assets/*-${{ matrix.asset_arch }}-ubuntu.deb
+          auto-subtitle-generator --help
+      - name: Process generated speech with the installed package
+        timeout-minutes: 20
+        run: |
+          sudo apt-get update && sudo apt-get install -y espeak-ng ffmpeg
+          mkdir smoke-test && cd smoke-test
+          espeak-ng -w release-test.wav "This is a release artifact subtitle test."
+          ffmpeg -y -f lavfi -i color=c=black:s=320x240:d=4 -i release-test.wav -shortest -c:v libx264 -c:a aac release-test.mp4
+          printf '%s\n' 'whisper:' '  model_size: tiny.en' '  language: en' '  use_prompt: false' '  use_vocal_separation: false' 'target_languages: {}' > config.yaml
+          timeout 15m auto-subtitle-generator release-test.mp4 --cpu --lang en
+          test -s release-test.en.srt && test -s release-test_multilang.mp4
+      - uses: actions/upload-artifact@ea165f80b2ae95d4b4a6e0dae68197aa634c9d5f # v4.6.2
+        with:
+          name: release-linux-${{ matrix.asset_arch }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  macos:
+    name: "macOS app packages (${{ matrix.asset_arch }})"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            asset_arch: arm64
+            machine_arch: arm64
+          - runner: macos-26-intel
+            asset_arch: x86_64
+            machine_arch: x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build macOS application bundle
+        run: |
+          test "$(uname -m)" = "${{ matrix.machine_arch }}"
+          python -m pip install --upgrade pip poetry pyinstaller
+          poetry config virtualenvs.create false
+          poetry install --no-root --with ml
+          pyinstaller --noconfirm --clean --windowed --onedir --name "$APP_NAME" --collect-all faster_whisper --collect-all ctranslate2 --collect-all transformers --collect-all tokenizers --collect-all torch --collect-all audio_separator auto_subtitle.py
+      - name: Create DMG and PKG
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p release-assets/dmg
+          cp -R "dist/$APP_NAME.app" release-assets/dmg/
+          hdiutil create -volname "$APP_NAME" -srcfolder release-assets/dmg -ov -format UDZO "release-assets/auto-subtitle-generator-${VERSION}-macos-${{ matrix.asset_arch }}.dmg"
+          productbuild --component "dist/$APP_NAME.app" /Applications "release-assets/auto-subtitle-generator-${VERSION}-macos-${{ matrix.asset_arch }}.pkg"
+      - name: Verify macOS application bundle launches
+        run: "dist/$APP_NAME.app/Contents/MacOS/\"$APP_NAME\" --help"
+      - name: Process generated speech with the macOS application
+        timeout-minutes: 20
+        run: |
+          brew install ffmpeg
+          mkdir smoke-test && cd smoke-test
+          say -o release-test.aiff "This is a release artifact subtitle test."
+          ffmpeg -y -f lavfi -i color=c=black:s=320x240:d=4 -i release-test.aiff -shortest -c:v libx264 -c:a aac release-test.mp4
+          printf '%s\n' 'whisper:' '  model_size: tiny.en' '  language: en' '  use_prompt: false' '  use_vocal_separation: false' 'target_languages: {}' > config.yaml
+          ../dist/"$APP_NAME".app/Contents/MacOS/"$APP_NAME" release-test.mp4 --cpu --lang en
+          test -s release-test.en.srt && test -s release-test_multilang.mp4
+      - uses: actions/upload-artifact@ea165f80b2ae95d4b4a6e0dae68197aa634c9d5f # v4.6.2
+        with:
+          name: release-macos-${{ matrix.asset_arch }}
+          path: release-assets/*
+          if-no-files-found: error
+
   github-release:
-    name: "🚀 GitHub Release"
+    name: "GitHub Release"
+    needs: [windows, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.12.13"
-
-      - name: Extract and verify version from tag
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Verify tag version
         run: |
           chmod +x scripts/release-verify-tag-version.sh
           ./scripts/release-verify-tag-version.sh
-
-      - name: Check for authored release description
-        id: notes
-        run: |
-          BODY_FILE="docs/releases/v${VERSION}_github_description.md"
-          if [ -f "${BODY_FILE}" ]; then
-            echo "use_body=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "use_body=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Create GitHub Release (authored description)
-        if: steps.notes.outputs.use_body == 'true'
-        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          body_path: docs/releases/v${{ env.VERSION }}_github_description.md
-          draft: false
-          prerelease: false
-
-      - name: Create GitHub Release (auto-generated notes fallback)
-        if: steps.notes.outputs.use_body == 'false'
-        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Select release notes
+        id: notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          body_file="docs/releases/${RELEASE_TAG}_github_description.md"
+          test -f "$body_file" && echo "use_body=true" >> "$GITHUB_OUTPUT" || echo "use_body=false" >> "$GITHUB_OUTPUT"
+      - if: steps.notes.outputs.use_body == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          body_path: docs/releases/${{ github.ref_name }}_github_description.md
+          files: release-assets/*
+      - if: steps.notes.outputs.use_body == 'false'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
-          draft: false
-          prerelease: false
+          files: release-assets/*

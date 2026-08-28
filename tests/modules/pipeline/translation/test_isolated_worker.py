@@ -329,6 +329,32 @@ class TestCoverageIsolated(unittest.TestCase):
                 isolated_translator._run_pivot_phase(pivot_job, MagicMock())
             self.assertTrue(any("Pivot phase failed" in str(call.args[0]) for call in mock_log.call_args_list if call.args))
 
+    def test_save_worker_output_error_cleanup(self):
+        with (
+            patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "test_temp.tmp")),
+            patch("modules.pipeline.isolated_translator.os.close"),
+            patch("builtins.open", mock_open()),
+            patch("modules.pipeline.isolated_translator.json.dump", side_effect=OSError("Disk full")),
+            patch("os.path.exists", return_value=True),
+            patch("os.remove") as mock_remove,
+        ):
+            with self.assertRaises(OSError):
+                isolated_translator._save_worker_output("out.json", ["test"])
+            mock_remove.assert_called_once_with("test_temp.tmp")
+
+    def test_save_job_translations_error_cleanup(self):
+        with (
+            patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "test_job_temp.tmp")),
+            patch("modules.pipeline.isolated_translator.os.close"),
+            patch("builtins.open", mock_open()),
+            patch("modules.pipeline.isolated_translator.json.dump", side_effect=OSError("Disk full")),
+            patch("os.path.exists", return_value=True),
+            patch("os.remove") as mock_remove,
+        ):
+            with self.assertRaises(OSError):
+                isolated_translator._save_job_translations("out.json", ["test"], [{"text": "orig"}])
+            mock_remove.assert_called_once_with("test_job_temp.tmp")
+
 
 if __name__ == "__main__":
     unittest.main()

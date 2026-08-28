@@ -11,6 +11,8 @@ are extracted into the `modules/` package:
   mappings, and YAML loading.
 - **`modules/models.py`**: Hardware-aware AI model management (`ModelManager`,
   `SystemOptimizer`).
+- **`modules/runtime/model_cache.py`**: Centralized model corruption detection and
+  cache-purging auto-recovery for all downloaded AI models and tokenizers.
 - **`modules/utils.py`** plus focused subpackages in `modules/media/`,
   `modules/pipeline/`, `modules/runtime/`, and `modules/subtitles/`: reusable
   IO, FFmpeg, orchestration helpers, logging, and subtitle persistence.
@@ -20,7 +22,8 @@ are extracted into the `modules/` package:
 ### Installation
 
 - Users run `install_dependencies.ps1` (PowerShell).
-- It installs **PyTorch Stable** (for CUDA 12.8 support) and `faster-whisper`.
+- It installs **PyTorch Stable** (with CUDA 13.2 support) and `faster-whisper`;
+  compatibility runtimes remain isolated from the CUDA 13 libraries.
 
 ### Execution
 
@@ -56,9 +59,12 @@ are extracted into the `modules/` package:
      repository contents and checkout steps disable persisted credentials.
    - **AI Workspace**: Agents should follow `.github/skills/fix-file/SKILL.md`
      when applying targeted file fixes.
-1. **Documentation**:
-   - Always update `docs/instructions.md`, `README.md`, and relevant `docs/`
-     files if necessary when making changes.
+1. **Documentation Synchronization**:
+   - **Mandatory**: Every time you perform work on the project, you must update
+     all relevant `.md` files (`AGENTS.md`, `README.md`, `docs/`,
+     `.github/instructions/`, and `.agents/skills/`).
+   - Prevent documentation drift across releases, model lifecycle changes, and
+     pipeline components.
 1. **Run Summaries**:
    - Keep per-file summary output accurate in docs.
    - For multi-file processing, document both aggregate batch summary fields and

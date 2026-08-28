@@ -34,3 +34,10 @@ if sys.platform != "win32":
 _p = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _p not in sys.path:
     sys.path.insert(0, _p)
+
+
+def pytest_collection_modifyitems(items):
+    """Mark real-dependency tests so ordinary validation can exclude them."""
+    for item in items:
+        if "tests/e2e/" in item.path.as_posix():
+            item.add_marker("e2e")

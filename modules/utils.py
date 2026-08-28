@@ -62,28 +62,36 @@ def cleanup_temp_files(folder, base_name, video_filename):
                     time.sleep(0.5)
 
 
+TEMP_EXTENSIONS = (".wav", ".mp3", ".json", ".tmp")
+
+
+def _is_anonymous_temp_file(filename):
+    """Return True if filename matches standard anonymous temp file patterns."""
+    return filename.startswith("tmp") and len(filename) > 3 and "." not in filename
+
+
 def _is_temp_file(filename, base_name, video_filename):
     """Checks if a file is a temporary file related to the video."""
     if filename == video_filename:
         return False
-    is_temp_name = _has_temp_name_prefix(filename, base_name)
-    if not is_temp_name:
-        return False
-    return _has_temp_extension(filename)
+    if _is_anonymous_temp_file(filename):
+        return True
+    return _has_temp_name_prefix(filename, base_name) and filename.endswith(TEMP_EXTENSIONS)
 
 
 def _has_temp_name_prefix(filename, base_name):
     """Return True when filename matches known temp naming prefixes."""
     expected_prefix = f"{base_name}_temp"
-    has_expected_temp_prefix = filename.startswith(expected_prefix) and (
+    has_expected = filename.startswith(expected_prefix) and (
         len(filename) == len(expected_prefix) or filename[len(expected_prefix)] in {"_", "."}
     )
-    return has_expected_temp_prefix or filename.startswith(f".temp_output.{base_name}.") or filename.startswith(f".temp_input.{base_name}")
+    prefixes = (f".temp_output.{base_name}.", f".temp_input.{base_name}", f"{base_name}.")
+    return has_expected or filename.startswith(prefixes)
 
 
 def _has_temp_extension(filename):
     """Return True for known temporary media/manifest extensions."""
-    return filename.endswith(".wav") or filename.endswith(".mp3") or filename.endswith(".json")
+    return filename.endswith(TEMP_EXTENSIONS)
 
 
 __all__ = [

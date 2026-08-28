@@ -11,14 +11,44 @@ from ..runtime.progress import print_progress_bar
 from ..subtitles.timestamp_utils import parse_timestamp
 
 
+def _resolve_ffmpeg_pair(bin_dir, ext):
+    """Return (ffmpeg, ffprobe) paths from a candidate directory, or None."""
+    ffmpeg_path = os.path.join(bin_dir, f"ffmpeg{ext}")
+    ffprobe_path = os.path.join(bin_dir, f"ffprobe{ext}")
+    if (
+        os.path.isfile(ffmpeg_path)
+        and os.access(ffmpeg_path, os.X_OK)
+        and os.path.isfile(ffprobe_path)
+        and os.access(ffprobe_path, os.X_OK)
+    ):
+        return ffmpeg_path, ffprobe_path
+    return None
+
+
+def _iter_ffmpeg_candidates():
+    """Yield (bin_dir, extension) candidates for local FFmpeg discovery."""
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    extensions = [".exe"] if sys.platform == "win32" else [""]
+    bin_dirs = [
+        os.path.join(base, ".venv", "ffmpeg", "bin"),
+        os.path.join(base, ".venv", "Scripts"),
+        os.path.join(base, ".venv", "bin"),
+        # The active environment may differ from the repository-root .venv.
+        os.path.join(sys.prefix, "ffmpeg", "bin"),
+        os.path.join(sys.prefix, "Scripts"),
+        os.path.join(sys.prefix, "bin"),
+    ]
+    for bin_dir in bin_dirs:
+        for ext in extensions:
+            yield bin_dir, ext
+
+
 def get_ffmpeg_paths():
     """Returns paths to FFmpeg binaries, preferring local venv installation."""
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    venv_ffmpeg = os.path.join(base, ".venv", "ffmpeg", "bin", "ffmpeg.exe")
-    venv_ffprobe = os.path.join(base, ".venv", "ffmpeg", "bin", "ffprobe.exe")
-
-    if os.path.exists(venv_ffmpeg) and os.path.exists(venv_ffprobe):
-        return venv_ffmpeg, venv_ffprobe
+    for bin_dir, ext in _iter_ffmpeg_candidates():
+        pair = _resolve_ffmpeg_pair(bin_dir, ext)
+        if pair is not None:
+            return pair
     return "ffmpeg", "ffprobe"
 
 

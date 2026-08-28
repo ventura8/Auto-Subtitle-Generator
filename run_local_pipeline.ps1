@@ -548,6 +548,8 @@ Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
         Invoke-PoetryCommand @(
             "run",
             "pytest",
+            "-m",
+            "not e2e",
             "-o",
             "addopts=",
             "--cov=auto_subtitle",

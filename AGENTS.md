@@ -48,7 +48,17 @@ ______________________________________________________________________
   - `modules/pipeline/translation.py`
   - `modules/utils.py`
 
-### 4. Canonical Local Quality Gate
+### 4. Mandatory Documentation Synchronization (Strict)
+
+- **ALWAYS** update all relevant `.md` documentation files (`AGENTS.md`, `README.md`,
+  `docs/`, `.github/instructions/`, and `.agents/skills/`) whenever code,
+  architecture, model behaviors, flags, or workflows are modified.
+- Never complete a task or change without synchronizing the corresponding markdown
+  docs to prevent documentation drift.
+- Ensure all updated markdown files pass `mdformat` auto-formatting and
+  `pymarkdown scan` checks.
+
+### 5. Canonical Local Quality Gate
 
 - `.\run_local_pipeline.ps1` is the canonical gate. It executes:
   1. Suppression scanner (`check_no_suppressions.py`).
@@ -81,6 +91,12 @@ ______________________________________________________________________
    - Subtitle outputs (`.srt`, `.vtt`, `.txt`) are written to temporary files
      and atomically renamed.
    - Existing outputs are safely skipped when valid subtitles already exist.
+1. **Model Download Integrity & Auto-Recovery**:
+   - Every downloaded AI model and tokenizer checkpoint (`audio-separator`,
+     `faster-whisper`, `nllb`, `translategemma`) incorporates auto-detection of
+     corrupted/truncated downloads (`is_corrupt_model_error`), automated cache
+     purging (`modules/runtime/model_cache.py`), and transparent re-download
+     recovery before inference.
 
 ______________________________________________________________________
 

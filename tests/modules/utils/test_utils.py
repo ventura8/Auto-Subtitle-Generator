@@ -1,3 +1,5 @@
+import os
+import sys
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -82,6 +84,13 @@ class TestUtils(unittest.TestCase):
     def test_is_temp_file_rejects_non_temp_prefix(self):
         self.assertFalse(utils._is_temp_file("base_notes.json", "base", "video.mp4"))
 
+    def test_is_temp_file_accepts_all_pipeline_temp_patterns(self):
+        self.assertFalse(utils._is_temp_file("base.source_lang.txt", "base", "video.mp4"))
+        self.assertTrue(utils._is_temp_file("base.manifest.json", "base", "video.mp4"))
+        self.assertTrue(utils._is_temp_file("base.common_input.json", "base", "video.mp4"))
+        self.assertTrue(utils._is_temp_file("base.en.srt.tmp", "base", "video.mp4"))
+        self.assertTrue(utils._is_temp_file("tmpabc123", "base", "video.mp4"))
+
     def test_has_temp_name_prefix_accepts_temp_input_prefix(self):
         self.assertTrue(utils._has_temp_name_prefix(".temp_input.base.payload.json", "base"))
 
@@ -147,7 +156,6 @@ class TestUtils(unittest.TestCase):
             self.assertTrue(any("ULTRA" in c for c in calls))
 
     def test_get_cpu_name_windows(self):
-        # Tests lines 483-495 (Windows Registry)
         # Mock winreg module being available
         mock_winreg = MagicMock()
         mock_winreg.QueryValueEx.return_value = ["Intel Mock CPU", 1]
@@ -155,6 +163,39 @@ class TestUtils(unittest.TestCase):
         with patch("modules.media.hardware_utils.winreg", mock_winreg), patch("sys.platform", "win32"):
             name = utils.get_cpu_name()
             self.assertEqual(name, "Intel Mock CPU")
+
+    def test_get_cpu_name_linux(self):
+        cpuinfo_data = "processor\t: 0\nmodel name\t: AMD Ryzen 9 7950X\n"
+        with patch("sys.platform", "linux"), patch("builtins.open", mock_open(read_data=cpuinfo_data)):
+            name = utils.get_cpu_name()
+            self.assertEqual(name, "AMD Ryzen 9 7950X")
+
+    def test_get_cpu_name_macos(self):
+        with patch("sys.platform", "darwin"), patch("subprocess.check_output", return_value=b"Apple M3 Max\n"):
+            name = utils.get_cpu_name()
+            self.assertEqual(name, "Apple M3 Max")
+
+    def test_get_ffmpeg_paths_venv_discovery(self):
+        from modules.media import ffmpeg_utils
+
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        venv_bin_dir = "Scripts" if sys.platform == "win32" else "bin"
+        ext = ".exe" if sys.platform == "win32" else ""
+        expected_ffmpeg = os.path.join(repo_root, ".venv", venv_bin_dir, f"ffmpeg{ext}")
+        expected_ffprobe = os.path.join(repo_root, ".venv", venv_bin_dir, f"ffprobe{ext}")
+
+        def side_effect_exists(path):
+            return path in (expected_ffmpeg, expected_ffprobe)
+
+        with (
+            patch("sys.prefix", os.path.join(repo_root, ".venv")),
+            patch("sys.executable", os.path.join(repo_root, ".venv", venv_bin_dir, f"python{ext}")),
+            patch("os.path.isfile", side_effect=side_effect_exists),
+            patch("os.access", return_value=True),
+        ):
+            ff, fp = ffmpeg_utils.get_ffmpeg_paths()
+            self.assertEqual(ff, expected_ffmpeg)
+            self.assertEqual(fp, expected_ffprobe)
 
     def test_run_ffmpeg_progress_logic(self):
         # Test the parsing logic of run_ffmpeg_progress
