@@ -1,29 +1,24 @@
 ______________________________________________________________________
 
-## name: markdown-quality user-invocable: true description: "Use when linting Markdown docs, auto-fixing formatting drift, or integrating Markdown quality checks into local/CI pipelines."
+## name: markdown-quality description: Run mdformat auto-delinter and pymarkdown quality scan across all markdown documents.
 
 # Markdown Quality Skill
 
 ## Goal
 
-Keep Markdown documentation consistently formatted and lint-clean across README,
-docs/, and .github/.
-
-## Workflow
-
-1. Run the auto-delinter to normalize Markdown formatting.
-1. Run the Markdown linter to catch policy/style issues.
-1. Apply targeted fixes and re-run checks.
+Keep all Markdown documentation consistently formatted and lint-clean.
 
 ## Commands
 
 ```powershell
-poetry run mdformat README.md AGENTS.md docs .github
-poetry run pymarkdown scan README.md AGENTS.md docs .github
+# Auto-delint format
+poetry run mdformat README.md AGENTS.md docs .github .agent .agents
+
+# Scan quality
+poetry run pymarkdown scan README.md AGENTS.md docs .github .agent .agents
 ```
 
 ## Success Criteria
 
-- Markdown files are auto-formatted by mdformat.
-- pymarkdown scan exits successfully.
-- CI and local pipeline stages pass without Markdown issues.
+- Clean formatting without manual alignment hacks.
+- Zero errors reported by `pymarkdown scan`.

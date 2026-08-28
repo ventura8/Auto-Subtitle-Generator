@@ -256,15 +256,23 @@ $ffmpegBin = "$ffmpegDir\bin\ffmpeg.exe"
 
 if (-not (Test-Path $ffmpegBin)) {
     try {
-        # Download FFmpeg (ZIP)
-        $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+        # Pinned FFmpeg release and known-good SHA256 checksum (BtbN/FFmpeg-Builds)
+        $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-24-13-10/ffmpeg-n9.0.1-6-g9d4ca21220-win64-gpl-9.0.zip"
+        $expectedHash = "3729F8BB8E37ABB6077E78515DB3B29D178911FEB93D3EF6A1BE43FBEAB8AD6E"
         $ffmpegZip = "$PSScriptRoot\ffmpeg.zip"
         
-        Write-Information "Downloading FFmpeg (Master Latest Win64 GPL ZIP)..."
+        Write-Information "Downloading FFmpeg (Pinned Build n9.0.1-6-g9d4ca21220 Win64 GPL ZIP)..."
         Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip -UserAgent "NativeHost"
         
+        Write-Information "Verifying FFmpeg archive SHA256 integrity..."
+        $computedHash = (Get-FileHash -Path $ffmpegZip -Algorithm SHA256).Hash
+        if ($computedHash -ne $expectedHash) {
+            throw "FFmpeg archive integrity verification failed! Expected: $expectedHash, Found: $computedHash"
+        }
+        Write-Information "FFmpeg archive integrity verified successfully."
+
         Write-Information "Extracting FFmpeg..."
-        # Extract to venv root temporarily; it creates a subfolder like 'ffmpeg-master-latest-win64-gpl'
+        # Extract to venv root temporarily; it creates a subfolder like 'ffmpeg-N-119330-g3ba557fbf0-win64-gpl'
         Expand-Archive -Path $ffmpegZip -DestinationPath "$PSScriptRoot\.venv" -Force
         
         # Rename the extracted folder to 'ffmpeg'

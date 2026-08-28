@@ -1,24 +1,22 @@
 ______________________________________________________________________
 
-## applyTo: "\*\*/\*.ps1" description: "Use when editing PowerShell scripts for setup, local pipeline, or utility automation in this repository."
+## applyTo: "\*\*/\*.ps1" description: Use when editing PowerShell scripts for setup, local pipeline, or utility automation in this repository.
 
 # PowerShell Instructions
 
 ## Script Safety
 
-- Use Set-StrictMode -Version Latest for new scripts where possible.
-- Keep $ErrorActionPreference = "Stop" for fail-fast behavior.
-- Validate command exits and throw clear errors when commands fail.
+- Use `Set-StrictMode -Version Latest` for strict variable and invocation semantics.
+- Set `$ErrorActionPreference = "Stop"` for predictable fail-fast behavior.
+- Validate process exit codes and throw explicit, informative error messages.
 
 ## Setup Consistency
 
-- Keep install_dependencies.ps1 idempotent.
-- Preserve local .venv assumptions and launcher compatibility.
-- Keep FFmpeg setup aligned with the official FFmpeg download path policy for
-  Windows.
+- Keep `install_dependencies.ps1` idempotent so multiple runs safely repair or verify the environment.
+- Preserve local `.venv` paths and launcher compatibility.
+- Ensure FFmpeg installation adheres to Windows official static builds.
 
 ## Maintainability
 
-- Use small helper functions for repeated command execution patterns.
-- Keep user output clear by labeling major steps.
-- Avoid interactive prompts unless explicitly needed.
+- Decompose complex shell logic into focused script functions with clear error handling.
+- Keep terminal output informative with structured progress indicators (`==> Step Name`).

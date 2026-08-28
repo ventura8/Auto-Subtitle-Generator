@@ -156,8 +156,9 @@ translation:
   engine: "nllb"
 
 # Hugging Face Access Token: Required to access gated models like TranslateGemma.
-# Generate yours at: https://huggingface.co/settings/tokens
-# If set to null, the app will check the HF_TOKEN environment variable or prompt on startup.
+# Recommended: Set via the HF_TOKEN environment variable or a local .env file.
+# Note: Do not commit sensitive tokens into git-tracked configuration files.
+# If HF_TOKEN is unset, the application will prompt interactively in-memory when supported.
 hf_token: null
 
 # -----------------------------------------------------------------------------

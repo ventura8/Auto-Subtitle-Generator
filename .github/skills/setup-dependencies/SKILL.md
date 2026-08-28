@@ -1,27 +1,22 @@
 ______________________________________________________________________
 
-## name: setup-dependencies user-invocable: true description: "Use when bootstrapping or repairing local setup: Python, Poetry, FFmpeg, and project dependency installation."
+## name: setup-dependencies description: Bootstrap, install, or repair local development setup: Python 3.12+, Poetry virtualenv, PyTorch CUDA 13.2 / cuDNN, and local FFmpeg on Windows.
 
 # Setup Dependencies Skill
 
 ## Goal
 
-Bring a local machine to a runnable state for this repository.
+Bring the local machine to a functional, GPU-accelerated state for Auto-Subtitle-Generator.
 
 ## Workflow
 
-1. Verify Python 3.12+ availability.
-1. Run install_dependencies.ps1 for venv, FFmpeg, and Poetry setup.
-1. Validate the launcher and command-line execution path.
+1. Verify Python 3.12 availability.
+1. Run `.\install_dependencies.ps1` for virtual environment, PyTorch CUDA, cuDNN, and FFmpeg setup.
+1. Validate launcher and command-line execution.
 
 ## Commands
 
 ```powershell
-./install_dependencies.ps1
+.\install_dependencies.ps1
 poetry run python auto_subtitle.py --help
 ```
-
-## Project Policy
-
-- FFmpeg setup must follow the official FFmpeg download path for Windows users.
-- Keep setup idempotent so reruns do not break existing installations.

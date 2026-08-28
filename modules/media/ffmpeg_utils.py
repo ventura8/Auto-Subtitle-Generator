@@ -13,9 +13,9 @@ from ..subtitles.timestamp_utils import parse_timestamp
 
 def get_ffmpeg_paths():
     """Returns paths to FFmpeg binaries, preferring local venv installation."""
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    venv_ffmpeg = os.path.join(base, "venv", "ffmpeg", "bin", "ffmpeg.exe")
-    venv_ffprobe = os.path.join(base, "venv", "ffmpeg", "bin", "ffprobe.exe")
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    venv_ffmpeg = os.path.join(base, ".venv", "ffmpeg", "bin", "ffmpeg.exe")
+    venv_ffprobe = os.path.join(base, ".venv", "ffmpeg", "bin", "ffprobe.exe")
 
     if os.path.exists(venv_ffmpeg) and os.path.exists(venv_ffprobe):
         return venv_ffmpeg, venv_ffprobe

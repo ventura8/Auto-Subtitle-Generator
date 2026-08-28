@@ -1,30 +1,31 @@
 ______________________________________________________________________
 
-## name: architecture-review user-invocable: true description: "Use when reviewing or implementing architecture-level changes across orchestration, modules, process isolation, or model lifecycle flows."
+## name: architecture-review description: Review and implement structural architecture changes across orchestration, modules, model lifecycle, and process isolation.
 
 # Architecture Review Skill
 
 ## Goal
 
-Validate and execute architecture-level changes without violating reliability or
-performance constraints.
+Validate and execute architecture-level changes without violating reliability or performance constraints.
+
+## Hard Rules & Architectural Invariants
+
+1. **Orchestration vs Business Logic**: Keep `auto_subtitle.py` strictly as an orchestrator; domain logic lives under `modules/`.
+1. **Model Lifecycle & Isolation**: Faster Whisper and isolated translators (`NLLBTranslator` / `TranslateGemmaTranslator`) are never co-located during heavy execution.
+1. **Subprocess Process Isolation**: Translation runs in `isolated_translator.py` with clean signal handling and VRAM reclamation.
+1. **Reliability & Atomic Output**: Output subtitle files write to temporary `.tmp` files and atomically replace destination files.
+1. **Zero Suppressions**: Never introduce `# noqa`, `# type: ignore`, `# pylint: disable`, `# bandit: disable`, or warning-ignore filters (see `AGENTS.md`).
+1. **Quality Gates**: Maintain Cyclomatic Complexity < 10 and per-file test coverage >= 90%.
 
 ## Workflow
 
-1. Identify impacted boundaries: orchestration, modules, process isolation,
-   utility layers.
-1. Verify state ownership and model lifecycle (load, offload, cleanup).
-1. Implement minimal structural change with explicit rationale.
-1. Update tests/documentation for behavior or architecture contract changes.
+1. Identify impacted boundaries: orchestration (`auto_subtitle.py`), domain modules (`modules/`), process isolation (`isolated_translator.py`), or utilities.
+1. Verify state ownership and model lifecycle (explicit device mapping, cleanup before heavy stages).
+1. Implement minimal structural changes with explicit rationale.
+1. Update tests and documentation for contract changes.
 
-## Checks
+## Validation
 
 ```powershell
 .\run_local_pipeline.ps1
 ```
-
-## Guardrails
-
-- Keep auto_subtitle.py orchestration-centric.
-- Preserve shutdown safety and atomic persistence behavior.
-- Keep complexity under project limits by decomposition.

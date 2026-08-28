@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -118,6 +119,15 @@ class TestCoverageUtils(unittest.TestCase):
             ffmpeg, ffprobe = utils.get_ffmpeg_paths()
             self.assertEqual(ffmpeg, "ffmpeg")
             self.assertEqual(ffprobe, "ffprobe")
+
+    def test_get_ffmpeg_paths_local_venv(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        expected_ffmpeg = os.path.join(root, ".venv", "ffmpeg", "bin", "ffmpeg.exe")
+        expected_ffprobe = os.path.join(root, ".venv", "ffmpeg", "bin", "ffprobe.exe")
+        with patch("os.path.exists", return_value=True):
+            ffmpeg, ffprobe = utils.get_ffmpeg_paths()
+            self.assertEqual(ffmpeg, expected_ffmpeg)
+            self.assertEqual(ffprobe, expected_ffprobe)
 
     def test_parse_timestamp_extra(self):
         self.assertEqual(utils.parse_timestamp("00:00:01.500"), 1.5)

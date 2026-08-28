@@ -5,9 +5,7 @@ Handles loading settings from config.yaml and prompts.yaml.
 
 import importlib
 import os
-import re
 import sys
-import tempfile
 import webbrowser
 from typing import Any, Dict
 
@@ -532,48 +530,6 @@ def _get_active_translator_model_id() -> str:
     return str(globals().get("NLLB_MODEL_ID"))
 
 
-def _save_token_to_config(token):
-    config_path = "config.yaml"
-    if not os.path.exists(config_path):
-        return
-
-    yaml_module = _get_yaml_module()
-    if yaml_module is None:
-        print("[Warning] PyYAML is not available; could not persist token to config.yaml.")
-        return
-
-    try:
-        with open(config_path, "r", encoding="utf-8") as file_handle:
-            config_text = file_handle.read()
-
-        escaped_token = _escape_token_value(token)
-        updated_text = _upsert_hf_token_line(config_text, escaped_token)
-
-        _atomic_write_text_file(config_path, updated_text)
-
-        print("[Config] Token successfully saved to config.yaml for future runs.")
-    except (OSError, TypeError, ValueError, _yaml_error_type(yaml_module)) as e:
-        print(f"[Warning] Failed to save token to config.yaml: {e}")
-
-
-def _atomic_write_text_file(destination_path: str, content: str) -> None:
-    """Atomically write UTF-8 text content to destination path via same-dir temp file."""
-    destination_dir = os.path.dirname(os.path.abspath(destination_path)) or "."
-    fd, temp_path = tempfile.mkstemp(dir=destination_dir)
-    os.close(fd)
-    try:
-        with open(temp_path, "w", encoding="utf-8") as file_handle:
-            file_handle.write(content)
-
-        if os.name == "posix":
-            os.chmod(temp_path, 0o600)
-
-        os.replace(temp_path, destination_path)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-
 def _reset_config_defaults() -> None:
     """Reset mutable runtime configuration state to module defaults."""
     globals()["WHISPER_MODEL_SIZE"] = "large-v3"
@@ -637,25 +593,6 @@ def _reset_config_defaults() -> None:
     TARGET_LANGUAGES.clear()
 
 
-def _escape_token_value(token: Any) -> str:
-    """Escape token string for safe inline YAML scalar insertion."""
-    return str(token).replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _upsert_hf_token_line(config_text: str, escaped_token: str) -> str:
-    """Insert or replace hf_token line in YAML text while preserving comments."""
-    token_line = f'hf_token: "{escaped_token}"'
-    token_line_pattern = re.compile(r"^(\s*hf_token\s*:\s*)([^#\n]*)(\s*(?:#.*)?)$", re.MULTILINE)
-    if token_line_pattern.search(config_text):
-        return token_line_pattern.sub(
-            lambda match: f'{match.group(1)}"{escaped_token}"{match.group(3)}',
-            config_text,
-            count=1,
-        )
-    separator = "\n" if config_text and not config_text.endswith("\n") else ""
-    return f"{config_text}{separator}{token_line}\n"
-
-
 def _handle_hf_token_prompt():
     """Handles prompting the user for their Hugging Face token and opening the license agreement."""
     # Only prompt in the main interactive process (not in worker/subprocesses)
@@ -670,7 +607,6 @@ def _handle_hf_token_prompt():
         return
 
     os.environ["HF_TOKEN"] = token
-    _save_token_to_config(token)
     _print_hf_license_prompt()
     _open_url_safely(f"https://huggingface.co/{TRANSLATEGEMMA_MODEL_ID}")
 
