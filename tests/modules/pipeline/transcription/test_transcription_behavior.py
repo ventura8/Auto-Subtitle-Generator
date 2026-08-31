@@ -42,6 +42,16 @@ class TestCoverageTranscription(unittest.TestCase):
             self.assertEqual(res, "vid.mp4")
             mock_log.assert_any_call("  [Sep] Warning: Separation failed (Sep fail). Using original audio.", "WARNING")
 
+    def test_detect_and_separate_vocals_missing_optional_backend(self):
+        with (
+            patch("modules.configuration.config.USE_VOCAL_SEPARATION", True),
+            patch("modules.pipeline.transcription._get_separated_vocal_path", return_value=None),
+            patch("modules.pipeline.transcription._run_vocal_separation", side_effect=ImportError("audio_separator")),
+            patch("modules.pipeline.transcription.log") as mock_log,
+        ):
+            self.assertEqual(transcription._detect_and_separate_vocals("vid.mp4", MagicMock()), "vid.mp4")
+            mock_log.assert_any_call("  [Sep] Warning: Separation failed (audio_separator). Using original audio.", "WARNING")
+
     def test_filter_hallucinations_branches(self):
         seg = MagicMock(text="thanks for watching")
         phrases = ["thanks for watching"]

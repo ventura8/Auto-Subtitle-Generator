@@ -1,4 +1,3 @@
-import builtins
 import os
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
@@ -65,30 +64,88 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             auto_subtitle.init_ai_engine()
             mock_print.assert_not_called()
 
+    def test_init_nvidia_paths_uses_runtime_module(self):
+        with patch("auto_subtitle.nvidia_paths.load_nvidia_paths") as mock_load:
+            auto_subtitle._init_nvidia_and_transformers(2, 6)
+        mock_load.assert_called_once_with(None)
+
     def test_get_nvidia_bin_lib_paths(self):
+        from modules.runtime import nvidia_paths
+
         with (
             patch("os.path.exists", return_value=True),
             patch("os.path.isdir", return_value=True),
             patch("os.listdir", return_value=["item1"]),
         ):
-            paths = auto_subtitle._get_nvidia_bin_lib_paths("site-packages")
-            self.assertTrue(len(paths) > 0)
+            paths = nvidia_paths._get_nvidia_bin_lib_paths("site-packages")
+            expected_paths = [
+                os.path.join("site-packages", "nvidia", "item1", "bin"),
+                os.path.join("site-packages", "nvidia", "item1", "lib"),
+            ]
+            self.assertEqual(paths, expected_paths)
 
-    @patch("os.add_dll_directory", create=True)
-    def test_apply_paths_to_env(self, mock_add):
-        with patch("os.environ", {"PATH": ""}):
-            auto_subtitle._apply_paths_to_env(["/new/path"])
+    def test_apply_paths_to_env_with_dll_directory(self):
+        from modules.runtime import nvidia_paths
+
+        mock_add = MagicMock()
+        with (
+            patch("os.environ", {"PATH": ""}),
+            patch.object(os, "add_dll_directory", mock_add, create=True),
+        ):
+            nvidia_paths._apply_paths_to_env(["/new/path"])
             self.assertIn("/new/path", os.environ["PATH"])
-            # Assuming hasattr(os, 'add_dll_directory') is true on this env
-            if hasattr(os, "add_dll_directory"):
-                mock_add.assert_called_with("/new/path")
+            mock_add.assert_called_with("/new/path")
+
+    def test_apply_paths_to_env_without_dll_directory(self):
+        from modules.runtime import nvidia_paths
+
+        with (
+            patch("os.environ", {"PATH": ""}),
+            patch.object(nvidia_paths, "_add_dll_directory_if_supported") as mock_add_helper,
+        ):
+            nvidia_paths._apply_paths_to_env(["/new/path"])
+            self.assertIn("/new/path", os.environ["PATH"])
+            mock_add_helper.assert_called_once_with("/new/path")
+
+    def test_main_startup_order_preserves_arg_parsing_before_ai_init(self):
+        with (
+            patch("sys.argv", ["auto_subtitle.py"]),
+            patch("auto_subtitle.models.OPTIMIZER.detect_hardware"),
+            patch("auto_subtitle.setup_environment") as mock_setup,
+            patch("auto_subtitle.get_input_files", return_value=(["video.mp4"], None, None)) as mock_get_files,
+            patch("auto_subtitle.init_ai_engine") as mock_init_ai,
+            patch("auto_subtitle.utils.print_banner") as mock_banner,
+            patch("auto_subtitle.ModelManager"),
+            patch("auto_subtitle.process_video_batch"),
+            patch("auto_subtitle.log"),
+        ):
+            order = []
+            mock_setup.side_effect = lambda: order.append("setup_environment")
+            mock_get_files.side_effect = lambda *_: (order.append("get_input_files"), (["video.mp4"], None, None))[1]
+            mock_init_ai.side_effect = lambda: order.append("init_ai_engine")
+            mock_banner.side_effect = lambda *_: order.append("print_banner")
+
+            auto_subtitle.main()
+
+            # The banner is a startup banner: it must precede input handling so it
+            # still appears when no videos are found. Heavy engine initialization
+            # stays behind the input checks.
+            self.assertEqual(order, ["setup_environment", "print_banner", "get_input_files", "init_ai_engine"])
+            self.assertEqual(mock_init_ai.call_count, 1)
+            self.assertEqual(mock_banner.call_count, 1)
 
     def test_load_nvidia_paths_torch_fail(self):
+        from modules.runtime import nvidia_paths
+
         with (
-            patch("site.getsitepackages", return_value=[]),
-            patch("auto_subtitle.importlib.import_module", side_effect=ImportError("onnxruntime unavailable")),
+            patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": "0"}, clear=False),
+            patch("modules.runtime.nvidia_paths._load_optional_torch", return_value=None) as load_torch,
+            patch.object(nvidia_paths.importlib, "import_module", return_value=MagicMock()),
+            patch.object(nvidia_paths, "_apply_paths_to_env") as mock_apply,
         ):
-            auto_subtitle.load_nvidia_paths()
+            nvidia_paths.load_nvidia_paths()
+            load_torch.assert_called_once_with()
+            mock_apply.assert_called_once_with([])
 
     def test_check_resume_empty_srt(self):
         with (
@@ -158,8 +215,72 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             self.assertTrue(srt_path.endswith("base.fr.srt"))
             self.assertEqual(len(segs), 1)
 
-    def test_check_resume_without_recorded_source_lang_does_not_guess(self):
-        with patch("os.path.exists", return_value=False), patch("auto_subtitle.utils.parse_srt") as mock_parse:
+    def test_check_resume_without_recorded_source_lang_does_not_guess_when_no_srts(self):
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("os.listdir", return_value=[]),
+            patch("auto_subtitle.utils.parse_srt") as mock_parse,
+        ):
+            self.assertEqual(auto_subtitle._check_resume("folder", "base", None), (None, None, None))
+            mock_parse.assert_not_called()
+
+    def test_check_resume_scans_existing_srt_without_sidecar(self):
+        def _exists(path):
+            return path.endswith("base.ro.srt")
+
+        with (
+            patch("os.path.exists", side_effect=_exists),
+            patch("os.listdir", return_value=["base.ro.srt"]),
+            patch("auto_subtitle.utils.parse_srt", return_value=[MagicMock()]),
+        ):
+            segs, lang, srt_path = auto_subtitle._check_resume("folder", "base", None)
+            self.assertEqual(lang, "ro")
+            self.assertTrue(srt_path.endswith("base.ro.srt"))
+            self.assertEqual(len(segs), 1)
+
+    @patch.dict("auto_subtitle.config.TARGET_LANGUAGES", {"fr": {}, "ro": {}}, clear=True)
+    def test_check_resume_ignores_translated_srts_when_recorded_srt_is_unusable(self):
+        def _exists(path):
+            return path.endswith("base.source_lang.txt") or path.endswith("base.fr.srt") or path.endswith("base.ro.srt")
+
+        def _parse(path):
+            return [] if path.endswith("base.fr.srt") else [MagicMock()]
+
+        with (
+            patch("os.path.exists", side_effect=_exists),
+            patch("builtins.open", mock_open(read_data="fr")),
+            patch("auto_subtitle.utils.parse_srt", side_effect=_parse),
+            patch("os.listdir", return_value=["base.fr.srt", "base.ro.srt"]),
+            patch("auto_subtitle.log"),
+        ):
+            result = auto_subtitle._check_resume("folder", "base", None)
+
+        self.assertEqual(result, (None, None, None))
+
+    @patch.dict("auto_subtitle.config.TARGET_LANGUAGES", {"fr": {}, "ro": {}}, clear=True)
+    def test_check_resume_ignores_translated_srts_when_source_is_unusable(self):
+        def _exists(path):
+            return path.endswith("base.source_lang.txt")
+
+        with (
+            patch("os.path.exists", side_effect=_exists),
+            patch("builtins.open", mock_open(read_data="en")),
+            patch("os.listdir", return_value=["base.fr.srt", "base.ro.srt"]),
+            patch("auto_subtitle.utils.parse_srt") as mock_parse,
+        ):
+            self.assertEqual(auto_subtitle._check_resume("folder", "base", None), (None, None, None))
+            mock_parse.assert_not_called()
+
+    def test_check_resume_ignores_undetermined_language(self):
+        def _exists(path):
+            return path.endswith("base.source_lang.txt") or path.endswith("base.und.srt")
+
+        with (
+            patch("os.path.exists", side_effect=_exists),
+            patch("builtins.open", mock_open(read_data="undetermined")),
+            patch("os.listdir", return_value=["base.und.srt"]),
+            patch("auto_subtitle.utils.parse_srt") as mock_parse,
+        ):
             self.assertEqual(auto_subtitle._check_resume("folder", "base", None), (None, None, None))
             mock_parse.assert_not_called()
 
@@ -173,23 +294,23 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             mock_parse.assert_not_called()
 
     def test_load_nvidia_paths_adds_torch_lib_and_ignores_ort_error(self):
+        from modules.runtime import nvidia_paths
+
         fake_torch = MagicMock()
         fake_torch.__path__ = ["/fake/torch"]
-        original_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "onnxruntime":
-                raise Exception("ort fail")
-            return original_import(name, *args, **kwargs)
 
         with (
+            patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": "0"}, clear=False),
             patch("site.getsitepackages", return_value=[]),
             patch("os.path.exists", side_effect=lambda p: p.endswith("/lib")),
             patch.dict("sys.modules", {"torch": fake_torch}),
-            patch("auto_subtitle._apply_paths_to_env") as mock_apply,
-            patch("builtins.__import__", side_effect=fake_import),
+            patch("modules.runtime.nvidia_paths._apply_paths_to_env") as mock_apply,
+            patch(
+                "modules.runtime.nvidia_paths.importlib.import_module",
+                side_effect=ImportError("onnxruntime not found"),
+            ),
         ):
-            auto_subtitle.load_nvidia_paths()
+            nvidia_paths.load_nvidia_paths(fake_torch)
             self.assertTrue(mock_apply.called)
 
     def test_get_input_files_defaults_to_input_folder(self):

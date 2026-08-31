@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "auto-subtitle-generator"
-version = "1.1.3"
+version = "1.2.0"
 description = "Auto-Subtitle Generator using Faster Whisper and optional Translation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -24,17 +24,31 @@ pyyaml = "^6.0.3"
 optional = true
 
 [tool.poetry.group.ml.dependencies]
-torch = { version = "2.13.0+cu132", source = "pytorch-cu132", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
-torchvision = { version = "0.28.0+cu132", source = "pytorch-cu132", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
-torchaudio = { version = "2.11.0", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
+torch = [
+  { version = "2.13.0+cu132", source = "pytorch-cu132", markers = "platform_system != 'Darwin' and python_version == '3.12' and implementation_name == 'cpython'" },
+  { version = ">=2.13,<2.14", markers = "platform_system == 'Darwin' and python_version == '3.12' and implementation_name == 'cpython'" },
+]
+torchvision = [
+  { version = "0.28.0+cu132", source = "pytorch-cu132", markers = "platform_system != 'Darwin' and python_version == '3.12' and implementation_name == 'cpython'" },
+  { version = ">=0.28,<0.29", markers = "platform_system == 'Darwin' and python_version == '3.12' and implementation_name == 'cpython'" },
+]
 faster-whisper = "^1.2.1"
 transformers = "^5.15.1"
 sentencepiece = "^0.2.2"
 accelerate = "^1.14.0"
-nvidia-cudnn-cu13 = { version = "9.20.0.48", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
-nvidia-cublas = { version = "13.4.0.1", markers = "platform_system == 'Windows' and python_version == '3.12' and implementation_name == 'cpython'" }
-audio-separator = { version = "^0.44.5", extras = ["gpu"] }
+nvidia-cudnn-cu13 = { version = "9.20.0.48", markers = "platform_system != 'Darwin' and python_version == '3.12' and implementation_name == 'cpython'" }
+nvidia-cublas = { version = "13.4.0.1", markers = "platform_system != 'Darwin' and python_version == '3.12' and implementation_name == 'cpython'" }
+audio-separator = [
+  { version = "^0.44.5", extras = [
+    "gpu",
+  ], markers = "platform_system != 'Darwin'" },
+  { version = "^0.44.5", extras = [
+    "cpu",
+  ], markers = "platform_system == 'Darwin'" },
+]
 audioread = "^3.1.0"
+# audio-separator 0.44.5 calls librosa.get_duration(filename=...), removed in librosa 1.0
+librosa = ">=0.10.2,<1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1.1"

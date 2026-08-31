@@ -39,8 +39,25 @@ def _resolve_input_path(input_path):
     path = input_path
     if not path:
         print(">> Please Drag & Drop a video file here and press Enter:")
-        path = input(">>Path: ").strip().strip('"')
+        path = _normalize_input_path(input(">>Path: "))
+    else:
+        path = _normalize_input_path(path)
     return path or "input"
+
+
+def _normalize_input_path(path):
+    """Trim whitespace and one matching pair of surrounding path quotes."""
+    normalized_path = str(path).strip()
+    if _has_matching_surrounding_quotes(normalized_path):
+        return normalized_path[1:-1].strip()
+    return normalized_path
+
+
+def _has_matching_surrounding_quotes(path):
+    """Return whether a path begins and ends with the same supported quote."""
+    if len(path) < 2:
+        return False
+    return path[0] in "'\"" and path[0] == path[-1]
 
 
 def _get_supported_video_extensions():

@@ -31,39 +31,31 @@ def _calculate_total_coverage_percent(root):
         return 0.0
 
 
-def generate_badge(coverage, output_path="assets/coverage.svg"):
-    """Generates a coverage badge SVG."""
-    try:
-        coverage = float(coverage)
-    except (TypeError, ValueError):
-        coverage = 0.0
+COLOR_THRESHOLDS = (
+    (95, "#4c1"),  # brightgreen
+    (90, "#97ca00"),  # green
+    (75, "#dfb317"),  # yellow
+    (50, "#fe7d37"),  # orange
+)
 
-    color = "#e05d44"  # red
-    if coverage >= 95:
-        color = "#4c1"  # brightgreen
-    elif coverage >= 90:
-        color = "#97ca00"  # green
-    elif coverage >= 75:
-        color = "#dfb317"  # yellow
-    elif coverage >= 50:
-        color = "#fe7d37"  # orange
 
-    coverage_str = f"{int(round(coverage))}%"
-    label_text = "Coverage"
-    value_text = coverage_str
+def _resolve_coverage_color(coverage: float) -> str:
+    """Return badge color hex code corresponding to coverage value."""
+    for threshold, color in COLOR_THRESHOLDS:
+        if coverage >= threshold:
+            return color
+    return "#e05d44"  # red
 
-    # Estimate widths
-    # 6px approx per char + padding
+
+def _build_badge_svg(label_text: str, value_text: str, color: str) -> str:
+    """Build SVG markup for the coverage badge."""
     label_width = 61
     value_width = int(len(value_text) * 8.5) + 10
-
     total_width = label_width + value_width
-
-    # Center positions
     label_x = label_width / 2.0 * 10
     value_x = (label_width + value_width / 2.0) * 10
 
-    svg = (
+    return (
         f"""<svg xmlns="http://www.w3.org/2000/svg" width="{total_width}" height="20" role="img" """
         f"""aria-label="{label_text}: {value_text}">
     <title>{label_text}: {value_text}</title>
@@ -93,6 +85,18 @@ def generate_badge(coverage, output_path="assets/coverage.svg"):
 </svg>"""
     )
 
+
+def generate_badge(coverage, output_path="assets/coverage.svg"):
+    """Generates a coverage badge SVG."""
+    try:
+        coverage = float(coverage)
+    except (TypeError, ValueError):
+        coverage = 0.0
+
+    color = _resolve_coverage_color(coverage)
+    coverage_str = f"{int(round(coverage))}%"
+    svg = _build_badge_svg("Coverage", coverage_str, color)
+
     output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -107,18 +111,21 @@ def generate_badge(coverage, output_path="assets/coverage.svg"):
 # =============================================================================
 
 
+COMPLEXITY_COLORS = (
+    (5, "brightgreen"),
+    (10, "yellowgreen"),
+    (20, "yellow"),
+    (30, "orange"),
+)
+
+
 def _get_complexity_color(complexity):
     """Returns a color hex code based on cyclomatic complexity."""
     if complexity in (COMPLEXITY_UNAVAILABLE, 0):
         return "lightgrey"
-    if complexity <= 5:
-        return "brightgreen"
-    if complexity <= 10:
-        return "yellowgreen"
-    if complexity <= 20:
-        return "yellow"
-    if complexity <= 30:
-        return "orange"
+    for threshold, color in COMPLEXITY_COLORS:
+        if complexity <= threshold:
+            return color
     return "red"
 
 
@@ -137,21 +144,12 @@ def _parse_complexity_value(raw_value):
 
 def _resolve_package_complexity(pkg, cls):
     """Resolves package complexity from source file analysis or XML attributes."""
-    complexity = COMPLEXITY_UNAVAILABLE
-
     if cls is not None:
-        complexity = _parse_complexity_value(cls.get("complexity"))
-        if complexity == COMPLEXITY_UNAVAILABLE:
-            class_file = cls.get("filename")
-            if class_file:
-                complexity = _calculate_file_complexity(class_file)
+        complexity = _resolve_class_complexity(cls)
+        if complexity != COMPLEXITY_UNAVAILABLE:
+            return complexity
 
-    if complexity == COMPLEXITY_UNAVAILABLE:
-        complexity = _parse_complexity_value(pkg.get("complexity"))
-
-    if complexity == COMPLEXITY_UNAVAILABLE:
-        return COMPLEXITY_UNAVAILABLE
-    return complexity
+    return _parse_complexity_value(pkg.get("complexity"))
 
 
 def _resolve_class_complexity(cls):
@@ -215,8 +213,8 @@ def _generate_markdown_summary(root, output_path="coverage_summary.md"):
     print(f"Generated summary: {output_path}")
 
 
-def transform_coverage(xml_file, badge_output_path="assets/coverage.svg"):
-    """Transforms cobertura.xml by splitting classes into packages and generating reports."""
+def _load_and_badge_coverage(xml_file: str, badge_output_path: str):
+    """Load XML tree and generate coverage badge."""
     if not os.path.exists(xml_file):
         print(f"Error: {xml_file} not found")
         sys.exit(1)
@@ -226,41 +224,53 @@ def transform_coverage(xml_file, badge_output_path="assets/coverage.svg"):
         root = tree.getroot()
         total_coverage = _calculate_total_coverage_percent(root)
         generate_badge(total_coverage, badge_output_path)
+        return tree, root
     except ET.ParseError as e:
         print(f"Error parsing XML: {e}")
         sys.exit(1)
+
+
+def _collect_xml_classes(packages_el) -> list[ET.Element]:
+    """Collect class elements across all package elements."""
+    all_classes = []
+    for pkg in packages_el.findall("package"):
+        classes_el = pkg.find("classes")
+        if classes_el is not None:
+            all_classes.extend(classes_el.findall("class"))
+    return all_classes
+
+
+def _repackage_single_class(packages_el: ET.Element, cls: ET.Element) -> None:
+    """Create a new package element wrapping an individual class."""
+    pkg_name = cls.get("filename") or ""
+    class_complexity = _resolve_class_complexity(cls)
+    cls.set("complexity", str(class_complexity))
+
+    new_pkg = ET.SubElement(packages_el, "package")
+    new_pkg.set("name", pkg_name)
+
+    for attr in ["line-rate", "branch-rate"]:
+        new_pkg.set(attr, cls.get(attr) or "0.0")
+    new_pkg.set("complexity", str(class_complexity))
+
+    new_classes = ET.SubElement(new_pkg, "classes")
+    new_classes.append(cls)
+
+
+def transform_coverage(xml_file, badge_output_path="assets/coverage.svg"):
+    """Transforms cobertura.xml by splitting classes into packages and generating reports."""
+    tree, root = _load_and_badge_coverage(xml_file, badge_output_path)
 
     packages_el = root.find("packages")
     if packages_el is None:
         _generate_markdown_summary(root)
         return
 
-    # Collect all classes from all existing packages
-    all_classes = []
-    for pkg in packages_el.findall("package"):
-        classes_el = pkg.find("classes")
-        if classes_el is not None:
-            all_classes.extend(classes_el.findall("class"))
-
-    # Clear existing packages
+    all_classes = _collect_xml_classes(packages_el)
     packages_el.clear()
 
-    # Create new package per class
     for cls in all_classes:
-        filename = cls.get("filename")
-        pkg_name = filename
-        class_complexity = _resolve_class_complexity(cls)
-        cls.set("complexity", str(class_complexity))
-
-        new_pkg = ET.SubElement(packages_el, "package")
-        new_pkg.set("name", pkg_name)
-
-        for attr in ["line-rate", "branch-rate"]:
-            new_pkg.set(attr, cls.get(attr) or "0.0")
-        new_pkg.set("complexity", str(class_complexity))
-
-        new_classes = ET.SubElement(new_pkg, "classes")
-        new_classes.append(cls)
+        _repackage_single_class(packages_el, cls)
 
     tree.write(xml_file, encoding="UTF-8", xml_declaration=True)
     print(f"Successfully transformed {xml_file}: Split {len(all_classes)} classes into separate packages.")

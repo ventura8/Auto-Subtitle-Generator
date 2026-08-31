@@ -50,7 +50,7 @@ def print_banner(optimizer=None):
  /_/   \_\__,_|\__\___/  |____/ \__,_|_.__/  \__|_|\__\___|
 """
     print("=" * 60)
-    print("   AI HYBRID VHS AUDIO RESTORER - v1.1.2")
+    print("   AI HYBRID VHS AUDIO RESTORER - v1.2.0")
     print(f"   Running on: {os_info}")
     print("=" * 60 + "\n")
 
@@ -129,7 +129,7 @@ def init_console():
             # ENABLE_VIRTUAL_TERMINAL_PROCESSING (4) | ENABLE_PROCESSED_OUTPUT (1) | ENABLE_WRAP_AT_EOL_OUTPUT (2) = 7
             k32_stdout = -11
             handle = kernel32.GetStdHandle(k32_stdout)
-            mode = ctypes.c_uint32()
+            mode = ctypes.c_uint32(0)
             if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
                 kernel32.SetConsoleMode(handle, mode.value | 7)
         except (AttributeError, OSError):
@@ -137,9 +137,11 @@ def init_console():
 
 
 def setup_signal_handlers():
-    """Registers signal handlers for SIGINT and SIGTERM."""
+    """Registers signal handlers for SIGINT, SIGTERM, and SIGHUP."""
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, handle_shutdown)
 
     # Windows Console Handler for "X" button
     if sys.platform == "win32":

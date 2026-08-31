@@ -77,6 +77,22 @@ def _collect_violations() -> list[str]:
     return violations
 
 
+def _check_warning_call_violation(
+    node: ast.Call,
+    warning_module_aliases: set[str],
+    direct_filter_names: set[str],
+    relative_path: Path,
+) -> str | None:
+    """Return violation message if node represents an ignored warning filter call."""
+    if not _is_warning_filter_call(node.func, warning_module_aliases, direct_filter_names):
+        return None
+    action = _resolve_warning_filter_action(node)
+    if action != "ignore":
+        return None
+    call_target = _stringify_call_target(node.func)
+    return f"{relative_path}:{getattr(node, 'lineno', '?')}: warning ignore filter detected: {call_target}"
+
+
 def _collect_python_warning_filter_violations(relative_path: Path, file_text: str) -> list[str]:
     """Find warning-ignore filters including aliases and direct imports."""
     violations: list[str] = []
@@ -88,19 +104,28 @@ def _collect_python_warning_filter_violations(relative_path: Path, file_text: st
     warning_module_aliases, direct_filter_names = _collect_warning_filter_aliases(tree)
 
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not _is_warning_filter_call(node.func, warning_module_aliases, direct_filter_names):
-            continue
-
-        action = _resolve_warning_filter_action(node)
-        if action != "ignore":
-            continue
-
-        call_target = _stringify_call_target(node.func)
-        violations.append(f"{relative_path}:{getattr(node, 'lineno', '?')}: warning ignore filter detected: {call_target}")
+        if isinstance(node, ast.Call):
+            violation = _check_warning_call_violation(node, warning_module_aliases, direct_filter_names, relative_path)
+            if violation:
+                violations.append(violation)
 
     return violations
+
+
+def _record_warning_import(node: ast.Import, aliases: set[str]) -> None:
+    """Record warnings module alias from direct import."""
+    for alias in node.names:
+        if alias.name == "warnings":
+            aliases.add(alias.asname or alias.name)
+
+
+def _record_warning_import_from(node: ast.ImportFrom, direct_filters: set[str]) -> None:
+    """Record direct warning filter imports."""
+    if node.module != "warnings":
+        return
+    for alias in node.names:
+        if alias.name in {"filterwarnings", "simplefilter"}:
+            direct_filters.add(alias.asname or alias.name)
 
 
 def _collect_warning_filter_aliases(tree: ast.AST) -> tuple[set[str], set[str]]:
@@ -110,13 +135,9 @@ def _collect_warning_filter_aliases(tree: ast.AST) -> tuple[set[str], set[str]]:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "warnings":
-                    warning_module_aliases.add(alias.asname or alias.name)
-        if isinstance(node, ast.ImportFrom) and node.module == "warnings":
-            for alias in node.names:
-                if alias.name in {"filterwarnings", "simplefilter"}:
-                    direct_filter_names.add(alias.asname or alias.name)
+            _record_warning_import(node, warning_module_aliases)
+        elif isinstance(node, ast.ImportFrom):
+            _record_warning_import_from(node, direct_filter_names)
 
     return warning_module_aliases, direct_filter_names
 
@@ -130,6 +151,16 @@ def _is_warning_filter_call(func: ast.expr, warning_module_aliases: set[str], di
     return False
 
 
+def _resolve_keyword_warning_filter_action(keywords: list[ast.keyword]) -> str | None:
+    """Resolve action argument from keyword arguments."""
+    for keyword in keywords:
+        if keyword.arg == "action":
+            keyword_value = _extract_string_constant(keyword.value)
+            if keyword_value:
+                return keyword_value.lower()
+    return None
+
+
 def _resolve_warning_filter_action(call: ast.Call) -> str | None:
     """Resolve the warning filter action from positional/keyword call arguments."""
     if call.args:
@@ -137,13 +168,7 @@ def _resolve_warning_filter_action(call: ast.Call) -> str | None:
         if positional:
             return positional.lower()
 
-    for keyword in call.keywords:
-        if keyword.arg == "action":
-            keyword_value = _extract_string_constant(keyword.value)
-            if keyword_value:
-                return keyword_value.lower()
-
-    return None
+    return _resolve_keyword_warning_filter_action(call.keywords)
 
 
 def _extract_string_constant(node: ast.expr) -> str | None:

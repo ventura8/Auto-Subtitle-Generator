@@ -1,59 +1,145 @@
 name: Release
 
-# Trigger on version tags like v1.0.0, v1.2.3, etc.
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
   contents: read
 
+env:
+  PYTHON_VERSION: "3.12"
+
 jobs:
+  bootstrap-bundles:
+    name: "Build first-run bundle (${{ matrix.platform }}-${{ matrix.arch }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            arch: x86_64
+            goos: windows
+            goarch: amd64
+            launcher: start.exe
+            archive: zip
+          - platform: linux
+            arch: x86_64
+            goos: linux
+            goarch: amd64
+            launcher: start
+            archive: tar.gz
+          - platform: linux
+            arch: arm64
+            goos: linux
+            goarch: arm64
+            launcher: start
+            archive: tar.gz
+          - platform: macos
+            arch: x86_64
+            goos: darwin
+            goarch: amd64
+            launcher: start
+            archive: tar.gz
+          - platform: macos
+            arch: arm64
+            goos: darwin
+            goarch: arm64
+            launcher: start
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Build launcher and create first-run bundle
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          bundle_root="bundle/auto-subtitle-generator"
+          mkdir -p "$bundle_root" release-assets
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+            go build -ldflags="-s -w" -o "$bundle_root/${{ matrix.launcher }}" launcher/main.go
+          cp auto_subtitle.py config.yaml pyproject.toml poetry.lock README.md "$bundle_root/"
+          cp -R modules "$bundle_root/modules"
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            cp install_dependencies.ps1 "$bundle_root/"
+            (
+              cd bundle
+              zip -qr "../release-assets/auto-subtitle-generator-${RELEASE_TAG}-windows-${{ matrix.arch }}.zip" auto-subtitle-generator
+            )
+          else
+            cp install_dependencies.sh start.sh "$bundle_root/"
+            chmod +x "$bundle_root/start" "$bundle_root/install_dependencies.sh" "$bundle_root/start.sh"
+            tar -C bundle -czf "release-assets/auto-subtitle-generator-${RELEASE_TAG}-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" auto-subtitle-generator
+          fi
+      - name: Verify bundle layout
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          archive="release-assets/auto-subtitle-generator-${RELEASE_TAG}-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.archive }}"
+          test -s "$archive"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            unzip -Z1 "$archive" > contents.txt
+          else
+            tar -tzf "$archive" > contents.txt
+          fi
+          grep -Fx "auto-subtitle-generator/${{ matrix.launcher }}" contents.txt
+          grep -Fx "auto-subtitle-generator/auto_subtitle.py" contents.txt
+          grep -Fx "auto-subtitle-generator/pyproject.toml" contents.txt
+          grep -Fx "auto-subtitle-generator/modules/models.py" contents.txt
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            grep -Fx "auto-subtitle-generator/install_dependencies.ps1" contents.txt
+          else
+            grep -Fx "auto-subtitle-generator/install_dependencies.sh" contents.txt
+          fi
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+
   github-release:
-    name: "🚀 GitHub Release"
+    name: "GitHub Release"
+    needs: bootstrap-bundles
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+      - uses: actions/setup-python@v7.0.0
         with:
-          python-version: "3.12.13"
-
-      - name: Extract and verify version from tag
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Verify tag version
         run: |
           chmod +x scripts/release-verify-tag-version.sh
           ./scripts/release-verify-tag-version.sh
-
-      - name: Check for authored release description
-        id: notes
-        run: |
-          BODY_FILE="docs/releases/v${VERSION}_github_description.md"
-          if [ -f "${BODY_FILE}" ]; then
-            echo "use_body=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "use_body=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Create GitHub Release (authored description)
-        if: steps.notes.outputs.use_body == 'true'
-        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+      - uses: actions/download-artifact@v8.0.1
         with:
-          body_path: docs/releases/v${{ env.VERSION }}_github_description.md
-          draft: false
-          prerelease: false
-
-      - name: Create GitHub Release (auto-generated notes fallback)
-        if: steps.notes.outputs.use_body == 'false'
-        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Select release notes
+        id: notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          body_file="docs/releases/${RELEASE_TAG}_github_description.md"
+          test -f "$body_file" && echo "use_body=true" >> "$GITHUB_OUTPUT" || echo "use_body=false" >> "$GITHUB_OUTPUT"
+      - if: steps.notes.outputs.use_body == 'true'
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          body_path: docs/releases/${{ github.ref_name }}_github_description.md
+          files: release-assets/*
+      - if: steps.notes.outputs.use_body == 'false'
+        uses: softprops/action-gh-release@v3.0.3
         with:
           generate_release_notes: true
-          draft: false
-          prerelease: false
+          files: release-assets/*

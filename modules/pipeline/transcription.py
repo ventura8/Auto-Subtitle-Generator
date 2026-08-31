@@ -82,7 +82,7 @@ def _detect_and_separate_vocals(video_path, model_mgr):
         if vocal_file:
             return vocal_file
 
-    except (RuntimeError, OSError) as e:
+    except (ImportError, RuntimeError, OSError) as e:
         log(f"  [Sep] Warning: Separation failed ({e}). Using original audio.", "WARNING")
 
     return video_path

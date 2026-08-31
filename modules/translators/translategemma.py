@@ -1,14 +1,21 @@
 """TranslateGemma translation backend implementation."""
 
 import contextlib
+import logging
 import os
 from typing import Any
 
 from modules.configuration import config
 from modules.runtime.optional_imports import load_optional_torch
-from modules.translators.common import import_transformers_module, resolve_device_map
+from modules.translators.common import (
+    add_device_load_kwargs,
+    import_transformers_module,
+    load_with_cache_recovery,
+    resolve_device_map,
+)
 
 torch: Any | None = load_optional_torch()
+LOGGER = logging.getLogger(__name__)
 
 
 class TranslateGemmaTranslator:
@@ -73,13 +80,16 @@ def _resolve_device_map():
 
 
 def _load_translategemma_tokenizer(auto_tokenizer):
-    """Load TranslateGemma tokenizer with local-files fallback on network errors."""
+    """Load TranslateGemma tokenizer with local-files fallback and corrupt cache auto-purge."""
     token = _resolve_hf_token()
     load_args = {"token": token} if token else {}
-    try:
-        return auto_tokenizer.from_pretrained(config.TRANSLATEGEMMA_MODEL_ID, **load_args)
-    except OSError:
-        return auto_tokenizer.from_pretrained(config.TRANSLATEGEMMA_MODEL_ID, local_files_only=True, **load_args)
+    return load_with_cache_recovery(
+        auto_tokenizer.from_pretrained,
+        config.TRANSLATEGEMMA_MODEL_ID,
+        load_args,
+        logger=LOGGER,
+        model_label="TranslateGemma tokenizer",
+    )
 
 
 def _build_translategemma_model_kwargs():
@@ -89,25 +99,19 @@ def _build_translategemma_model_kwargs():
     if token:
         kwargs["token"] = token
 
-    device_map = _resolve_device_map()
-    if device_map is not None:
-        kwargs["device_map"] = device_map
-        if torch is not None and hasattr(torch, "float16"):
-            kwargs["dtype"] = torch.float16
-    return kwargs
+    return add_device_load_kwargs(kwargs, _resolve_device_map(), torch)
 
 
 def _load_translategemma_model(auto_model_for_causal_lm):
-    """Load TranslateGemma model with explicit device mapping and local fallback."""
+    """Load TranslateGemma model with explicit device mapping, local fallback, and corrupt cache auto-purge."""
     model_kwargs = _build_translategemma_model_kwargs()
-    try:
-        return auto_model_for_causal_lm.from_pretrained(config.TRANSLATEGEMMA_MODEL_ID, **model_kwargs)
-    except OSError:
-        return auto_model_for_causal_lm.from_pretrained(
-            config.TRANSLATEGEMMA_MODEL_ID,
-            local_files_only=True,
-            **model_kwargs,
-        )
+    return load_with_cache_recovery(
+        auto_model_for_causal_lm.from_pretrained,
+        config.TRANSLATEGEMMA_MODEL_ID,
+        model_kwargs,
+        logger=LOGGER,
+        model_label="TranslateGemma model",
+    )
 
 
 def _resolve_generation_device(model):

@@ -450,8 +450,7 @@ Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
             "cc",
             "auto_subtitle.py",
             "modules",
-            "tests/modules",
-            "tests/orchestration",
+            "tests",
             "-s",
             "-a"
         )
@@ -486,8 +485,7 @@ Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
             "mi",
             "auto_subtitle.py",
             "modules",
-            "tests/modules",
-            "tests/orchestration",
+            "tests",
             "-s"
         )
 
@@ -531,8 +529,7 @@ Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
             "hal",
             "auto_subtitle.py",
             "modules",
-            "tests/modules",
-            "tests/orchestration"
+            "tests"
         )
 
         $radonHalOutput = (& $VenvPy @radonHalArgs 2>&1) | Out-String
@@ -548,6 +545,8 @@ Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
         Invoke-PoetryCommand @(
             "run",
             "pytest",
+            "-m",
+            "not e2e",
             "-o",
             "addopts=",
             "--cov=auto_subtitle",

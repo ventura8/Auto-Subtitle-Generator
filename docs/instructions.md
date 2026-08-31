@@ -26,6 +26,11 @@ this project. Adherence to these rules is mandatory.
 - **Atomic Persistence**:
   - ✅ Write to `.tmp` files first, then `os.rename()` to final filename.
   - ✅ Check for existing *valid* output before processing (Resume capability).
+- **Corrupt Download Auto-Recovery**:
+  - ✅ Auto-detect corrupted/truncated model checkpoints or tokenizers via
+    `is_corrupt_model_error`.
+  - ✅ Automatically purge corrupted cache snapshots (`model_cache.py`) and
+    re-download cleanly.
 
 ## 3. 🧹 Code Quality (Zero Tolerance)
 
@@ -33,6 +38,10 @@ this project. Adherence to these rules is mandatory.
   - ❌ DO NOT use suppression patterns (`# noqa`, `# type: ignore`, warning
     filter ignores, or ignore-based config knobs). Refactor or type/fix code
     instead.
+- **Mandatory Documentation Synchronization**:
+  - ✅ **EVERY** time you do work on the project, you MUST update all relevant
+    `.md` files (`AGENTS.md`, `README.md`, `docs/`, `.github/instructions/`,
+    `.agents/skills/`).
 - **Linting**:
   - ✅ Enforce suppression policy with
     `python tests/tools/check_no_suppressions.py`.
@@ -77,5 +86,5 @@ ______________________________________________________________________
 - [Development & Standards](development_standards.md) (Detailed
   Linting/Testing rules)
 - [Configuration](configuration.md)
-- [Release Notes](releases/v1.1.2.md)
+- [Release Notes](releases/v1.2.0.md)
 - [Release Prep Skill](../.github/skills/release-prep/SKILL.md)
