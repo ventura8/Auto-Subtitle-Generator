@@ -30,7 +30,7 @@ from modules.pipeline.transcription import transcribe_video_audio
 from modules.pipeline.translation import translate_segments
 from modules.runtime import nvidia_paths
 from modules.runtime.bootstrap import bootstrap_cpu_env
-from modules.subtitles.discovery import find_existing_srt_languages
+from modules.subtitles.discovery import find_existing_srt_languages, is_usable_language, prioritize_recorded_language
 from modules.utils import log, print_progress_bar
 
 # Torch runtime holder; tests may monkeypatch module-level "torch".
@@ -173,31 +173,12 @@ def _check_resume(folder, base_name, forced_lang=None):
 
 def _get_resume_candidates(folder, base_name, forced_lang):
     """Return resume-language candidates honoring forced, recorded, and existing SRT files."""
-    if _is_usable_language(forced_lang):
+    if is_usable_language(forced_lang):
         return [forced_lang]
 
     recorded_source_lang = _read_recorded_source_language(folder, base_name)
     discovered_languages = find_existing_srt_languages(folder, base_name)
-    return _prioritize_recorded_language(recorded_source_lang, discovered_languages)
-
-
-def _prioritize_recorded_language(recorded_source_lang, discovered_languages):
-    """Put a usable recorded language first and retain other usable discoveries."""
-    usable_languages = _get_usable_languages(discovered_languages)
-    if not _is_usable_language(recorded_source_lang):
-        return usable_languages
-    return [recorded_source_lang, *[lang for lang in usable_languages if lang != recorded_source_lang]]
-
-
-def _get_usable_languages(languages):
-    """Return discovered language codes excluding unknown markers."""
-    return [language for language in languages if _is_usable_language(language)]
-
-
-def _is_usable_language(language):
-    """Return whether a language value identifies a language rather than an unknown marker."""
-    normalized = str(language or "").strip().lower()
-    return bool(normalized) and normalized not in {"und", "undetermined", "unknown"}
+    return prioritize_recorded_language(recorded_source_lang, discovered_languages)
 
 
 def _read_resume_srt(folder, base_name, lang_code):
@@ -228,7 +209,7 @@ def _read_recorded_source_language(folder, base_name):
     try:
         with open(artifact_path, "r", encoding="utf-8") as file_handle:
             language = file_handle.read().strip()
-            return language if _is_usable_language(language) else None
+            return language if is_usable_language(language) else None
     except OSError:
         return None
 

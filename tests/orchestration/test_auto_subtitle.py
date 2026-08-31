@@ -71,15 +71,15 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         self.assertTrue(args.cpu)
 
     def test_is_usable_language_filtering(self):
-        self.assertTrue(auto_subtitle._is_usable_language("en"))
-        self.assertTrue(auto_subtitle._is_usable_language("ro"))
-        self.assertFalse(auto_subtitle._is_usable_language(None))
-        self.assertFalse(auto_subtitle._is_usable_language(""))
-        self.assertFalse(auto_subtitle._is_usable_language("   "))
-        self.assertFalse(auto_subtitle._is_usable_language("und"))
-        self.assertFalse(auto_subtitle._is_usable_language("undetermined"))
-        self.assertFalse(auto_subtitle._is_usable_language("unknown"))
-        self.assertFalse(auto_subtitle._is_usable_language("UNKNOWN"))
+        self.assertTrue(auto_subtitle.is_usable_language("en"))
+        self.assertTrue(auto_subtitle.is_usable_language("ro"))
+        self.assertFalse(auto_subtitle.is_usable_language(None))
+        self.assertFalse(auto_subtitle.is_usable_language(""))
+        self.assertFalse(auto_subtitle.is_usable_language("   "))
+        self.assertFalse(auto_subtitle.is_usable_language("und"))
+        self.assertFalse(auto_subtitle.is_usable_language("undetermined"))
+        self.assertFalse(auto_subtitle.is_usable_language("unknown"))
+        self.assertFalse(auto_subtitle.is_usable_language("UNKNOWN"))
 
     def test_get_input_files_with_parsed_args_namespace(self):
         ns = argparse.Namespace(input_path="custom.mp4", lang="es", prompt="Test prompt", cpu=False)
