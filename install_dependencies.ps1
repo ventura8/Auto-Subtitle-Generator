@@ -394,10 +394,27 @@ Install-PowerShellLintDependency
 Write-Information "`nStep 6: Updating Launcher..."
 $batContent = @"
 @echo off
+setlocal
+cd /d "%~dp0"
+if not exist ".venv\Scripts\python.exe" (
+    echo ==================================================================
+    echo Auto-Subtitle-Generator: Virtual environment not found.
+    echo Starting automated environment and dependency installation...
+    echo ==================================================================
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_dependencies.ps1
+)
+if not exist ".venv\Scripts\python.exe" (
+    echo ERROR: Environment setup failed. Virtual environment not found.
+    pause
+    exit /b 1
+)
 set PATH=%~dp0.venv\ffmpeg\bin;%PATH%
-call .venv\Scripts\activate
+call .venv\Scripts\activate.bat
 python auto_subtitle.py %*
-pause
+if errorlevel 1 (
+    echo.
+    pause
+)
 "@
 Set-Content "start.bat" $batContent
 

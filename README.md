@@ -204,7 +204,21 @@ graph TD
 - **GPU:** NVIDIA RTX 3000/4000/5000 Series (Recommended).
 - **Python:** 3.12.x only.
 
-## **📦 Installation**
+## **📦 Installation & Quick Start**
+
+### **One-Click Auto-Installing Launchers (Recommended)**
+
+Run the auto-installing launcher for your platform:
+
+- **Windows:** Double-click or run `start.exe` (or `start.bat`).
+- **Linux / macOS:** Run `./start` (or `./start.sh`).
+
+The launcher automatically detects if the Python 3.12 environment is present.
+If missing, it automatically invokes the setup installer
+(`install_dependencies.ps1` or `install_dependencies.sh`) to bootstrap the
+complete runtime, then executes the pipeline.
+
+### **Manual Setup**
 
 1. **Clone the repository.**
 1. Install **FFmpeg** on your system (e.g., via `choco install ffmpeg` on Windows,
@@ -230,10 +244,10 @@ graph TD
 
 ## **🎮 Usage**
 
-### **Method 1: Drag and Drop (Recommended)**
+### **Method 1: Launcher / Drag and Drop (Recommended)**
 
-Simply **drag and drop** a video file (or a folder containing multiple videos)
-directly onto the `auto_subtitle.py` file.
+Simply run `start.exe` / `./start` or **drag and drop** a video file (or folder)
+directly onto `start.exe` or `auto_subtitle.py`.
 
 The script will launch and automatically process the video(s) using settings
 defined in `config.yaml`.
@@ -244,6 +258,10 @@ defined in `config.yaml`.
 ### **Method 2: Command Line**
 
 ```bash
+# Using the launcher:
+./start "E:\My Videos\Vacation 1998.mkv"
+
+# Or directly with Python:
 python auto_subtitle.py "E:\My Videos\Vacation 1998.mkv"
 ```
 
