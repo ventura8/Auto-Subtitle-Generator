@@ -130,7 +130,7 @@ jobs:
 
       - name: Run Radon Complexity (A-grade enforced)
         run: |
-          poetry run radon cc auto_subtitle.py modules tests/modules tests/orchestration -s -a | tee radon_report.txt
+          poetry run radon cc auto_subtitle.py modules tests -s -a | tee radon_report.txt
 
           {
             echo "## Radon Cyclomatic Complexity"
@@ -147,7 +147,7 @@ jobs:
 
       - name: Run Radon Maintainability Index (A-grade enforced)
         run: |
-          poetry run radon mi auto_subtitle.py modules tests/modules tests/orchestration -s | tee radon_mi_report.txt
+          poetry run radon mi auto_subtitle.py modules tests -s | tee radon_mi_report.txt
 
           {
             echo "## Radon Maintainability Index (A-grade enforced)"
@@ -164,7 +164,7 @@ jobs:
 
       - name: Run Radon Halstead Metrics (hal)
         run: |
-          poetry run radon hal auto_subtitle.py modules tests/modules tests/orchestration | tee radon_hal_report.txt
+          poetry run radon hal auto_subtitle.py modules tests | tee radon_hal_report.txt
 
           {
             echo "## Radon Halstead Metrics"

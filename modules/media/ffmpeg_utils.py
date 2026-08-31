@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 
+from ..configuration import config
 from ..runtime.logging_utils import log, register_subprocess, unregister_subprocess
 from ..runtime.progress import print_progress_bar
 from ..subtitles.timestamp_utils import parse_timestamp
@@ -234,8 +235,6 @@ def _raise_ffmpeg_failure(return_code, cmd):
 
 def build_primary_media_metadata_args(src_lang):
     """Tag copied primary media streams with the detected source language."""
-    from ..configuration import config
-
     source_language = config.to_mux_language_code(src_lang)
     return [
         "-metadata:s:v:0",
