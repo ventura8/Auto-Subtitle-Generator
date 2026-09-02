@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "auto-subtitle-generator"
-version = "1.2.0"
+version = "1.2.1"
 description = "Auto-Subtitle Generator using Faster Whisper and optional Translation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -33,7 +33,7 @@ torchvision = [
   { version = ">=0.28,<0.29", markers = "platform_system == 'Darwin' and python_version == '3.12' and implementation_name == 'cpython'" },
 ]
 faster-whisper = "^1.2.1"
-transformers = "^5.15.1"
+transformers = "^5.16.1"
 sentencepiece = "^0.2.2"
 accelerate = "^1.14.0"
 nvidia-cudnn-cu13 = { version = "9.20.0.48", markers = "platform_system != 'Darwin' and python_version == '3.12' and implementation_name == 'cpython'" }
@@ -54,12 +54,12 @@ librosa = ">=0.10.2,<1.0"
 pytest = "^9.1.1"
 pytest-cov = "^7.1.0"
 radon = "^6.0.1"
-pylint = "^4.0.7"
+pylint = "^4.0.8"
 flake8 = "^7.3.0"
 black = "^26.5.1"
-isort = "^8.0.1"
+isort = "^9.0.1"
 taplo = "^0.9.3"
-ruff = "^0.16.4"
+ruff = "^0.16.5"
 mypy = "^2.3.1"
 pyright = "^1.1.411"
 bandit = "^1.9.4"
