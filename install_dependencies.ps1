@@ -1,5 +1,5 @@
 # Sets up the environment for auto_subtitle.py
-# Optimization: RTX 5090 / CUDA 12.8 Stable
+# Optimization: RTX 5090 / CUDA 13.2 Stable (PyTorch cu132 wheels)
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $InformationPreference = "Continue"

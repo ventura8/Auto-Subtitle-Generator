@@ -12,10 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv to manage hermetic Python 3.12 on Ubuntu 26.04
-COPY --from=ghcr.io/astral-sh/uv:0.6.14 /uv /uvx /root/.local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.9 /uv /uvx /root/.local/bin/
 ENV PATH="/root/.local/bin:$PATH"
 ENV UV_PYTHON_INSTALL_DIR="/opt/uv/python"
-RUN uv python install 3.12.13
+RUN uv python install 3.12.14
 
 WORKDIR /app
 COPY . /app
