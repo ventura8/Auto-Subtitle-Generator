@@ -3,6 +3,7 @@
 import gc
 import math
 import os
+import shutil
 import sys
 import time
 from typing import Any
@@ -64,7 +65,7 @@ def _move_separator_output(src_path, dst_path):
         return
     if os.path.exists(dst_path):
         os.remove(dst_path)
-    os.rename(src_path, dst_path)
+    shutil.move(src_path, dst_path)
 
 
 def _detect_and_separate_vocals(video_path, model_mgr):

@@ -109,24 +109,24 @@ class TestCoverageTranscription(unittest.TestCase):
         with (
             patch("os.path.abspath", side_effect=lambda x: x),
             patch("os.path.exists", side_effect=exists_side_effect),
-            patch("os.rename") as mock_rename,
+            patch("shutil.move") as mock_move,
         ):
             res = transcription._process_separator_outputs(output_files, "target")
             self.assertIn("vid_(Vocals).wav", res)
-            mock_rename.assert_called_once()
-            rename_args = mock_rename.call_args[0]
-            self.assertEqual(rename_args[0], "dir/vid_(Vocals).wav")
-            self.assertTrue(rename_args[1].endswith("vid_(Vocals).wav"))
+            mock_move.assert_called_once()
+            move_args = mock_move.call_args[0]
+            self.assertEqual(move_args[0], "dir/vid_(Vocals).wav")
+            self.assertTrue(move_args[1].endswith("vid_(Vocals).wav"))
 
     def test_process_separator_outputs_returns_none_when_only_instrumental(self):
         with (
             patch("os.path.abspath", side_effect=lambda x: x),
             patch("os.path.exists", return_value=True),
-            patch("os.rename") as mock_rename,
+            patch("shutil.move") as mock_move,
         ):
             res = transcription._process_separator_outputs(["dir/vid_(Instrumental).wav"], "target")
             self.assertIsNone(res)
-            mock_rename.assert_not_called()
+            mock_move.assert_not_called()
 
     def test_process_separator_outputs_ignores_relative_instrumental_from_target_dir(self):
         output_files = [
@@ -149,13 +149,13 @@ class TestCoverageTranscription(unittest.TestCase):
             patch("os.path.abspath", side_effect=lambda x: x),
             patch("os.path.isabs", return_value=False),
             patch("os.path.exists", side_effect=exists_side_effect),
-            patch("os.rename") as mock_rename,
+            patch("shutil.move") as mock_move,
         ):
             res = transcription._process_separator_outputs(output_files, "target")
             self.assertIsNotNone(res)
             assert res is not None
             self.assertTrue(res.endswith("vid_(Vocals).wav"))
-            self.assertIn(mock_rename.call_count, {0, 1})
+            self.assertIn(mock_move.call_count, {0, 1})
 
     def test_transcribe_video_audio_forced_lang(self):
         mm = MagicMock()

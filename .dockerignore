@@ -13,3 +13,15 @@ coverage.json
 .env
 .env.*
 .ssh/
+.agent
+.github
+.flake8
+mypy.ini
+install_dependencies.ps1
+run_tests_with_coverage.ps1
+docs/
+assets/
+instructions.md
+coverage.svg
+LICENSE
+README.md
