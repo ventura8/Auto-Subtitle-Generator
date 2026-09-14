@@ -50,7 +50,12 @@ def _get_segment_class():
 
 
 def cleanup_temp_files(folder, base_name, video_filename):
-    """Clean up temporary WAV/MP3 files."""
+    """Clean up temporary WAV/MP3 files.
+
+    safe_io scratch entries (``.asg-tmp-*``) are deliberately not matched:
+    they are owned and removed by their reservation, and this scan must never
+    recurse into a directory found in the untrusted input folder.
+    """
     for f in os.listdir(folder):
         if _is_temp_file(f, base_name, video_filename):
             path = os.path.join(folder, f)

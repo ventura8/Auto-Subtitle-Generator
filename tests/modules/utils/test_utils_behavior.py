@@ -1,7 +1,9 @@
 import os
 import signal
+import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 from modules import utils
@@ -206,25 +208,52 @@ class TestCoverageUtils(unittest.TestCase):
             mock_run_ffmpeg_progress.assert_not_called()
 
     def test_extract_clean_audio_fail(self):
+        scratch = SimpleNamespace(path="video_temp.scratch.wav")
         with (
             patch("os.path.exists", side_effect=[False, False]),
             patch("modules.media.ffmpeg_utils.get_audio_duration", return_value=123.45),
             patch("modules.media.ffmpeg_utils.run_ffmpeg_progress", side_effect=RuntimeError("Extraction failed")),
+            patch("modules.media.ffmpeg_utils.reserve_temp_path", return_value=scratch),
+            patch("modules.media.ffmpeg_utils.discard_temp_path") as mock_discard,
             patch("modules.media.ffmpeg_utils.log"),
         ):
             with self.assertRaises(RuntimeError):
                 utils.extract_clean_audio("video.mp4")
+            mock_discard.assert_called_once_with(scratch)
+
+    def test_extract_clean_audio_discards_scratch_on_probe_timeout(self):
+        # subprocess.TimeoutExpired is not an OSError/RuntimeError; cleanup must still run.
+        scratch = SimpleNamespace(path="video_temp.scratch.wav")
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("modules.media.ffmpeg_utils.get_audio_duration", side_effect=subprocess.TimeoutExpired("ffprobe", 30)),
+            patch("modules.media.ffmpeg_utils.run_ffmpeg_progress") as mock_run,
+            patch("modules.media.ffmpeg_utils.reserve_temp_path", return_value=scratch),
+            patch("modules.media.ffmpeg_utils.discard_temp_path") as mock_discard,
+            patch("modules.media.ffmpeg_utils.log"),
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                utils.extract_clean_audio("video.mp4")
+            mock_run.assert_not_called()
+            mock_discard.assert_called_once_with(scratch)
 
     def test_extract_clean_audio_invalid_output_raises(self):
+        # exists: [resume check -> False, scratch validation -> True] so the
+        # undersized-output branch (getsize < 1024) is what raises.
+        scratch = SimpleNamespace(path="video_temp.scratch.wav")
         with (
-            patch("os.path.exists", side_effect=[False, False, True]),
+            patch("os.path.exists", side_effect=[False, True]),
             patch("modules.media.ffmpeg_utils.get_audio_duration", return_value=10.0),
             patch("modules.media.ffmpeg_utils.run_ffmpeg_progress"),
-            patch("os.path.getsize", return_value=1),
+            patch("modules.media.ffmpeg_utils.reserve_temp_path", return_value=scratch),
+            patch("modules.media.ffmpeg_utils.discard_temp_path") as mock_discard,
+            patch("os.path.getsize", return_value=1) as mock_getsize,
             patch("modules.media.ffmpeg_utils.log"),
         ):
             with self.assertRaises(RuntimeError):
                 utils.extract_clean_audio("video.mp4")
+            mock_getsize.assert_called_once_with("video_temp.scratch.wav")
+            mock_discard.assert_called_once_with(scratch)
 
     def test_cleanup_temp_files_oserror(self):
         with patch("os.listdir", return_value=["test.wav"]), patch("os.remove", side_effect=OSError("Permission denied")):
@@ -245,14 +274,12 @@ class TestCoverageUtils(unittest.TestCase):
 
     def test_save_srt_failure_cleanup(self):
         with (
-            patch("builtins.open", mock_open()),
-            patch("os.replace", side_effect=OSError("Replace fail")),
-            patch("os.path.exists", return_value=True),
-            patch("os.remove") as mock_remove,
+            patch("modules.safe_io.promote_temp_path", side_effect=OSError("Replace fail")),
+            patch("modules.safe_io.discard_temp_path") as mock_discard,
         ):
             with self.assertRaises(OSError):
                 utils.save_srt([], "test.srt")
-            mock_remove.assert_called()
+            mock_discard.assert_called_once()
 
     def test_check_srt_corruption(self):
         from modules.subtitles import srt_io

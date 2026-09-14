@@ -26,6 +26,7 @@ automatic hardware detection to maximize performance.
 │   ├── runtime/                # Logging and progress/runtime utilities
 │   ├── subtitles/              # Subtitle IO and timestamp helpers
 │   ├── models.py               # AI model wrappers + optimizer
+│   ├── safe_io.py              # Symlink-safe sidecar/temp file writes
 │   └── utils.py                # Shared utility helpers
 ├── docs/                       # Technical documentation
 │   └── releases/               # Versioned release notes

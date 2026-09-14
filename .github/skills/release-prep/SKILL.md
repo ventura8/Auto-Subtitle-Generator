@@ -31,4 +31,13 @@ if ($branch -match '(?<version>v?\d+\.\d+\.\d+)$') {
 1. Create or update `docs/releases/${version}_github_description.md`.
 1. Sync `README.md`, `docs/`, `AGENTS.md`, and skill references.
 1. Run full local validation (`.\run_local_pipeline.ps1`).
-1. Prepare commit title/body with a comprehensive release summary.
+1. Prepare commit title/body with a comprehensive release summary
+   (`release: vX.Y.Z – <summary>` + detailed multiline body).
+1. Stage **all** release files, then decide **before any commit command**:
+   - if the release commit is `HEAD` **and** unpushed → `git commit --amend`
+     with that title/body (one release commit on the branch; `--amend` only
+     rewrites `HEAD`, so never amend a pushed commit or one with commits on
+     top);
+   - otherwise → `git commit` with the same title/body (normal commit).
+1. Only after that commit exists, tag `v$rawVersion` and push the tag to
+   trigger `release.yml`.

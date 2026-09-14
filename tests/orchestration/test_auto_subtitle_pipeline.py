@@ -1,5 +1,6 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 
@@ -161,12 +162,22 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
 
     @patch("auto_subtitle.utils.get_audio_duration", side_effect=RuntimeError("Error"))
     @patch("auto_subtitle.log")
-    @patch("os.path.exists", return_value=True)
-    @patch("os.remove")
-    def test_embed_subtitles_exception(self, mock_remove, mock_exists, mock_log, mock_dur):
-        auto_subtitle.embed_subtitles("vid.mp4", [("s.srt", "en", "English")])
+    @patch("auto_subtitle.reserve_temp_path", return_value=SimpleNamespace(path=".temp_output.vid.scratch.mp4"))
+    @patch("auto_subtitle.discard_temp_path")
+    def test_embed_subtitles_exception(self, mock_discard, mock_reserve, mock_log, mock_dur):
+        self.assertIsNone(auto_subtitle.embed_subtitles("vid.mp4", [("s.srt", "en", "English")]))
         mock_log.assert_called()
-        mock_remove.assert_called()
+        mock_discard.assert_called_once_with(mock_reserve.return_value)
+
+    @patch("auto_subtitle.log")
+    @patch("auto_subtitle.reserve_temp_path", side_effect=OSError("Read-only file system"))
+    @patch("auto_subtitle.discard_temp_path")
+    @patch("auto_subtitle.utils.run_ffmpeg_progress")
+    def test_embed_subtitles_reservation_failure_returns_none(self, mock_run, mock_discard, mock_reserve, mock_log):
+        self.assertIsNone(auto_subtitle.embed_subtitles("vid.mp4", [("s.srt", "en", "English")]))
+        mock_log.assert_any_call("Embedding failed: Read-only file system", "ERROR")
+        mock_run.assert_not_called()
+        mock_discard.assert_not_called()
 
     @patch("auto_subtitle._obtain_segments", return_value=([], None, None))
     @patch("auto_subtitle.log")

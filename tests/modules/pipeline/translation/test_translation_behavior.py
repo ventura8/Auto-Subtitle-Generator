@@ -171,7 +171,7 @@ class TestCoverageTranslation(unittest.TestCase):
             patch("os.path.exists", return_value=True),
             patch("modules.pipeline.translation.utils.validate_srt", return_value=True),
             patch("modules.pipeline.translation.utils.parse_srt", return_value=pivot_segments),
-            patch("modules.pipeline.translation.open", mock_open()) as mock_file,
+            patch("modules.pipeline.translation.atomic_text_writer", mock_open()) as mock_file,
             patch("modules.pipeline.translation.json.dump") as mock_dump,
             patch("modules.pipeline.translation.log") as mock_log,
         ):
@@ -181,7 +181,7 @@ class TestCoverageTranslation(unittest.TestCase):
         self.assertIsNone(pivot)
         self.assertEqual(source_code, "eng_Latn")
         self.assertEqual(input_file, expected_path)
-        mock_file.assert_called_once_with(expected_path, "w", encoding="utf-8")
+        mock_file.assert_called_once_with(expected_path)
         mock_dump.assert_called_once_with(
             [{"text": "Hello", "start": 0.0, "end": 1.0}],
             mock_file(),
@@ -342,7 +342,7 @@ class TestCoverageTranslation(unittest.TestCase):
         self.assertEqual(result, {})
         mock_exec.assert_called_once()
 
-    @patch("modules.pipeline.translation.open", new_callable=mock_open)
+    @patch("modules.pipeline.translation.atomic_text_writer", new_callable=mock_open)
     @patch("subprocess.Popen")
     @patch("modules.utils.register_subprocess")
     @patch("modules.utils.unregister_subprocess")

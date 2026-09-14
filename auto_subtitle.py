@@ -30,6 +30,7 @@ from modules.pipeline.transcription import transcribe_video_audio
 from modules.pipeline.translation import translate_segments
 from modules.runtime import nvidia_paths
 from modules.runtime.bootstrap import bootstrap_cpu_env
+from modules.safe_io import atomic_text_writer, discard_temp_path, promote_temp_path, reserve_temp_path
 from modules.subtitles.discovery import find_existing_srt_languages, is_usable_language, prioritize_recorded_language
 from modules.utils import log, print_progress_bar
 
@@ -230,17 +231,11 @@ def _read_recorded_source_language(folder, base_name):
 def _write_recorded_source_language(folder, base_name, src_lang):
     """Persist detected source language for safe resume selection."""
     artifact_path = _get_source_language_artifact_path(folder, base_name)
-    temp_path = f"{artifact_path}.tmp"
     try:
-        with open(temp_path, "w", encoding="utf-8") as file_handle:
+        with atomic_text_writer(artifact_path) as file_handle:
             file_handle.write(src_lang)
-        os.replace(temp_path, artifact_path)
-    except OSError:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+    except OSError as e:
+        log(f"  [Resume] Could not record source language: {e}", "WARNING")
 
 
 def _get_output_filenames(video_path, folder, forced_lang):
@@ -266,19 +261,19 @@ def embed_subtitles(video_path, srt_files, src_lang=None):
     normalized_ext = ext.lower()
     output_path = os.path.join(dir_name, f"{name_no_ext}_multilang{ext}")
 
-    cmd = _build_embed_command(video_path, srt_files, normalized_ext, output_path, src_lang)
-
+    # FFmpeg -y follows symlinks, so mux into a private scratch file and promote.
+    temp_output = None
     try:
+        temp_output = reserve_temp_path(output_path)
+        cmd = _build_embed_command(video_path, srt_files, normalized_ext, temp_output.path, src_lang)
         total_dur = utils.get_audio_duration(video_path)
         utils.run_ffmpeg_progress(cmd, "  [Finalizing] Muxing Video", total_dur)
+        promote_temp_path(temp_output, output_path)
         return output_path
     except (OSError, RuntimeError, ValueError) as e:
         log(f"Embedding failed: {e}", "ERROR")
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except OSError:
-                pass
+        if temp_output is not None:
+            discard_temp_path(temp_output)
         return None
 
 

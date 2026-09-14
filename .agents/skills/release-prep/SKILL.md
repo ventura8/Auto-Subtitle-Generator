@@ -108,17 +108,46 @@ Alternatively use the title notation: release!: vX.Y.Z – <summary>
 -->
 ```
 
-Stage and commit with this message:
+Stage every release file, then **decide amend vs. new commit before
+running any commit command**:
 
 ```bash
 poetry check --lock
-git add pyproject.toml poetry.lock pytest.ini docs/ README.md AGENTS.md .agents/skills/ \
-  docker/ tests/ modules/ auto_subtitle.py install_dependencies.sh \
-  run_local_pipeline.ps1 run_local_pipeline.sh start.sh .dockerignore \
-  .github/workflows/ci.yml .github/workflows/release.yml
-git diff --cached
-git commit -m "release: vX.Y.Z – <summary>" -m "<detailed body>"
+git add -A -- pyproject.toml poetry.lock pytest.ini docs/ README.md AGENTS.md \
+  .agents/ .agent/ .github/ docker/ tests/ modules/ auto_subtitle.py \
+  install_dependencies.sh install_dependencies.ps1 \
+  run_local_pipeline.ps1 run_local_pipeline.sh start.sh .dockerignore
+git diff --cached --stat
 ```
+
+### 5.6. Commit: Amend the Existing Release Commit or Create a New One
+
+Exactly one of the two paths below runs. Evaluate the conditions first:
+
+- `HEAD` **is the release commit** for this version (`git log -1 --format=%s`
+  shows it — e.g. a placeholder `vX.Y.Z` made while iterating). `git commit --amend` can only rewrite `HEAD`; with other commits on top it would rewrite
+  unrelated work.
+- `HEAD` **has not been pushed** (`git branch -r --contains HEAD` prints
+  nothing).
+
+**Both true → amend**, so the branch carries exactly one release commit with
+the full title and detailed description from 5.5:
+
+```bash
+git commit --amend -m "release: vX.Y.Z – <summary>" -m "<detailed body>"
+git log -1 --stat
+```
+
+**Otherwise → normal commit** with the same title and body (the PR is
+squash-merged, so a follow-up commit is fine):
+
+```bash
+git commit -m "release: vX.Y.Z – <summary>" -m "<detailed body>"
+git log -1 --stat
+```
+
+Never leave the release changes staged but uncommitted, and never tag before
+this step has produced a commit.
 
 ### 6. Commit and Tag
 

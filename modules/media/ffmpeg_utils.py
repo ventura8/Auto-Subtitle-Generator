@@ -10,6 +10,7 @@ import time
 from ..configuration import config
 from ..runtime.logging_utils import log, register_subprocess, unregister_subprocess
 from ..runtime.progress import print_progress_bar
+from ..safe_io import discard_temp_path, promote_temp_path, reserve_temp_path
 from ..subtitles.timestamp_utils import parse_timestamp
 
 
@@ -98,6 +99,8 @@ def extract_clean_audio(video_path):
 
     log("  [Pre-Process] Extracting & Normalizing Audio...", "INFO")
 
+    # FFmpeg -y follows symlinks, so extract into a private scratch file and promote.
+    scratch = reserve_temp_path(temp_wav)
     cmd = [
         FFMPEG_CMD,
         "-y",
@@ -112,17 +115,22 @@ def extract_clean_audio(video_path):
         "pcm_f32le",
         "-af",
         "loudnorm=I=-16:TP=-1.5:LRA=11",
-        temp_wav,
+        scratch.path,
     ]
 
+    promoted = False
     try:
         total_dur = get_audio_duration(video_path)
         run_ffmpeg_progress(cmd, "  [Sample] Extracting Audio", total_dur)
-        _validate_clean_audio_file(temp_wav)
+        _validate_clean_audio_file(scratch.path)
+        promote_temp_path(scratch, temp_wav)
+        promoted = True
     except (OSError, RuntimeError) as e:
         log(f"Audio extraction failed: {e}", "ERROR")
-        _cleanup_temp_audio_retry(temp_wav)
         raise
+    finally:
+        if not promoted:
+            discard_temp_path(scratch)
     return temp_wav
 
 
@@ -154,8 +162,8 @@ def _is_called_process_error(exc):
 
 
 def _has_valid_temp_audio(temp_wav):
-    """Return True when a temp WAV exists and has measurable duration."""
-    if not os.path.exists(temp_wav):
+    """Return True when a temp WAV exists, is not a symlink, and has measurable duration."""
+    if not os.path.exists(temp_wav) or os.path.islink(temp_wav):
         return False
     try:
         return get_audio_duration(temp_wav) > 0
@@ -167,16 +175,6 @@ def _validate_clean_audio_file(temp_wav):
     """Verifies that the extracted audio file is valid."""
     if not os.path.exists(temp_wav) or os.path.getsize(temp_wav) < 1024:
         raise RuntimeError("Extracted audio is invalid/empty.")
-
-
-def _cleanup_temp_audio_retry(temp_wav):
-    """Best-effort cleanup for failed temporary audio files."""
-    if not os.path.exists(temp_wav):
-        return
-    try:
-        os.remove(temp_wav)
-    except OSError:
-        pass
 
 
 def _process_ffmpeg_line(line, start_time, total_duration, desc):

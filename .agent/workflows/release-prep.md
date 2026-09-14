@@ -40,5 +40,11 @@ if ($branch -match '(?<version>v?\d+\.\d+\.\d+)$') {
 ./run_local_pipeline.ps1
 ```
 
-- Stage all release changes.
-- Amend commit title/body with complete change summary.
+- Stage all release changes (`git add -A` on the release file set).
+- Decide before committing:
+  - release commit is `HEAD` **and** unpushed → `git commit --amend` with the
+    full conventional title and detailed body (`--amend` only rewrites
+    `HEAD`; never amend a pushed commit or one with commits on top);
+  - otherwise → `git commit` with the same title and body.
+- Never leave the changes staged-but-uncommitted; tag only after the commit
+  exists.
