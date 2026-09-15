@@ -1,6 +1,8 @@
 import os
 import sys
+import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 # Avoid global sys.modules hacks. conftest.py handles these.
@@ -37,24 +39,24 @@ class TestUtils(unittest.TestCase):
         duration = utils.get_audio_duration("video.mp4")
         self.assertEqual(duration, 0)
 
-    @patch("os.replace")
-    @patch("os.remove")
-    def test_save_srt(self, mock_remove, mock_replace):
+    def test_save_srt(self):
         segments = [MagicMock(start=0, end=1.5, text="Hello")]
-        with patch("builtins.open", mock_open()) as m:
-            utils.save_srt(segments, "test.srt")
-            m.assert_called_with("test.srt.tmp", "w", encoding="utf-8")
-        mock_replace.assert_called_once_with("test.srt.tmp", "test.srt")
+        with tempfile.TemporaryDirectory() as folder:
+            target = os.path.join(folder, "test.srt")
+            utils.save_srt(segments, target)
+            with open(target, "r", encoding="utf-8") as fh:
+                self.assertIn("00:00:00,000 --> 00:00:01,500\nHello", fh.read())
+            self.assertEqual(os.listdir(folder), ["test.srt"])  # no leftover temp
 
-    @patch("os.replace")
-    @patch("os.remove")
-    def test_save_translated_srt(self, mock_remove, mock_replace):
+    def test_save_translated_srt(self):
         segments = [MagicMock(start=0, end=1.5)]
         translations = ["Hola"]
-        with patch("builtins.open", mock_open()) as m:
-            utils.save_translated_srt(segments, translations, "test_es.srt")
-            m.assert_called()
-        mock_replace.assert_called_once_with("test_es.srt.tmp", "test_es.srt")
+        with tempfile.TemporaryDirectory() as folder:
+            target = os.path.join(folder, "test_es.srt")
+            utils.save_translated_srt(segments, translations, target)
+            with open(target, "r", encoding="utf-8") as fh:
+                self.assertIn("Hola", fh.read())
+            self.assertEqual(os.listdir(folder), ["test_es.srt"])
 
     @patch("os.path.exists", return_value=False)
     def test_validate_srt_not_exist(self, mock_exists):
@@ -104,7 +106,7 @@ class TestUtils(unittest.TestCase):
     @patch("modules.utils.log")
     def test_save_srt_error(self, mock_log):
         # Test exception during write
-        with patch("builtins.open", side_effect=OSError("Write Fail")):
+        with patch("modules.safe_io._reserve", side_effect=OSError("Write Fail")):
             with self.assertRaises(OSError):
                 utils.save_srt([], "fail.srt")
 
@@ -258,9 +260,13 @@ class TestUtils(unittest.TestCase):
             patch("os.path.exists", side_effect=exists_side_effect),
             patch("modules.media.ffmpeg_utils.get_audio_duration", return_value=123.0),
             patch("modules.media.ffmpeg_utils.run_ffmpeg_progress"),
+            patch("modules.media.ffmpeg_utils.reserve_temp_path", return_value=SimpleNamespace(path="video_temp.scratch.wav")),
+            patch("modules.media.ffmpeg_utils.promote_temp_path"),
+            patch("modules.media.ffmpeg_utils.discard_temp_path") as mock_discard,
             patch("os.path.getsize", return_value=2048),
         ):  # valid size
             res = utils.extract_clean_audio("video.mp4")
+            mock_discard.assert_not_called()
             self.assertTrue(res.endswith("_temp.wav"))
 
     def test_save_and_parse_srt(self):
@@ -269,14 +275,9 @@ class TestUtils(unittest.TestCase):
 
         segs = [Segment(0.0, 1.0, "Hello"), Segment(1.0, 2.5, "World")]
 
-        # We need to use a real temporary file to test read/write cleanly,
-        # or use mock_open if we are careful. mock_open is harder for read back what we wrote.
-        # Let's use mock_open for write, and a separate mock_open for read?
-        # Actually parse_srt reads.
-
-        # Test SAVE
+        # Test SAVE through the symlink-safe writer (mock_open stands in for it)
         m_open = mock_open()
-        with patch("builtins.open", m_open), patch("os.replace"):
+        with patch("modules.subtitles.srt_io.atomic_text_writer", m_open):
             utils.save_srt(segs, "out.srt")
             # Verify write content
             handle = m_open()

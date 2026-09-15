@@ -4,6 +4,8 @@ import importlib
 import logging
 import os
 
+from modules.safe_io import atomic_text_writer
+
 from .timestamp_utils import format_timestamp, parse_timestamp
 
 
@@ -20,20 +22,13 @@ def save_translated_srt(segments, translated_lines, path):
 
 
 def _write_srt_segments_atomically(segments, path):
-    """Write SRT cues to a temp path and atomically promote to destination."""
+    """Write SRT cues to an unpredictable temp path and atomically promote to destination."""
 
-    temp_path = f"{path}.tmp"
-    try:
-        with open(temp_path, "w", encoding="utf-8") as file_handle:
-            for idx, segment in enumerate(segments, start=1):
-                file_handle.write(f"{idx}\n")
-                file_handle.write(f"{format_timestamp(segment.start)} --> {format_timestamp(segment.end)}\n")
-                file_handle.write(f"{segment.text}\n\n")
-        os.replace(temp_path, path)
-    except OSError:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise
+    with atomic_text_writer(path) as file_handle:
+        for idx, segment in enumerate(segments, start=1):
+            file_handle.write(f"{idx}\n")
+            file_handle.write(f"{format_timestamp(segment.start)} --> {format_timestamp(segment.end)}\n")
+            file_handle.write(f"{segment.text}\n\n")
 
 
 def _build_translated_segments(segments, translated_lines):

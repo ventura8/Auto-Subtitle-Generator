@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  POETRY_VERSION: "2.4.2"
+  POETRY_VERSION: "2.4.3"
 
 jobs:
   static_analysis:

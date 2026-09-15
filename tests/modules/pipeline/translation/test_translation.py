@@ -95,7 +95,11 @@ class TestTranslation(unittest.TestCase):
 
         m_open = mock_open(read_data=fake_json)
 
-        with patch("builtins.open", m_open), patch("modules.pipeline.translation.subprocess.TimeoutExpired", FakeTimeoutExpired):
+        with (
+            patch("builtins.open", m_open),
+            patch("modules.pipeline.translation.atomic_text_writer", mock_open()),
+            patch("modules.pipeline.translation.subprocess.TimeoutExpired", FakeTimeoutExpired),
+        ):
             translation.translate_segments(segments, "en", MagicMock(), "folder", "base")
 
         # Should have called Popen (worker start)

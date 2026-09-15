@@ -39,6 +39,33 @@
   If the recorded source is unavailable, existing SRT discovery remains a
   fallback for resumability.
 
+### Symlink-safe sidecar writes (defined in `modules/safe_io.py`)
+
+- **Role**: Every file the pipeline writes next to the input video (source and
+  translated SRTs, `*.common_input.json`, `*.manifest.json`,
+  `*.pivot_pivoted.json`, `*.source_lang.txt`, `*_temp.wav`, and the final
+  `_multilang` container) is produced through `atomic_text_writer` or the
+  `reserve_temp_path` / `promote_temp_path` pair.
+- **Threat model**: The input directory is untrusted. A planted symlink with a
+  predictable sidecar name would otherwise be followed by `open(..., "w")` or
+  FFmpeg `-y` and overwrite whatever it points at.
+- **Mechanism**: Every write is a `ScratchReservation` — a private `0700`
+  directory beside the destination, an exclusively created file inside it
+  (`O_CREAT | O_EXCL | O_NOFOLLOW`, umask applied at creation), and the
+  recorded device/inode identities of both. Text is written through the
+  creation descriptor and never reopened by pathname; FFmpeg is pointed at
+  the reserved file. Promotion re-verifies both identities and, on POSIX,
+  renames through the held directory descriptor (`renameat`), so a renamed
+  or replaced scratch directory cannot redirect it; a symlink destination or
+  a replaced scratch entry raises `SymlinkRefusedError`. Discard is bound the
+  same way and removes the directory with `rmdir` only — never recursively.
+- **Naming**: Scratch entries use the opaque prefix
+  `.asg-tmp-<stem[:24]>-<sha256[:8]>-`, so long basenames cannot hit
+  `ENAMETOOLONG` and distinct owners cannot collide. `cleanup_temp_files`
+  deliberately does not match these entries: they are removed by their
+  reservation (also on `TimeoutExpired`, via `finally`), and the per-video
+  scan must never walk a directory found in the untrusted input folder.
+
 ### `SystemOptimizer` (defined in `modules/models.py`)
 
 - **Role**: Auto-detects hardware and sets performance profiles (ULTRA, HIGH,

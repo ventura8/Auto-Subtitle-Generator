@@ -13,7 +13,8 @@ child processes for translation, and `audio-separator` for vocal isolation.
 - **Python Version**: Python `3.12.x` (managed via Poetry).
 - **Core Orchestrator**: `auto_subtitle.py`.
 - **Modular Subpackages**: `modules/` (`configuration/`, `media/`, `pipeline/`,
-  `runtime/`, `subtitles/`).
+  `runtime/`, `subtitles/`), plus `modules/safe_io.py` for symlink-safe
+  sidecar/temp writes.
 
 ______________________________________________________________________
 
@@ -105,9 +106,19 @@ ______________________________________________________________________
 1. **Subprocess Process Isolation**:
    - Translation runs in `modules/pipeline/isolated_translator.py` to prevent
      CUDA memory fragmentation and guarantee full VRAM reclamation.
-1. **Atomic Output & Resumability**:
-   - Subtitle outputs (`.srt`, `.vtt`, `.txt`) are written to temporary files
-     and atomically renamed.
+1. **Atomic, Symlink-Safe Output & Resumability**:
+   - Every sidecar written beside the input video (SRTs, JSON manifests,
+     `*.source_lang.txt`, `*_temp.wav`, the `_multilang` container) goes
+     through `modules/safe_io.py` as a `ScratchReservation`: private `0700`
+     directory + `O_EXCL | O_NOFOLLOW` file with recorded identities; text is
+     written through the creation descriptor; promotion/discard re-verify
+     identities and bind to the held directory descriptor on POSIX; a symlink
+     destination or replaced scratch entry raises `SymlinkRefusedError`.
+     Scratch names use the opaque `.asg-tmp-` prefix. **Never** `rmtree` or
+     otherwise recurse into anything found in the input directory, and never
+     read or change the process umask.
+   - **Never** write a pipeline output with a bare `open(path, "w")` or point
+     FFmpeg `-y` at a predictable name in the input directory.
    - Existing outputs are safely skipped when valid subtitles already exist.
 1. **Model Download Integrity & Auto-Recovery**:
    - Every downloaded AI model and tokenizer checkpoint (`audio-separator`,

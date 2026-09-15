@@ -11,6 +11,7 @@ from typing import Any
 from modules import utils
 from modules.configuration import config
 from modules.runtime.optional_imports import load_optional_torch
+from modules.safe_io import atomic_text_writer
 from modules.utils import log
 
 torch: Any | None = load_optional_torch()
@@ -199,7 +200,7 @@ def _build_pivot_config(worker_context, common_input, temp_files):
 
     pivot_srt_data = _load_reusable_pivot_srt_data(folder, base_name)
     if pivot_srt_data:
-        with open(pivot_output, "w", encoding="utf-8") as file_handle:
+        with atomic_text_writer(pivot_output) as file_handle:
             json.dump(pivot_srt_data, file_handle, ensure_ascii=False)
         log("  [Translate] Reusing existing English pivot SRT.", "INFO")
         return None, config.TARGET_LANGUAGES.get("en", {"code": "eng_Latn"})["code"], pivot_output
@@ -260,7 +261,7 @@ def _create_translation_manifest(worker_context):
     common_input = os.path.join(folder, f"{base_name}.common_input.json")
     temp_files = [common_input]
 
-    with open(common_input, "w", encoding="utf-8") as file_handle:
+    with atomic_text_writer(common_input) as file_handle:
         json.dump(worker_context["source_data"], file_handle, ensure_ascii=False)
 
     pivot_config, source_code_for_jobs, input_file = _build_pivot_config(worker_context, common_input, temp_files)
@@ -275,7 +276,7 @@ def _create_translation_manifest(worker_context):
     manifest_path = os.path.join(folder, f"{base_name}.manifest.json")
     temp_files.append(manifest_path)
 
-    with open(manifest_path, "w", encoding="utf-8") as file_handle:
+    with atomic_text_writer(manifest_path) as file_handle:
         json.dump({"jobs": manifest_jobs, "pivot": pivot_config}, file_handle, ensure_ascii=False, indent=2)
 
     return manifest_path, temp_files

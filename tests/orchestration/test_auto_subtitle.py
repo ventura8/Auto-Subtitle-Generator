@@ -3,6 +3,7 @@ import os
 import sys
 import unittest
 import unittest.mock
+from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 
@@ -127,6 +128,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
             patch("auto_subtitle.config.load_config", return_value=True),
             patch("modules.utils.cleanup_temp_files") as mock_cleanup,
             patch("modules.utils.save_srt") as mock_save_srt,
+            patch("auto_subtitle.atomic_text_writer", mock_open()),
             patch("auto_subtitle.translate_segments") as mock_translate,
             patch("auto_subtitle.embed_subtitles", return_value=expected_output) as mock_embed,
             patch("os.path.exists", return_value=False),
@@ -166,6 +168,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                 with (
                     patch("auto_subtitle._check_resume", return_value=res_mock),
                     patch("builtins.open", mock_open()),
+                    patch("auto_subtitle.atomic_text_writer", mock_open()),
                     patch("modules.utils.save_srt"),
                     patch("auto_subtitle.translate_segments") as m_translate,
                     patch("auto_subtitle.embed_subtitles") as m_embed,
@@ -210,6 +213,8 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                         patch("modules.utils.cleanup_temp_files"),
                         patch("modules.utils.save_srt"),
                         patch("auto_subtitle.embed_subtitles"),
+                        patch("auto_subtitle.atomic_text_writer", mock_open()),
+                        patch("modules.pipeline.translation.atomic_text_writer", mock_open()),
                         patch("os.remove"),
                         patch("auto_subtitle._check_resume", return_value=(None, None, None)),
                     ):
@@ -236,7 +241,8 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                     patch("modules.utils.cleanup_temp_files"),
                     patch("modules.utils.save_translated_srt"),
                     patch("modules.pipeline.translation._poll_translation_results", return_value=set()),
-                    patch("builtins.open", mock_open()) as m_open,
+                    patch("builtins.open", mock_open()),
+                    patch("modules.pipeline.translation.atomic_text_writer", mock_open()) as m_open,
                     patch("json.dump") as m_json_dump,
                     patch("os.path.exists", side_effect=lambda x: True),
                     patch("os.remove"),
@@ -277,7 +283,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                     cmd_args = m_popen.call_args[0][0]
                     self.assertIn("--batch", cmd_args)
 
-                    # Verify open was called (satisfies lint and logic)
+                    # Sidecars must go through the symlink-safe writer
                     m_open.assert_called()
 
     def test_nllb_load_fallback_to_local(self):
@@ -428,9 +434,12 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
     def test_embed_subtitles(self):
         # Cover embed_subtitles logic
+        scratch = SimpleNamespace(path=".temp_output.vid.scratch.mp4")
         with (
             patch("auto_subtitle.utils.run_ffmpeg_progress") as m_run,
             patch("auto_subtitle.utils.get_audio_duration", return_value=100),
+            patch("auto_subtitle.reserve_temp_path", return_value=scratch),
+            patch("auto_subtitle.promote_temp_path") as m_promote,
             patch("os.path.exists", return_value=False),
         ):  # output doesn't exist
             srt_files = [("en.srt", "en", "English"), ("es.srt", "es", "Spanish")]
@@ -440,6 +449,9 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
             cmd = m_run.call_args[0][0]
             self.assertIn("-c:s", cmd)
             self.assertIn("mov_text", cmd)  # since .mp4
+            # FFmpeg must write to the unpredictable scratch path, never the final name
+            self.assertEqual(cmd[-1], ".temp_output.vid.scratch.mp4")
+            m_promote.assert_called_once_with(scratch, "vid_multilang.mp4")
 
             # Verify metadata
             self.assertIn("language=en", cmd)
