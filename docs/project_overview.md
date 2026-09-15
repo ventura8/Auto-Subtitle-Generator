@@ -17,6 +17,7 @@ automatic hardware detection to maximize performance.
 ├── auto_subtitle.py            # Main entry point and orchestrator
 ├── config.yaml                 # User configuration
 ├── pyproject.toml              # Poetry project/dependency configuration
+├── Dockerfile                  # GPU-enabled Linux container image
 ├── run_local_pipeline.ps1      # Local quality gate (lint + tests + coverage)
 ├── modules/                    # Core logic and AI models
 │   ├── __init__.py

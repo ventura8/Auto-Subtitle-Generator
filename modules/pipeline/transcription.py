@@ -3,6 +3,7 @@
 import gc
 import math
 import os
+import shutil
 import sys
 import time
 from typing import Any
@@ -24,6 +25,10 @@ def _get_separated_vocal_path(video_path):
     # Audio-Separator naming: {base_name}_(Vocals)_...
     try:
         for f in os.listdir(target_dir):
+            # Ignore staging files left by an interrupted move so a partial
+            # copy is never mistaken for a completed separation.
+            if f.startswith(".") or f.endswith(".tmp"):
+                continue
             if f.startswith(separator_prefix) and "(Vocals)" in f:
                 return os.path.join(target_dir, f)
     except OSError:
@@ -59,12 +64,19 @@ def _resolve_separator_output_path(output_file, target_dir):
 
 
 def _move_separator_output(src_path, dst_path):
-    """Move a separator output file into target directory, replacing stale outputs."""
+    """Move a separator output into the target directory via an atomic replace.
+
+    ``shutil.move`` falls back to copy+delete across filesystems, so moving
+    straight to ``dst_path`` can leave a truncated file if the process is
+    interrupted mid-copy. Stage under a resume-safe temporary name in the
+    destination directory (same filesystem) and atomically promote it only once
+    the copy completes, preserving any existing output on failure.
+    """
     if not os.path.exists(src_path) or src_path == dst_path:
         return
-    if os.path.exists(dst_path):
-        os.remove(dst_path)
-    os.rename(src_path, dst_path)
+    temp_path = os.path.join(os.path.dirname(dst_path), f".{os.path.basename(dst_path)}.tmp")
+    shutil.move(src_path, temp_path)
+    os.replace(temp_path, dst_path)
 
 
 def _detect_and_separate_vocals(video_path, model_mgr):
