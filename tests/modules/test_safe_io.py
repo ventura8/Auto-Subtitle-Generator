@@ -21,13 +21,17 @@ class TestSafeIO(unittest.TestCase):
 
     def _plant_symlink(self, name, target=None):
         link = os.path.join(self.folder, name)
+        self._symlink_or_skip(target or self.victim, link)
+        return link
+
+    def _symlink_or_skip(self, target, link):
+        """Create a symlink; skip the test only on Windows hosts that refuse symlink creation."""
         try:
-            os.symlink(target or self.victim, link)
+            os.symlink(target, link)
         except OSError as exc:
             if os.name == "nt":
                 self.skipTest(f"symlink creation unavailable on this Windows host: {exc}")
             raise
-        return link
 
     def _assert_victim_untouched(self):
         with open(self.victim, "r", encoding="utf-8") as fh:
@@ -96,7 +100,7 @@ class TestSafeIO(unittest.TestCase):
         decoy_dir = os.path.join(self.folder, "decoy-dir")
         os.mkdir(decoy_dir)
         for name in os.listdir(moved):
-            os.symlink(self.victim, os.path.join(decoy_dir, name))
+            self._symlink_or_skip(self.victim, os.path.join(decoy_dir, name))
         self._plant_symlink(scratch_dirs[0], decoy_dir)
         self.addCleanup(self._remove_tree_no_follow, moved)
         self.addCleanup(self._remove_tree_no_follow, decoy_dir)
@@ -217,14 +221,19 @@ class TestSafeIO(unittest.TestCase):
 
             reservation = safe_io.reserve_temp_path(os.path.join(self.folder, "movie_temp.wav"))
             self.assertIsNone(reservation.dir_fd)
-            os.remove(reservation.path)
+            # Move the real file aside (keeping its inode allocated, so the
+            # filesystem cannot recycle the number) and put a different regular
+            # file at the reserved pathname.
+            moved = reservation.path + ".moved"
+            os.rename(reservation.path, moved)
             with open(reservation.path, "w", encoding="utf-8") as fh:
-                fh.write("replacement")  # new inode at the same pathname
+                fh.write("replacement")
             with self.assertRaises(safe_io.SymlinkRefusedError):
                 safe_io.promote_temp_path(reservation, os.path.join(self.folder, "movie_temp.wav"))
             safe_io.discard_temp_path(reservation)  # refuses to delete the replacement, leaves it
             self.assertTrue(os.path.isfile(reservation.path))
             os.remove(reservation.path)
+            os.remove(moved)
             os.rmdir(reservation.dir_path)
         self.assertEqual(self._folder_entries(), ["movie.en.srt"])
 
