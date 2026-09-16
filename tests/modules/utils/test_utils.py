@@ -5,6 +5,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
+
+def _fake_work_dir(folder, base_name):
+    """Return the work-directory path without touching the filesystem."""
+    return os.path.join(folder, f"{base_name}.asg-temp")
+
+
 # Avoid global sys.modules hacks. conftest.py handles these.
 
 
@@ -88,7 +94,9 @@ class TestUtils(unittest.TestCase):
         self.assertFalse(utils._is_temp_file("base.notes.json", "base", "video.mp4"))
 
     def test_is_temp_file_accepts_all_pipeline_temp_patterns(self):
-        self.assertFalse(utils._is_temp_file("base.source_lang.txt", "base", "video.mp4"))
+        # Legacy releases wrote the source-language sidecar beside the video; sweep it too.
+        self.assertTrue(utils._is_temp_file("base.source_lang.txt", "base", "video.mp4"))
+        self.assertFalse(utils._is_temp_file("other.source_lang.txt", "base", "video.mp4"))
         self.assertTrue(utils._is_temp_file("base.manifest.json", "base", "video.mp4"))
         self.assertTrue(utils._is_temp_file("base.common_input.json", "base", "video.mp4"))
         self.assertTrue(utils._is_temp_file("base.en.srt.tmp", "base", "video.mp4"))
@@ -258,6 +266,7 @@ class TestUtils(unittest.TestCase):
         exists_side_effect = [False, True]
         with (
             patch("os.path.exists", side_effect=exists_side_effect),
+            patch("modules.media.ffmpeg_utils.ensure_work_dir", side_effect=_fake_work_dir),
             patch("modules.media.ffmpeg_utils.get_audio_duration", return_value=123.0),
             patch("modules.media.ffmpeg_utils.run_ffmpeg_progress"),
             patch("modules.media.ffmpeg_utils.reserve_temp_path", return_value=SimpleNamespace(path="video_temp.scratch.wav")),

@@ -4,7 +4,8 @@ import logging
 from typing import Any
 
 from modules.configuration import config
-from modules.runtime.optional_imports import is_mps_available, load_optional_torch
+from modules.runtime import vram_tuning
+from modules.runtime.optional_imports import is_cuda_usable, is_mps_available, load_optional_torch
 from modules.translators import common
 from modules.translators.common import add_device_load_kwargs, import_transformers_module, resolve_device_map
 
@@ -15,12 +16,13 @@ LOGGER = logging.getLogger(__name__)
 class NLLBTranslator:
     """NLLB translation wrapper with local-cache fallback on load errors."""
 
-    def __init__(self):
+    def __init__(self, model_id=None):
         transformers = _import_transformers_module()
         auto_model_for_seq2seq_lm = transformers.AutoModelForSeq2SeqLM
         nllb_tokenizer = transformers.NllbTokenizer
-        self._tokenizer = _load_nllb_tokenizer(nllb_tokenizer)
-        self._model = _load_nllb_model(auto_model_for_seq2seq_lm)
+        self.model_id = _resolve_model_id(model_id)
+        self._tokenizer = _load_nllb_tokenizer(nllb_tokenizer, self.model_id)
+        self._model = _load_nllb_model(auto_model_for_seq2seq_lm, self.model_id)
         self._device = _resolve_nllb_execution_device(self._model)
 
     def translate(self, texts, src_code, tgt_code):
@@ -62,7 +64,7 @@ def _resolve_nllb_input_device(device):
     """Resolve the preferred NLLB input device."""
     if device is not None:
         return device
-    if torch is not None and torch.cuda.is_available():
+    if is_cuda_usable(torch):
         return "cuda"
     if is_mps_available(torch):
         return "mps"
@@ -96,34 +98,62 @@ def _resolve_nllb_execution_device(model):
 
 def _resolve_nllb_accelerator_device():
     """Resolve an available accelerator for NLLB model execution."""
-    if torch is not None and torch.cuda.is_available():
+    if is_cuda_usable(torch):
         return "cuda"
     if is_mps_available(torch):
         return "mps"
     return None
 
 
-def _load_nllb_from_pretrained_fallback(auto_model_for_seq2seq_lm, model_kwargs):
+def _resolve_model_id(model_id=None):
+    """Concrete NLLB repository to load: an explicit id, else ``models.nllb`` resolved against the card when ``auto``.
+
+    ``ModelManager.get_nllb`` normally passes the id it already resolved (and
+    logged); this fallback keeps direct construction working.
+    """
+    configured = model_id or config.NLLB_MODEL_ID
+    resolved, _note = vram_tuning.select_nllb_model(configured, _cuda_total_gb())
+    return resolved
+
+
+def _cuda_total_gb():
+    """Total memory of the first CUDA device in whole GB, or 0 without CUDA."""
+    if not is_cuda_usable(torch):
+        return 0
+    try:
+        return int(torch.cuda.get_device_properties(0).total_memory / (1024**3))
+    except (RuntimeError, AttributeError, ValueError, TypeError):
+        return 0
+
+
+def _load_nllb_from_pretrained_fallback(auto_model_for_seq2seq_lm, model_kwargs, model_id=None):
     """Load model with local-files fallback on network error, and auto-purge on corrupted cache."""
     return common.load_with_cache_recovery(
         auto_model_for_seq2seq_lm.from_pretrained,
-        config.NLLB_MODEL_ID,
+        model_id or _resolve_model_id(),
         model_kwargs,
         logger=LOGGER,
         model_label="NLLB model",
     )
 
 
-def _load_nllb_model(auto_model_for_seq2seq_lm):
+def _load_nllb_model(auto_model_for_seq2seq_lm, model_id=None):
     """Load NLLB model with GPU fallback to CPU when VRAM is insufficient."""
+    model_id = model_id or _resolve_model_id()
     model_kwargs = _build_nllb_model_kwargs()
     try:
-        return _load_nllb_from_pretrained_fallback(auto_model_for_seq2seq_lm, model_kwargs)
+        return _load_nllb_from_pretrained_fallback(auto_model_for_seq2seq_lm, model_kwargs, model_id)
     except (MemoryError, RuntimeError) as exc:
         if not _can_retry_nllb_on_cpu(exc, model_kwargs):
             raise
+        LOGGER.warning(
+            "NLLB %s did not fit in VRAM (%s). Falling back to CPU, which is many times slower; "
+            "set models.nllb to 'auto' so a model that fits the card is chosen instead.",
+            model_id,
+            str(exc).splitlines()[0][:120],
+        )
     _clear_cuda_cache()
-    return _load_nllb_from_pretrained_fallback(auto_model_for_seq2seq_lm, {"device_map": "cpu"})
+    return _load_nllb_from_pretrained_fallback(auto_model_for_seq2seq_lm, {"device_map": "cpu"}, model_id)
 
 
 def _can_retry_nllb_on_cpu(exc, model_kwargs):
@@ -144,11 +174,11 @@ def _clear_cuda_cache():
         torch.cuda.empty_cache()
 
 
-def _load_nllb_tokenizer(nllb_tokenizer):
+def _load_nllb_tokenizer(nllb_tokenizer, model_id=None):
     """Load NLLB tokenizer with local-files fallback and corrupt cache auto-purge."""
     return common.load_with_cache_recovery(
         nllb_tokenizer.from_pretrained,
-        config.NLLB_MODEL_ID,
+        model_id or _resolve_model_id(),
         logger=LOGGER,
         model_label="NLLB tokenizer",
     )

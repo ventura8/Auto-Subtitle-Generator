@@ -4,6 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 ![Coverage](assets/coverage.svg)
+[![GitHub Downloads](https://img.shields.io/github/downloads/ventura8/Auto-Subtitle-Generator/total?logo=github&label=downloads)](https://github.com/ventura8/Auto-Subtitle-Generator/releases)
 
 A high-performance, **100% Local AI pipeline** designed to restore, transcribe,
 and translate video subtitles completely offline.\
@@ -146,6 +147,33 @@ global reach:
 - **Atomic Saves:** Subtitles are saved to disk *immediately* after each
   individual language is translated, preventing data loss if the process is
   interrupted.
+- **One Work Directory Per Video:** Every temporary file (extracted audio,
+  isolated vocals, translation manifests and worker outputs, the recorded
+  source language, and in-flight scratch files) lives in
+  `<video name>.asg-temp/` next to the video. Nothing else is written beside
+  the video except the final `.srt` files and the `_multilang` container.
+- **Resume After Power Loss:** The work directory is kept whenever a video
+  does not finish (crash, Ctrl+C, power outage, failed stage), so the next run
+  reuses the extracted audio, the isolated vocals, the source SRT, the English
+  pivot, and every translated SRT that already exists. Truncated or stale
+  intermediates are detected and redone.
+- **Nothing Left Behind:** Once a video is muxed (or found to contain no
+  speech, or skipped because its output already exists) the work directory
+  is removed, and legacy sidecars from older releases are swept from the video
+  folder.
+- **VRAM-Aware Tuning:** The translation model is chosen to fit the card
+  (`models.nllb: auto` picks NLLB-3.3B from 11 GB, the distilled 1.3B from
+  5 GB, the distilled 600M below), Whisper drops to int8 weights on small
+  cards, and the translation batch is sized from the VRAM actually free after
+  the model loads, so a shared or smaller GPU gets a smaller batch instead of
+  an out-of-memory fallback to the CPU. `performance.max_vram_usage_gb` caps
+  what the pipeline plans against.
+- **Multi-Hour Videos:** Vocal separation runs in 30-minute chunks (configurable
+  via `separation_chunk_minutes`), so a 4-hour recording never needs more than a
+  few gigabytes of RAM and no intermediate file ever approaches the 4 GB WAV
+  limit. Each finished chunk is kept as resume state, and the joined vocal
+  track is 16 kHz mono, the format Whisper consumes, so it stays small.
+  Transcription, translation, and muxing already stream or window internally.
 - **Model Download Integrity & Auto-Recovery:** Every downloaded AI model and
   tokenizer checkpoint (`BS-Roformer`, `Faster-Whisper`, `NLLB`,
   `TranslateGemma`) automatically detects corrupted or truncated downloads,

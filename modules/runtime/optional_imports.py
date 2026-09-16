@@ -37,6 +37,21 @@ def load_optional_torch() -> Any | None:
         return None
 
 
+def is_cuda_usable(torch_module: Any | None = None) -> bool:
+    """Return whether a CUDA device can actually be used.
+
+    ``torch.cuda.is_available()`` alone is not enough: with the GPU hidden via
+    ``CUDA_VISIBLE_DEVICES`` this torch build still reports availability, so
+    the device count is required to be positive as well.
+    """
+    if torch_module is None or not hasattr(torch_module, "cuda"):
+        return False
+    try:
+        return bool(torch_module.cuda.is_available() and torch_module.cuda.device_count() > 0)
+    except (RuntimeError, AttributeError):
+        return False
+
+
 def is_mps_available(torch_module: Any | None = None) -> bool:
     """Return whether the provided torch runtime exposes an available MPS backend."""
     return bool(

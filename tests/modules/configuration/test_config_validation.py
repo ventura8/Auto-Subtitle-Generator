@@ -308,3 +308,41 @@ class TestCoverageConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSeparationChunkingConfig(unittest.TestCase):
+    def setUp(self):
+        original = config.SEPARATION_CHUNK_MINUTES
+        self.addCleanup(setattr, config, "SEPARATION_CHUNK_MINUTES", original)
+
+    def test_default_is_thirty_minutes(self):
+        config._reset_config_defaults()
+        self.assertEqual(config.SEPARATION_CHUNK_MINUTES, 30)
+
+    def test_value_is_loaded_in_minutes(self):
+        logger = MagicMock()
+        config._load_whisper_config({"separation_chunk_minutes": 45}, logger)
+        self.assertEqual(config.SEPARATION_CHUNK_MINUTES, 45)
+        logger.assert_any_call("[Config] Separation Chunking: 45 min")
+
+    def test_zero_disables_and_says_so(self):
+        logger = MagicMock()
+        config._load_whisper_config({"separation_chunk_minutes": 0}, logger)
+        self.assertEqual(config.SEPARATION_CHUNK_MINUTES, 0)
+        logger.assert_any_call("[Config] Separation Chunking: DISABLED")
+
+    def test_negative_clamps_to_zero(self):
+        config._load_whisper_config({"separation_chunk_minutes": -5}, MagicMock())
+        self.assertEqual(config.SEPARATION_CHUNK_MINUTES, 0)
+
+    def test_invalid_value_keeps_default_and_warns(self):
+        config._reset_config_defaults()
+        logger = MagicMock()
+        config._load_whisper_config({"separation_chunk_minutes": "lots"}, logger)
+        self.assertEqual(config.SEPARATION_CHUNK_MINUTES, 30)
+        logger.assert_any_call("[Config] Invalid separation_chunk_minutes; keeping default.", "WARNING")
+
+    def test_missing_key_leaves_value_untouched(self):
+        config.SEPARATION_CHUNK_MINUTES = 12
+        config._load_whisper_config({}, MagicMock())
+        self.assertEqual(config.SEPARATION_CHUNK_MINUTES, 12)

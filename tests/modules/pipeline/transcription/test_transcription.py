@@ -20,6 +20,7 @@ class TestTranscription(unittest.TestCase):
         transcription.OPTIMIZER.cpu_cores = 8
         transcription.OPTIMIZER.config["whisper_beam"] = 5
 
+    @patch("modules.configuration.config.USE_VOCAL_SEPARATION", False)
     @patch("modules.pipeline.transcription.utils.extract_clean_audio", return_value="vocals.wav")
     @patch("modules.models.ModelManager")
     def test_transcribe_video_audio_success(self, mock_mm, mock_extract):
@@ -35,6 +36,7 @@ class TestTranscription(unittest.TestCase):
         self.assertEqual(lang, "en")
         mock_whisper.transcribe.assert_called()
 
+    @patch("modules.configuration.config.USE_VOCAL_SEPARATION", False)
     @patch("modules.pipeline.transcription.utils.extract_clean_audio", return_value="vocals.wav")
     @patch("modules.models.ModelManager")
     def test_transcribe_video_audio_oom_retry(self, mock_mm, mock_extract):

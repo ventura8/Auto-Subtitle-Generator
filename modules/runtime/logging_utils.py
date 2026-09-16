@@ -1,5 +1,6 @@
 """Logging and console initialization utilities."""
 
+import contextlib
 import ctypes
 import os
 import platform
@@ -121,8 +122,24 @@ def handle_shutdown(_signum, _frame):
     sys.exit(1)
 
 
+def _reconfigure_streams_utf8():
+    """Switch stdout/stderr to UTF-8 with replacement.
+
+    Transcripts are printed live; when stdout is redirected to a file on
+    Windows its default encoding is the ANSI code page, which cannot encode
+    characters such as "ă" and raised UnicodeEncodeError mid-transcription.
+    Streams without ``reconfigure`` (capture objects) are left alone.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(ValueError, OSError):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
 def init_console():
-    """Initializes the console for ANSI support, especially on Windows."""
+    """Initializes the console for ANSI support and UTF-8 output."""
+    _reconfigure_streams_utf8()
     if os.name == "nt":
         try:
             kernel32 = ctypes.windll.kernel32

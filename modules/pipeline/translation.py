@@ -8,7 +8,7 @@ import sys
 import time
 from typing import Any
 
-from modules import utils
+from modules import utils, workdir
 from modules.configuration import config
 from modules.runtime.optional_imports import load_optional_torch
 from modules.safe_io import atomic_text_writer
@@ -17,13 +17,20 @@ from modules.utils import log
 torch: Any | None = load_optional_torch()
 
 
-def _identify_missing_targets(src_lang, folder, base_name):
-    """Identifies which languages still need translation."""
+def _identify_missing_targets(src_lang, folder, base_name, reuse_outputs=True):
+    """Identifies which languages still need translation.
+
+    ``reuse_outputs=False`` redoes every target: the SRT files beside the video
+    were produced for a different input that carried the same name.
+    """
     all_targets = [lang for lang in config.TARGET_LANGUAGES if lang != src_lang]
     if not all_targets:
         return [], 0
 
-    missing_langs, skipped_count = _scan_target_language_states(all_targets, folder, base_name)
+    if reuse_outputs:
+        missing_langs, skipped_count = _scan_target_language_states(all_targets, folder, base_name)
+    else:
+        missing_langs, skipped_count = list(all_targets), 0
 
     # User Request: Show summary at start
     log(f"  [Translate] Summary: {len(all_targets)} Total | {len(missing_langs)} To Do | {skipped_count} Skipped", "INFO")
@@ -56,6 +63,11 @@ def _classify_target_language_state(lang, folder, base_name):
     return True, False
 
 
+def _temp_output_path(folder, base_name, lang):
+    """Return the worker output JSON path for ``lang`` inside the per-video work directory."""
+    return os.path.join(workdir.work_dir_path(folder, base_name), f".temp_output.{base_name}.{lang}.json")
+
+
 def _prepare_source_data(segments):
     """Filters valid segments and prepares data structure for translation."""
     valid_segments = [s for s in segments if s.text.strip()]
@@ -71,7 +83,7 @@ def _process_completed_output(output_file, lang, segments, folder, base_name):
         # Save SRT
         if len(translated_lines) == len(segments):
             lang_srt_path = os.path.join(folder, f"{base_name}.{lang}.srt")
-            utils.save_translated_srt(segments, translated_lines, lang_srt_path)
+            utils.save_translated_srt(segments, translated_lines, lang_srt_path, scratch_dir=workdir.work_dir_path(folder, base_name))
             log(f"  [Success] Saved {lang} subtitles.")
 
             # Success - return True to indicate completion
@@ -112,7 +124,7 @@ def _wait_worker_tick(proc):
 def _scan_pending_outputs(pending, folder, base_name, segments):
     """Process currently available worker outputs and return remaining pending languages."""
     for lang in list(pending):
-        output_file = os.path.join(folder, f".temp_output.{base_name}.{lang}.json")
+        output_file = _temp_output_path(folder, base_name, lang)
 
         if not os.path.exists(output_file):
             continue
@@ -153,7 +165,7 @@ def _flush_pending_outputs_after_exit(pending, folder, base_name, segments):
 
 def _flush_single_pending_language(lang, folder, base_name, segments):
     """Flush one pending translation output and return True only on success."""
-    output_file = os.path.join(folder, f".temp_output.{base_name}.{lang}.json")
+    output_file = _temp_output_path(folder, base_name, lang)
     if not os.path.exists(output_file):
         return False
 
@@ -195,10 +207,10 @@ def _build_pivot_config(worker_context, common_input, temp_files):
     folder = worker_context["folder"]
     base_name = worker_context["base_name"]
     missing_langs = worker_context["missing_langs"]
-    pivot_output = os.path.join(folder, f"{base_name}.pivot_pivoted.json")
+    pivot_output = os.path.join(workdir.work_dir_path(folder, base_name), f"{base_name}.pivot_pivoted.json")
     temp_files.append(pivot_output)
 
-    pivot_srt_data = _load_reusable_pivot_srt_data(folder, base_name)
+    pivot_srt_data = _load_reusable_pivot_srt_data(folder, base_name) if worker_context.get("reuse_outputs", True) else None
     if pivot_srt_data:
         with atomic_text_writer(pivot_output) as file_handle:
             json.dump(pivot_srt_data, file_handle, ensure_ascii=False)
@@ -217,7 +229,7 @@ def _build_pivot_config(worker_context, common_input, temp_files):
     }
 
     if pivot_config["emit_en_output"]:
-        en_output_file = os.path.join(folder, f".temp_output.{base_name}.en.json")
+        en_output_file = _temp_output_path(folder, base_name, "en")
         temp_files.append(en_output_file)
         pivot_config["en_output"] = en_output_file
         _safe_remove(en_output_file)
@@ -234,7 +246,7 @@ def _build_manifest_jobs(worker_context, source_code_for_jobs, input_file, pivot
         if pivot_config and lang == "en":
             continue
 
-        output_file = os.path.join(worker_context["folder"], f".temp_output.{worker_context['base_name']}.{lang}.json")
+        output_file = _temp_output_path(worker_context["folder"], worker_context["base_name"], lang)
         temp_files.append(output_file)
         _safe_remove(output_file)
 
@@ -255,10 +267,11 @@ def _build_manifest_jobs(worker_context, source_code_for_jobs, input_file, pivot
 
 
 def _create_translation_manifest(worker_context):
-    """Creates the job manifest and input files for the worker."""
+    """Creates the job manifest and input files for the worker inside the per-video work directory."""
     folder = worker_context["folder"]
     base_name = worker_context["base_name"]
-    common_input = os.path.join(folder, f"{base_name}.common_input.json")
+    work_dir = workdir.ensure_work_dir(folder, base_name)
+    common_input = os.path.join(work_dir, f"{base_name}.common_input.json")
     temp_files = [common_input]
 
     with atomic_text_writer(common_input) as file_handle:
@@ -273,7 +286,7 @@ def _create_translation_manifest(worker_context):
         temp_files,
     )
 
-    manifest_path = os.path.join(folder, f"{base_name}.manifest.json")
+    manifest_path = os.path.join(work_dir, f"{base_name}.manifest.json")
     temp_files.append(manifest_path)
 
     with atomic_text_writer(manifest_path) as file_handle:
@@ -300,7 +313,11 @@ def _cleanup_worker_process(proc):
 
 
 def _cleanup_temp_files(temp_files):
-    """Removes temporary files."""
+    """Removes the worker's temporary files after a successful run.
+
+    They are deliberately kept when the worker fails or is interrupted: the
+    pivot output in particular is expensive and is reused on the next run.
+    """
     for tf in temp_files:
         if os.path.exists(tf):
             try:
@@ -318,16 +335,27 @@ def _run_worker_process(worker_context):
     env = os.environ.copy()
     env["IS_SUBPROCESS"] = "1"
     env["PYTHONPATH"] = _build_worker_pythonpath(env, project_root)
+    completed = False
     try:
         with subprocess.Popen(cmd, env=env) as proc:
             utils.register_subprocess(proc)
             _run_worker_and_collect_results(proc, worker_context)
+        completed = True
         _cleanup_post_worker_memory()
     finally:
-        try:
-            _cleanup_temp_files(worker_context["temp_files"])
-        except OSError:
-            pass
+        _finish_worker_temp_files(worker_context, completed)
+
+
+def _finish_worker_temp_files(worker_context, completed):
+    """Remove worker temp files on success; keep them for resume otherwise."""
+    if not completed:
+        work_dir = workdir.work_dir_path(worker_context["folder"], worker_context["base_name"])
+        log(f"  [Temp] Translation did not finish; keeping resumable files in {work_dir}", "WARNING")
+        return
+    try:
+        _cleanup_temp_files(worker_context["temp_files"])
+    except OSError:
+        pass
 
 
 def _run_worker_and_collect_results(proc, worker_context):
@@ -397,9 +425,16 @@ def _execute_translation_workers(*worker_args):
     _run_worker_process(worker_context)
 
 
-def translate_segments(segments, src_lang, model_mgr, folder, base_name):
-    """Translates transcription segments into missing target languages."""
-    missing_langs, _skipped_count = _identify_missing_targets(src_lang, folder, base_name)
+def translate_segments(segments, src_lang, model_mgr, target):
+    """Translates transcription segments into missing target languages.
+
+    ``target`` carries ``folder`` and ``base_name``; ``reuse_outputs`` (default
+    True) is False when the SRT files beside the video belong to a different
+    input of the same name and must all be regenerated.
+    """
+    folder, base_name = target["folder"], target["base_name"]
+    reuse_outputs = target.get("reuse_outputs", True)
+    missing_langs, _skipped_count = _identify_missing_targets(src_lang, folder, base_name, reuse_outputs)
 
     if not missing_langs:
         log("  [Skip] All targets completed. Moving to next step.")
@@ -429,6 +464,7 @@ def translate_segments(segments, src_lang, model_mgr, folder, base_name):
             "folder": folder,
             "base_name": base_name,
             "segments": valid_segments,
+            "reuse_outputs": reuse_outputs,
         }
     )
     return {}

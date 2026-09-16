@@ -1,0 +1,27 @@
+# Check every text file out with LF on every platform.
+#
+# Without this, a Windows clone with core.autocrlf=true gets CRLF working
+# copies while the blobs stay LF. That produced two real failures: Taplo
+# rejected pyproject.toml so run_local_pipeline.ps1 halted before running a
+# single test, and `git archive` exported CRLF shell scripts that Linux bash
+# refused ("set: pipefail: invalid option name"). PowerShell, Python, YAML and
+# Markdown are all fine with LF on Windows.
+* text=auto eol=lf
+
+# cmd.exe still misreads LF-only batch files in some label/goto situations.
+*.bat text eol=crlf
+
+# Binary media and models must never be touched.
+*.mp4  binary
+*.mkv  binary
+*.mov  binary
+*.wav  binary
+*.mp3  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.ckpt binary
+*.onnx binary
+*.exe  binary

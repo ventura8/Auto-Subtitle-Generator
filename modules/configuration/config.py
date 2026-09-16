@@ -20,6 +20,10 @@ WHISPER_MODEL_SIZE = "large-v3"
 # Optimized prompt (Music start prevents early hallucinations)
 INITIAL_PROMPT = "Transcribe the following audio file."
 USE_VOCAL_SEPARATION = True
+# Vocal separation loads the whole file into RAM at 44.1 kHz stereo float32 and writes a
+# stem of the same shape, so long inputs are separated in chunks of this many minutes
+# (0 disables chunking). 30 min keeps peak RAM around 3 GB and every stem under 1 GB.
+SEPARATION_CHUNK_MINUTES = 30
 FORCED_LANGUAGE = None
 PROMPT_USE_CUSTOM_PRIORITY = False  # If True, custom_prompt overrides everything
 DEBUG_LOGGING = False  # Controls detailed console output
@@ -82,7 +86,7 @@ VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".t
 # AI Model settings (Defaults)
 TRANSLATOR_ENGINE = "nllb"
 TRANSLATEGEMMA_MODEL_ID = "google/translategemma-12b-it"
-NLLB_MODEL_ID = "facebook/nllb-200-3.3B"
+NLLB_MODEL_ID = "auto"  # largest NLLB whose fp16 weights fit ~65 % of VRAM; or an explicit HF id
 NLLB_NUM_BEAMS = 5
 NLLB_LENGTH_PENALTY = 1.0
 NLLB_REPETITION_PENALTY = 1.0
@@ -420,8 +424,22 @@ def _load_whisper_config(w_conf, logger_func):
     globals()["USE_VOCAL_SEPARATION"] = w_conf.get("use_vocal_separation", True)
     status = "ENABLED" if globals().get("USE_VOCAL_SEPARATION") else "DISABLED"
     logger_func(f"[Config] Vocal Separation: {status}")
+    _load_separation_chunking(w_conf, logger_func)
 
     _load_whisper_prompt(w_conf, logger_func)
+
+
+def _load_separation_chunking(w_conf, logger_func):
+    """Load the vocal-separation chunk length in minutes; 0 disables chunking."""
+    if "separation_chunk_minutes" not in w_conf:
+        return
+    try:
+        minutes = max(0, int(w_conf["separation_chunk_minutes"]))
+    except (TypeError, ValueError):
+        logger_func("[Config] Invalid separation_chunk_minutes; keeping default.", "WARNING")
+        return
+    globals()["SEPARATION_CHUNK_MINUTES"] = minutes
+    logger_func(f"[Config] Separation Chunking: {minutes} min" if minutes else "[Config] Separation Chunking: DISABLED")
 
 
 def _load_hallucination_config(h_conf, logger_func):
@@ -442,8 +460,12 @@ def _load_performance_overrides(p_conf: Dict[str, Any], optimizer: Any, logger_f
         return
 
     updated_keys: list[str] = []
+    # The cap re-derives the tier and its default caps, so it goes before explicit overrides.
+    _apply_vram_cap(p_conf, optimizer, updated_keys)
     _apply_whisper_beam_override(p_conf, optimizer, updated_keys)
     _apply_numeric_override(p_conf, optimizer, "nllb_batch", updated_keys)
+    if "nllb_batch" in updated_keys:
+        optimizer.config["nllb_batch_overridden"] = True
     _apply_numeric_override(p_conf, optimizer, "translategemma_batch", updated_keys)
     _apply_numeric_override(p_conf, optimizer, "translategemma_max_new_tokens", updated_keys)
     _apply_numeric_override(p_conf, optimizer, "whisper_workers", updated_keys)
@@ -451,6 +473,21 @@ def _load_performance_overrides(p_conf: Dict[str, Any], optimizer: Any, logger_f
 
     if updated_keys:
         logger_func(f"[Config] Performance Overrides: {', '.join(updated_keys)}")
+
+
+def _apply_vram_cap(p_conf: Dict[str, Any], optimizer: Any, updated_keys: list[str]) -> None:
+    """Honour ``performance.max_vram_usage_gb`` as a cap on the VRAM the pipeline plans against."""
+    value = p_conf.get("max_vram_usage_gb")
+    if value is None:
+        return
+    cap = float(value)
+    if cap <= 0:
+        raise ValueError("performance.max_vram_usage_gb must be a positive number")
+    if hasattr(optimizer, "apply_vram_cap"):
+        optimizer.apply_vram_cap(cap)
+    else:
+        optimizer.config["max_vram_usage_gb"] = cap
+    updated_keys.append("max_vram_usage_gb")
 
 
 def _apply_whisper_beam_override(p_conf: Dict[str, Any], optimizer: Any, updated_keys: list[str]) -> None:
@@ -617,6 +654,7 @@ def _reset_config_defaults() -> None:
     globals()["WHISPER_MODEL_SIZE"] = "large-v3"
     globals()["INITIAL_PROMPT"] = "Transcribe the following audio file."
     globals()["USE_VOCAL_SEPARATION"] = True
+    globals()["SEPARATION_CHUNK_MINUTES"] = 30
     globals()["FORCED_LANGUAGE"] = None
     globals()["PROMPT_USE_CUSTOM_PRIORITY"] = False
     globals()["DEBUG_LOGGING"] = False
@@ -665,7 +703,7 @@ def _reset_config_defaults() -> None:
     globals()["VIDEO_EXTENSIONS"] = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".ts", ".mts"}
     globals()["TRANSLATOR_ENGINE"] = "nllb"
     globals()["TRANSLATEGEMMA_MODEL_ID"] = "google/translategemma-12b-it"
-    globals()["NLLB_MODEL_ID"] = "facebook/nllb-200-3.3B"
+    globals()["NLLB_MODEL_ID"] = "auto"
     globals()["NLLB_NUM_BEAMS"] = 5
     globals()["NLLB_LENGTH_PENALTY"] = 1.0
     globals()["NLLB_REPETITION_PENALTY"] = 1.0
