@@ -30,6 +30,7 @@ class TestCoverageIsolated(unittest.TestCase):
             patch("modules.pipeline.isolated_translator.torch") as mock_torch,
         ):
             mock_torch.cuda.is_available.return_value = True
+            mock_torch.cuda.device_count.return_value = 1
             isolated_translator._cleanup_intermediate_memory(True)
             mock_gc.assert_called_once()
             mock_torch.cuda.empty_cache.assert_called_once()
@@ -41,6 +42,7 @@ class TestCoverageIsolated(unittest.TestCase):
             patch("modules.pipeline.isolated_translator.log") as mock_log,
         ):
             mock_torch.cuda.is_available.return_value = True
+            mock_torch.cuda.device_count.return_value = 1
             mock_torch.cuda.empty_cache.side_effect = RuntimeError("CUDA error: out of memory")
 
             isolated_translator._safe_cuda_cleanup()

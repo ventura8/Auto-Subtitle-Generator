@@ -6,7 +6,8 @@ predictable sidecar name would otherwise be followed by ``open(..., "w")`` or
 FFmpeg ``-y`` and overwrite whatever the link points at.
 
 Every write is reserved as a ``ScratchReservation``: a private ``0700``
-directory beside the destination, an exclusively created file inside it, and
+directory (inside the per-video work directory when ``scratch_dir`` is given,
+otherwise beside the destination), an exclusively created file inside it, and
 the recorded identities (device, inode) of both. Text is written through the
 creation descriptor and never reopened by pathname. Promotion and discard are
 bound to the reservation: on POSIX the held directory descriptor is used
@@ -63,14 +64,16 @@ def scratch_tag(name):
     return f"{name[:_TAG_STEM_LENGTH]}-{digest}"
 
 
-def reserve_temp_path(final_path):
-    """Reserve a private scratch file beside ``final_path`` for a pathname-based writer (FFmpeg).
+def reserve_temp_path(final_path, scratch_dir=None):
+    """Reserve a private scratch file for a pathname-based writer (FFmpeg).
 
-    The extension of ``final_path`` is preserved so tools that pick a format
-    from the suffix keep working. Pass ``reservation.path`` to the tool, then
-    finish with ``promote_temp_path`` or ``discard_temp_path``.
+    The scratch entry is created inside ``scratch_dir`` when given (the
+    per-video work directory), otherwise beside ``final_path``. The extension
+    of ``final_path`` is preserved so tools that pick a format from the suffix
+    keep working. Pass ``reservation.path`` to the tool, then finish with
+    ``promote_temp_path`` or ``discard_temp_path``.
     """
-    reservation = _reserve(final_path)
+    reservation = _reserve(final_path, scratch_dir)
     os.close(reservation.fd)
     reservation.fd = None
     return reservation
@@ -105,15 +108,17 @@ def discard_temp_path(reservation):
 
 
 @contextlib.contextmanager
-def atomic_text_writer(path, encoding="utf-8"):
+def atomic_text_writer(path, encoding="utf-8", scratch_dir=None):
     """Yield a text handle whose content lands on ``path`` only on success.
 
     Content goes through the creation descriptor of a reserved scratch file
     and is promoted with a bound rename after the identities are re-verified.
     On any exception the scratch file is discarded and the error re-raised.
+    ``scratch_dir`` places the scratch entry in the per-video work directory
+    instead of beside ``path``; both must be on the same filesystem.
     """
     reject_symlink(path)
-    reservation = _reserve(path)
+    reservation = _reserve(path, scratch_dir)
     try:
         with os.fdopen(reservation.fd, "w", encoding=encoding) as file_handle:
             reservation.fd = None
@@ -124,11 +129,10 @@ def atomic_text_writer(path, encoding="utf-8"):
         raise
 
 
-def _reserve(final_path):
+def _reserve(final_path, scratch_dir=None):
     """Create the private directory and exclusive file for ``final_path``; the fd stays open."""
-    directory = os.path.dirname(final_path) or "."
     extension = os.path.splitext(final_path)[1] or ".tmp"
-    dir_path = _create_private_dir(directory, _scratch_prefix(final_path))
+    dir_path = _create_private_dir(_scratch_parent(final_path, scratch_dir), _scratch_prefix(final_path))
     dir_fd = os.open(dir_path, _DIR_OPEN_FLAGS) if DIR_FD_SUPPORTED else None
     try:
         fd, file_name = _create_exclusive(dir_path, dir_fd, "output-", extension)
@@ -142,6 +146,13 @@ def _reserve(final_path):
     return ScratchReservation(os.path.join(dir_path, file_name), dir_path, file_name, dir_id, file_id, dir_fd, fd)
 
 
+def _scratch_parent(final_path, scratch_dir):
+    """Return the directory that hosts the scratch entry: ``scratch_dir`` or the destination's directory."""
+    if scratch_dir:
+        return scratch_dir
+    return os.path.dirname(final_path) or "."
+
+
 def _stat_dir(dir_path, dir_fd):
     """Stat the scratch directory through its held descriptor when one exists."""
     return os.fstat(dir_fd) if dir_fd is not None else os.lstat(dir_path)
@@ -151,6 +162,11 @@ def _scratch_prefix(final_path):
     """Build the opaque directory prefix for ``final_path``."""
     stem = os.path.splitext(os.path.basename(final_path))[0]
     return f"{SCRATCH_PREFIX}{scratch_tag(stem)}-"
+
+
+def create_private_dir(directory, tag):
+    """Create a private ``0700`` scratch directory tagged for ``tag`` under ``directory`` and return its path."""
+    return _create_private_dir(directory, f"{SCRATCH_PREFIX}{scratch_tag(tag)}-")
 
 
 def _create_private_dir(directory, prefix):

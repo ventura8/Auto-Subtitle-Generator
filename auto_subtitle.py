@@ -22,14 +22,15 @@ import os
 import sys
 import time
 
-from modules import models, utils
+from modules import models, utils, workdir
 from modules.configuration import config
+from modules.configuration.version import __version__
 from modules.media.ffmpeg_utils import build_primary_media_metadata_args
 from modules.models import OPTIMIZER, ModelManager
 from modules.pipeline.transcription import transcribe_video_audio
 from modules.pipeline.translation import translate_segments
 from modules.runtime import nvidia_paths
-from modules.runtime.bootstrap import bootstrap_cpu_env
+from modules.runtime.bootstrap import bootstrap_cpu_env, force_cpu_only_env
 from modules.safe_io import atomic_text_writer, discard_temp_path, promote_temp_path, reserve_temp_path
 from modules.subtitles.discovery import find_existing_srt_languages, is_usable_language, prioritize_recorded_language
 from modules.utils import log, print_progress_bar
@@ -211,8 +212,8 @@ def _read_resume_srt(folder, base_name, lang_code):
 
 
 def _get_source_language_artifact_path(folder, base_name):
-    """Return sidecar path used to persist the detected source language."""
-    return os.path.join(folder, f"{base_name}.source_lang.txt")
+    """Return the work-directory path used to persist the detected source language."""
+    return os.path.join(workdir.work_dir_path(folder, base_name), f"{base_name}.source_lang.txt")
 
 
 def _read_recorded_source_language(folder, base_name):
@@ -232,6 +233,7 @@ def _write_recorded_source_language(folder, base_name, src_lang):
     """Persist detected source language for safe resume selection."""
     artifact_path = _get_source_language_artifact_path(folder, base_name)
     try:
+        workdir.ensure_work_dir(folder, base_name)
         with atomic_text_writer(artifact_path) as file_handle:
             file_handle.write(src_lang)
     except OSError as e:
@@ -255,26 +257,40 @@ def embed_subtitles(video_path, srt_files, src_lang=None):
     if not srt_files:
         return None
 
-    dir_name = os.path.dirname(video_path)
+    dir_name = os.path.dirname(video_path) or "."
     file_name = os.path.basename(video_path)
     name_no_ext, ext = os.path.splitext(file_name)
     normalized_ext = ext.lower()
     output_path = os.path.join(dir_name, f"{name_no_ext}_multilang{ext}")
 
-    # FFmpeg -y follows symlinks, so mux into a private scratch file and promote.
-    temp_output = None
+    # FFmpeg -y follows symlinks, so mux into a private scratch file (inside the
+    # work directory) and promote. The scratch file is discarded on any exit
+    # that is not a promotion, including Ctrl+C.
     try:
-        temp_output = reserve_temp_path(output_path)
+        temp_output = reserve_temp_path(output_path, scratch_dir=workdir.ensure_work_dir(dir_name, name_no_ext))
+    except (OSError, RuntimeError, ValueError) as e:
+        log(f"Embedding failed: {e}", "ERROR")
+        return None
+    return _mux_and_promote(temp_output, (video_path, srt_files, normalized_ext, src_lang), output_path)
+
+
+def _mux_and_promote(temp_output, mux_args, output_path):
+    """Run the mux into the reserved scratch file and promote it; discard on any other exit."""
+    video_path, srt_files, normalized_ext, src_lang = mux_args
+    promoted = False
+    try:
         cmd = _build_embed_command(video_path, srt_files, normalized_ext, temp_output.path, src_lang)
         total_dur = utils.get_audio_duration(video_path)
         utils.run_ffmpeg_progress(cmd, "  [Finalizing] Muxing Video", total_dur)
         promote_temp_path(temp_output, output_path)
+        promoted = True
         return output_path
     except (OSError, RuntimeError, ValueError) as e:
         log(f"Embedding failed: {e}", "ERROR")
-        if temp_output is not None:
-            discard_temp_path(temp_output)
         return None
+    finally:
+        if not promoted:
+            discard_temp_path(temp_output)
 
 
 def _build_embed_command(video_path, srt_files, normalized_ext, output_path, src_lang=None):
@@ -321,12 +337,13 @@ def _obtain_segments(transcription_context, model_mgr, forced_lang, forced_promp
     lang_hint = forced_lang if forced_lang else config.FORCED_LANGUAGE
     check_lang_code = lang_hint if lang_hint else None
 
-    # Try to find existing output
-    loaded_segments, loaded_lang, resume_srt_path = _check_resume(
-        folder,
-        base_name,
-        check_lang_code,
-    )
+    # Try to find existing output, unless the SRT files beside the video
+    # were made for a different file that carried this name.
+    loaded_segments, loaded_lang, resume_srt_path = None, None, None
+    if transcription_context.get("input_changed"):
+        log("  [Resume] Ignoring SRT files beside the input: it changed since the last run.", "WARNING")
+    else:
+        loaded_segments, loaded_lang, resume_srt_path = _check_resume(folder, base_name, check_lang_code)
 
     if loaded_segments:
         log(f"  [Step 1] Skipping Transcription. Found valid SRT for {loaded_lang}.")
@@ -373,12 +390,13 @@ def _build_translation_srt_track(folder, base_name, src_lang, lang, info):
     return (lang_srt, lang, label, config.to_mux_language_code(lang))
 
 
-def _build_transcription_context(folder, base_name, video_path):
+def _build_transcription_context(folder, base_name, video_path, input_changed=False):
     """Build context payload passed into transcription/resume helper."""
     return {
         "folder": folder,
         "base_name": base_name,
         "video_path": video_path,
+        "input_changed": input_changed,
     }
 
 
@@ -389,16 +407,16 @@ def _prepare_source_srt_path(folder, base_name, src_lang, source_artifact_path, 
         _write_recorded_source_language(folder, base_name, src_lang)
         log("  [Resume] Reusing existing subtitle file. Continuing translation and muxing.", "INFO")
         return source_artifact_path
-    if _save_source_srt_file(segments, src_srt_path):
+    if _save_source_srt_file(segments, src_srt_path, workdir.ensure_work_dir(folder, base_name)):
         _write_recorded_source_language(folder, base_name, src_lang)
         return src_srt_path
     return None
 
 
-def _save_source_srt_file(segments, src_srt_path):
-    """Persist source SRT and return True on success."""
+def _save_source_srt_file(segments, src_srt_path, scratch_dir=None):
+    """Persist source SRT (scratch inside the work directory) and return True on success."""
     try:
-        utils.save_srt(segments, src_srt_path)
+        utils.save_srt(segments, src_srt_path, scratch_dir=scratch_dir)
         return True
     except (OSError, ValueError) as e:
         log(f"  [Error] Failed to save source SRT: {e}", "ERROR")
@@ -418,13 +436,18 @@ def _clear_cuda_cache_if_available():
         torch_module.cuda.empty_cache()
 
 
-def _run_translation_step(segments, src_lang, model_mgr, folder, base_name):
+def _run_translation_step(segments, src_lang, model_mgr, pipeline_context):
     """Run translation stage and return True when it completes successfully."""
+    target = {
+        "folder": pipeline_context["folder"],
+        "base_name": pipeline_context["base_name"],
+        "reuse_outputs": not pipeline_context.get("input_changed", False),
+    }
     try:
         model_mgr.offload_whisper()
         model_mgr.offload_separator()
         _clear_cuda_cache_if_available()
-        translate_segments(segments, src_lang, model_mgr, folder, base_name)
+        translate_segments(segments, src_lang, model_mgr, target)
         return True
     except (RuntimeError, OSError, ValueError) as e:
         log(f"Translation failed: {e}", "ERROR")
@@ -438,8 +461,9 @@ def _process_video_pipeline(video_path, model_mgr, pipeline_context):
     forced_prompt = pipeline_context["forced_prompt"]
     folder = pipeline_context["folder"]
     base_name = pipeline_context["base_name"]
+    input_changed = pipeline_context.get("input_changed", False)
 
-    transcription_context = _build_transcription_context(folder, base_name, video_path)
+    transcription_context = _build_transcription_context(folder, base_name, video_path, input_changed)
     segments, src_lang, source_artifact_path = _obtain_segments(
         transcription_context,
         model_mgr,
@@ -455,7 +479,7 @@ def _process_video_pipeline(video_path, model_mgr, pipeline_context):
     if src_srt_path is None:
         return None, None, None
 
-    if not _run_translation_step(segments, src_lang, model_mgr, folder, base_name):
+    if not _run_translation_step(segments, src_lang, model_mgr, pipeline_context):
         return None, None, None
     finalized_output_path = _finalize_video_processing(video_path, folder, base_name, src_lang, src_srt_path)
     if not finalized_output_path:
@@ -472,30 +496,53 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
     # Check if this video is already done
     if os.path.exists(output_path):
         log(f"  [Skip] Output already exists: {output_path}", "INFO")
+        _finish_temp_hygiene(folder, base_name, os.path.basename(video_path), ([], None, output_path))
         return None, None, output_path
 
+    result = (None, None, None)
     try:
+        # Resume state must belong to this exact input, not an earlier file of the same name.
+        binding = workdir.bind_work_dir_to_source(folder, base_name, video_path)
         pipeline_context = {
             "forced_lang": forced_lang,
             "forced_prompt": forced_prompt,
             "folder": folder,
             "base_name": base_name,
             "output_path": output_path,
+            "input_changed": binding == workdir.BIND_CHANGED,
         }
-        return _process_video_pipeline(video_path, model_mgr, pipeline_context)
+        result = _process_video_pipeline(video_path, model_mgr, pipeline_context)
+        return result
 
     except (RuntimeError, OSError, ValueError, TypeError, KeyError) as e:
         log(f"Processing failed for {video_path}: {e}", "ERROR")
         return None, None, None
 
     finally:
-        # Cleanup
-        utils.cleanup_temp_files(folder, base_name, os.path.basename(video_path))
+        _finish_temp_hygiene(folder, base_name, os.path.basename(video_path), result)
+
+
+def _finish_temp_hygiene(folder, base_name, video_filename, result):
+    """Remove every temp artifact once a video is finished; keep it for resume otherwise.
+
+    A finished video is one that was muxed, skipped because its output already
+    exists, or found to contain no speech. Anything else (a failure, Ctrl+C,
+    or an exception) leaves the work directory in place so the next run can
+    resume from the last completed stage.
+    """
+    if utils.classify_batch_result(result) == "failed":
+        if workdir.work_dir_exists(folder, base_name):
+            log(f"  [Temp] Keeping {workdir.work_dir_path(folder, base_name)} so the next run can resume.", "INFO")
+        return
+    utils.cleanup_temp_files(folder, base_name, video_filename)
+    if workdir.purge_work_dir(folder, base_name):
+        log("  [Temp] Work directory removed; no temporary files left behind.", "DEBUG")
 
 
 def parse_cli_args(cli_args=None):
     """Parses command line arguments for the application."""
     parser = argparse.ArgumentParser(description="Auto Subtitle Generator")
+    parser.add_argument("--version", action="version", version=f"Auto-Subtitle-Generator v{__version__}")
     parser.add_argument("input_path", nargs="?", help="Video file or folder path")
     parser.add_argument("--lang", help="Force source language (e.g., 'en', 'ro')")
     parser.add_argument("--prompt", help="Custom initial prompt for Whisper")
@@ -508,7 +555,7 @@ def get_input_files(parsed_args=None):
     args = parsed_args if parsed_args is not None else parse_cli_args()
 
     if args.cpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        force_cpu_only_env()
 
     path = utils.resolve_input_path(args.input_path)
     files = utils.collect_video_files(path)
@@ -573,7 +620,9 @@ def _show_startup_banner(args):
     the expensive engine initialization behind the input checks.
     """
     if args.cpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        force_cpu_only_env()
+    # Load config first so a performance.max_vram_usage_gb cap shows in the banner's profile.
+    config.load_config(OPTIMIZER, lambda message, level="INFO", **_kwargs: log(message, level, to_console=False))
     models.OPTIMIZER.detect_hardware(verbose=False)
     utils.print_banner(models.OPTIMIZER)
 

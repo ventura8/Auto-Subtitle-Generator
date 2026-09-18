@@ -7,37 +7,104 @@ import sys
 import time
 from typing import Any
 
-from modules import utils
+from modules import utils, workdir
 from modules.configuration import config
+from modules.media import ffmpeg_utils
 from modules.models import OPTIMIZER
 from modules.runtime.optional_imports import load_optional_torch
+from modules.safe_io import create_private_dir, discard_temp_path, promote_temp_path, reject_symlink, reserve_temp_path
 from modules.utils import log
 
 torch: Any | None = load_optional_torch()
 
+# A resumed vocal track must match the extracted audio length; anything shorter was cut off mid-write.
+VOCAL_DURATION_TOLERANCE_SECONDS = 2.0
+# Chunked separation: context added on each side of a chunk so the model's edge behaviour never
+# lands on a chunk seam, and the shortest tail that is worth a chunk of its own.
+CHUNK_PAD_SECONDS = 2.0
+CHUNK_MIN_TAIL_SECONDS = 60.0
+CHUNK_DURATION_TOLERANCE_SECONDS = 0.5
+
+
+def _split_video_path(video_path):
+    """Return ``(folder, base_name)`` for a video path."""
+    folder = os.path.dirname(video_path) or "."
+    base_name = os.path.splitext(os.path.basename(video_path))[0]
+    return folder, base_name
+
 
 def _get_separated_vocal_path(video_path):
-    """Internal helper to determine vocal separation output path."""
-    target_dir = os.path.abspath(os.path.dirname(video_path))
-    base_name = os.path.splitext(os.path.basename(video_path))[0]
-    separator_prefix = f"{base_name}_"
-    # Audio-Separator naming: {base_name}_(Vocals)_...
-    try:
-        for f in os.listdir(target_dir):
-            if f.startswith(separator_prefix) and "(Vocals)" in f:
-                return os.path.join(target_dir, f)
-    except OSError:
-        pass
+    """Return an existing, valid isolated-vocals track from the work directory, or None.
+
+    Audio-Separator names its output ``{base_name}_temp_(Vocals)_<model>.wav``.
+    A track left truncated by a crash mid-write is discarded so it is never
+    resumed from.
+    """
+    folder, base_name = _split_video_path(video_path)
+    work_dir = workdir.work_dir_path(folder, base_name)
+    source_wav = os.path.join(work_dir, f"{base_name}_temp.wav")
+    for entry in _list_vocal_candidates(work_dir, f"{base_name}_"):
+        candidate = os.path.join(work_dir, entry)
+        if _is_valid_vocal_track(candidate, source_wav):
+            return candidate
+        log(f"  [Sep] Discarding incomplete vocal track: {entry}", "WARNING")
+        _discard_file(candidate)
     return None
 
 
-def _process_separator_outputs(output_files, target_dir):
-    """Persist only vocal output files and ignore non-vocal stems."""
+def _list_vocal_candidates(work_dir, separator_prefix):
+    """Return sorted separator vocal-stem names found in the work directory."""
+    try:
+        entries = sorted(os.listdir(work_dir))
+    except OSError:
+        return []
+    return [entry for entry in entries if entry.startswith(separator_prefix) and "(Vocals)" in entry]
+
+
+def _is_valid_vocal_track(vocal_path, source_wav_path):
+    """Return True when ``vocal_path`` is a regular file whose duration matches the source audio."""
+    if os.path.islink(vocal_path) or not os.path.isfile(vocal_path):
+        return False
+    vocal_duration = _probe_duration(vocal_path)
+    if vocal_duration <= 0:
+        return False
+    return _matches_source_duration(vocal_duration, _probe_duration(source_wav_path))
+
+
+def _matches_source_duration(vocal_duration, source_duration):
+    """Return True when the vocal length matches the source, or when the source cannot be measured."""
+    return source_duration <= 0 or abs(vocal_duration - source_duration) <= VOCAL_DURATION_TOLERANCE_SECONDS
+
+
+def _probe_duration(path):
+    """Return the media duration in seconds, or 0.0 when the file is missing or cannot be probed."""
+    if not os.path.isfile(path):
+        return 0.0
+    try:
+        return utils.get_audio_duration(path)
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _discard_file(path):
+    """Best-effort removal of a temp file."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _process_separator_outputs(output_files, scratch_dir, target_dir):
+    """Move the vocal stem from the private scratch directory into the work directory; ignore other stems."""
     vocal_file = None
     for output_file in output_files:
-        src_path = _resolve_separator_output_path(output_file, target_dir)
         file_name = os.path.basename(output_file)
         if "Vocals" not in file_name:
+            continue
+
+        src_path = _resolve_separator_output_path(output_file, scratch_dir)
+        if src_path is None:
+            log(f"  [Sep] Ignoring separator output outside the scratch directory: {file_name}", "WARNING")
             continue
 
         dst_path = os.path.join(target_dir, file_name)
@@ -46,25 +113,40 @@ def _process_separator_outputs(output_files, target_dir):
     return vocal_file
 
 
-def _resolve_separator_output_path(output_file, target_dir):
-    """Resolve separator output path for absolute, cwd-relative, and target-dir-relative files."""
-    if os.path.isabs(output_file):
-        return output_file
+def _resolve_separator_output_path(output_file, scratch_dir):
+    """Resolve a separator output to a path inside ``scratch_dir``, or None when it escapes.
 
-    abs_from_cwd = os.path.abspath(output_file)
-    if os.path.exists(abs_from_cwd):
-        return abs_from_cwd
+    Audio-Separator reports its stems either by bare name or by full path. A
+    bare name is resolved against the scratch directory it was given, never
+    against the current working directory: preferring a same-named file in the
+    CWD would make the pipeline move an unrelated file it does not own.
+    Anything resolving outside the scratch directory is rejected, so a
+    traversal or absolute path in the reported name can never cause a move or
+    a delete elsewhere.
+    """
+    candidate = output_file if os.path.isabs(output_file) else os.path.join(scratch_dir, output_file)
+    return candidate if _is_within_directory(candidate, scratch_dir) else None
 
-    return os.path.join(target_dir, output_file)
+
+def _is_within_directory(candidate, directory):
+    """Return True when ``candidate`` resolves inside ``directory``."""
+    root = os.path.realpath(directory)
+    try:
+        return os.path.commonpath([root, os.path.realpath(candidate)]) == root
+    except ValueError:
+        # Different drives on Windows, or a mix of absolute and relative parts.
+        return False
 
 
 def _move_separator_output(src_path, dst_path):
-    """Move a separator output file into target directory, replacing stale outputs."""
+    """Move a separator output file into the work directory, replacing stale outputs.
+
+    The destination name is predictable, so a planted symlink there is refused.
+    """
     if not os.path.exists(src_path) or src_path == dst_path:
         return
-    if os.path.exists(dst_path):
-        os.remove(dst_path)
-    os.rename(src_path, dst_path)
+    reject_symlink(dst_path)
+    os.replace(src_path, dst_path)
 
 
 def _detect_and_separate_vocals(video_path, model_mgr):
@@ -89,17 +171,151 @@ def _detect_and_separate_vocals(video_path, model_mgr):
 
 
 def _run_vocal_separation(video_path, model_mgr):
-    """Execute separator model and return isolated vocals path when successful."""
+    """Execute separator model and return isolated vocals path when successful.
+
+    Audio-Separator writes stems with predictable names, so it is pointed at a
+    private scratch directory inside the work directory; only the finished
+    vocal stem is moved out, and the scratch directory is removed afterwards
+    (also on failure), so a crash mid-write never leaves a half-written track
+    behind under the resumable name.
+    """
     log("  [Task 0/4] Separating Vocals (BS-Roformer)...")
     audio_input_path = utils.extract_clean_audio(video_path)
-    target_dir = os.path.abspath(os.path.dirname(video_path))
-    separator = model_mgr.get_separator(output_dir=target_dir)
-    output_files = separator.separate(audio_input_path)
-    vocal_file = _process_separator_outputs(output_files, target_dir)
+    folder, base_name = _split_video_path(video_path)
+    work_dir = workdir.ensure_work_dir(folder, base_name)
+    scratch_dir = create_private_dir(work_dir, f"{base_name}_vocals")
+    try:
+        job = {
+            "separator": model_mgr.get_separator(output_dir=scratch_dir),
+            "audio_path": audio_input_path,
+            "scratch_dir": scratch_dir,
+            "work_dir": work_dir,
+            "base_name": base_name,
+        }
+        vocal_file = _separate(job)
+    finally:
+        workdir.remove_scratch_dir(scratch_dir)
     if vocal_file and os.path.exists(vocal_file):
         log(f"  [Sep] Vocal track isolated: {os.path.basename(vocal_file)}")
         return vocal_file
     return None
+
+
+def _separate(job):
+    """Separate the whole file in one pass, or in resumable chunks when it is long.
+
+    Audio-Separator loads the entire input into RAM at 44.1 kHz stereo float32
+    and writes a stem of the same shape, so a multi-hour file would need many
+    gigabytes of RAM and produce a stem past the 4 GB RIFF limit. Anything
+    longer than the configured chunk is therefore cut into windows, each
+    separated on its own with a little context on both sides, downmixed to the
+    16 kHz mono Whisper consumes, and joined at the end.
+    """
+    chunk_seconds = _separation_chunk_seconds()
+    duration = _probe_duration(job["audio_path"])
+    if chunk_seconds and duration > chunk_seconds:
+        return _run_chunked_separation(job, duration, chunk_seconds)
+    output_files = job["separator"].separate(job["audio_path"])
+    return _process_separator_outputs(output_files, job["scratch_dir"], job["work_dir"])
+
+
+def _separation_chunk_seconds():
+    """Return the configured chunk length in seconds, or 0 when chunking is disabled."""
+    minutes = getattr(config, "SEPARATION_CHUNK_MINUTES", 0) or 0
+    return max(0, int(minutes)) * 60
+
+
+def _run_chunked_separation(job, duration, chunk_seconds):
+    """Separate ``duration`` seconds of audio window by window and join the vocal stems."""
+    windows = _chunk_windows(duration, chunk_seconds)
+    log(f"  [Sep] Long audio ({utils.format_timestamp(duration)}): separating in {len(windows)} chunks of up to {chunk_seconds // 60} min.")
+    stems = [_separate_chunk(job, index, len(windows), window) for index, window in enumerate(windows)]
+    final_path = os.path.join(job["work_dir"], f"{job['base_name']}_temp_(Vocals)_chunked.wav")
+    _join_chunk_stems(stems, final_path, job)
+    for stem in stems:
+        _discard_file(stem)
+    return final_path
+
+
+def _chunk_windows(duration, chunk_seconds):
+    """Tile ``duration`` into ``(start, length)`` windows; a short tail is folded into the last one."""
+    windows = []
+    start = 0.0
+    while start < duration:
+        windows.append((start, min(chunk_seconds, duration - start)))
+        start += chunk_seconds
+    if len(windows) > 1 and windows[-1][1] < CHUNK_MIN_TAIL_SECONDS:
+        tail = windows.pop()
+        last_start, last_length = windows[-1]
+        windows[-1] = (last_start, last_length + tail[1])
+    return windows
+
+
+def _chunk_stem_path(job, index):
+    """Return the resumable path of one finished chunk stem inside the work directory."""
+    return os.path.join(job["work_dir"], f"{job['base_name']}_sepchunk_{index:03d}.wav")
+
+
+def _separate_chunk(job, index, total, window):
+    """Return the 16 kHz mono vocal stem for one window, reusing one finished by an earlier run."""
+    start, length = window
+    stem_path = _chunk_stem_path(job, index)
+    if _is_finished_chunk(stem_path, length):
+        log(f"  [Sep] Chunk {index + 1}/{total}: resuming finished stem.")
+        return stem_path
+    log(f"  [Sep] Chunk {index + 1}/{total}: {utils.format_timestamp(start)} -> {utils.format_timestamp(start + length)}")
+    pad_before = min(CHUNK_PAD_SECONDS, start)
+    chunk_input = os.path.join(job["scratch_dir"], f"chunk_{index:03d}.wav")
+    try:
+        ffmpeg_utils.write_audio_window(job["audio_path"], chunk_input, start - pad_before, length + pad_before + CHUNK_PAD_SECONDS)
+        raw_stem = _separate_chunk_input(job, chunk_input, index)
+        _write_chunk_stem(raw_stem, stem_path, pad_before, length, job["work_dir"])
+    finally:
+        _discard_file(chunk_input)
+    return stem_path
+
+
+def _separate_chunk_input(job, chunk_input, index):
+    """Run the separator on one padded chunk and return its raw vocal stem inside the scratch directory."""
+    output_files = job["separator"].separate(chunk_input)
+    raw_stem = _process_separator_outputs(output_files, job["scratch_dir"], job["scratch_dir"])
+    if raw_stem is None or not os.path.isfile(raw_stem):
+        raise RuntimeError(f"Separator produced no vocal stem for chunk {index + 1}")
+    return raw_stem
+
+
+def _write_chunk_stem(raw_stem, stem_path, pad_before, length, work_dir):
+    """Trim the padding off a raw chunk stem and land it atomically as 16 kHz mono."""
+    reservation = reserve_temp_path(stem_path, scratch_dir=work_dir)
+    try:
+        ffmpeg_utils.write_audio_window(raw_stem, reservation.path, pad_before, length, mono_16k=True)
+        promote_temp_path(reservation, stem_path)
+    except BaseException:
+        discard_temp_path(reservation)
+        raise
+    finally:
+        _discard_file(raw_stem)
+
+
+def _is_finished_chunk(stem_path, length):
+    """True when a chunk stem from an earlier run exists as a regular file of the expected length."""
+    if os.path.islink(stem_path) or not os.path.isfile(stem_path):
+        return False
+    return abs(_probe_duration(stem_path) - length) <= CHUNK_DURATION_TOLERANCE_SECONDS
+
+
+def _join_chunk_stems(stems, final_path, job):
+    """Concatenate the chunk stems into the resumable vocal track, atomically."""
+    list_path = os.path.join(job["scratch_dir"], "stems.list")
+    reservation = reserve_temp_path(final_path, scratch_dir=job["work_dir"])
+    try:
+        ffmpeg_utils.concat_audio_files(stems, reservation.path, list_path)
+        promote_temp_path(reservation, final_path)
+    except BaseException:
+        discard_temp_path(reservation)
+        raise
+    finally:
+        _discard_file(list_path)
 
 
 def _filter_hallucinations(segments, hallucination_phrases):

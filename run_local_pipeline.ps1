@@ -402,39 +402,13 @@ try {
 
     Invoke-Step "Run dependency vulnerability scan (pip-audit)" {
         $auditRequirementsPath = [System.IO.Path]::GetTempFileName()
-        $lockParserPath = [System.IO.Path]::GetTempFileName()
-        $lockParser = @"
-import sys
-import tomllib
-from pathlib import Path
-
-lock_data = tomllib.loads(Path("poetry.lock").read_text(encoding="utf-8"))
-packages = lock_data.get("package", [])
-selected_by_name = {}
-for package in packages:
-    groups = set(package.get("groups", []))
-    if not groups.intersection({"main", "ml"}):
-        continue
-    name = package.get("name")
-    version = package.get("version")
-    if not name or not version:
-        continue
-    # Keep one pinned version per package name for pip-audit requirements input.
-    if name not in selected_by_name:
-        selected_by_name[name] = version
-
-lines = [f"{name}=={version}" for name, version in sorted(selected_by_name.items())]
-Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
-"@
         try {
-            Set-Content -Path $lockParserPath -Value $lockParser -Encoding UTF8
-            Invoke-CheckedCommand $VenvPy @($lockParserPath, $auditRequirementsPath)
+            # tests/tools/lock_requirements.py evaluates each lock entry's environment markers, so
+            # only the versions this platform installs are audited (not, e.g., the PyPy-only torch).
+            Invoke-CheckedCommand $VenvPy @("tests/tools/lock_requirements.py", $auditRequirementsPath)
             Invoke-PoetryCommand @("run", "pip-audit", "--requirement", $auditRequirementsPath, "--no-deps", "--disable-pip")
         }
         finally {
-            if (Test-Path $lockParserPath) {
-                Remove-Item $lockParserPath -Force
-            }
             if (Test-Path $auditRequirementsPath) {
                 Remove-Item $auditRequirementsPath -Force
             }
@@ -564,11 +538,13 @@ Path(sys.argv[1]).write_text("\n".join(lines) + "\n", encoding="utf-8")
         $coverageFiles = @(
             "auto_subtitle.py",
             "modules/configuration/config.py",
+            "modules/configuration/version.py",
             "modules/pipeline/isolated_translator.py",
             "modules/models.py",
             "modules/pipeline/transcription.py",
             "modules/pipeline/translation.py",
-            "modules/utils.py"
+            "modules/utils.py",
+            "modules/workdir.py"
         )
 
         foreach ($coverageFile in $coverageFiles) {

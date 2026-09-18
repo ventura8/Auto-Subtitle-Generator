@@ -159,14 +159,23 @@ def _load_optional_torch():
     return optional_imports.load_optional_torch()
 
 
+def _is_negative_device_id(entry):
+    """Return True for a CUDA_VISIBLE_DEVICES entry such as ``-1`` that hides devices."""
+    entry = entry.strip()
+    return entry.startswith("-") and entry[1:].isdigit()
+
+
 def is_cuda_explicitly_disabled():
     """Return True when the environment opts out of CUDA entirely.
 
-    An empty (or whitespace-only) CUDA_VISIBLE_DEVICES is the standard CPU-only
-    opt-out, used by the --cpu flag and by CPU-only test subprocesses.
+    An empty (or whitespace-only) CUDA_VISIBLE_DEVICES, or one listing only
+    negative ids (``-1``, set by the --cpu flag), hides every device.
     """
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-    return visible_devices is not None and not visible_devices.strip()
+    if visible_devices is None:
+        return False
+    entries = [entry for entry in visible_devices.split(",") if entry.strip()]
+    return all(_is_negative_device_id(entry) for entry in entries)
 
 
 def prepare_nvidia_paths():

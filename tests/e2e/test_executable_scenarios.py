@@ -105,7 +105,7 @@ class ExecutableScenarioTests(unittest.TestCase):
         cmd = self.executable + args
         env = os.environ.copy()
         env["PYTHONPATH"] = REPO_ROOT
-        env["CUDA_VISIBLE_DEVICES"] = ""
+        env["CUDA_VISIBLE_DEVICES"] = "-1"
         return subprocess.run(
             cmd,
             cwd=cwd,

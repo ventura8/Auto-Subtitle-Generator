@@ -11,7 +11,7 @@ from typing import Any
 
 from modules import utils
 from modules.configuration import config
-from modules.models import OPTIMIZER, ModelManager
+from modules.models import OPTIMIZER, ModelManager, apply_dynamic_translation_batch
 from modules.runtime.optional_imports import load_optional_torch
 from modules.utils import log
 
@@ -114,8 +114,9 @@ def _build_worker_runtime(batch_size):
     if not config.load_config(OPTIMIZER, log):
         raise RuntimeError("Failed to load configuration in isolated worker")
     OPTIMIZER.detect_hardware(verbose=False)
-    resolved_batch_size = batch_size if batch_size > 0 else _resolve_translation_batch_size()
     translator = _resolve_worker_translator(ModelManager())
+    _tune_batch_for_free_vram(translator)
+    resolved_batch_size = batch_size if batch_size > 0 else _resolve_translation_batch_size()
     return resolved_batch_size, translator
 
 
@@ -124,6 +125,14 @@ def _resolve_translation_batch_size():
     if config.TRANSLATOR_ENGINE == "translategemma":
         return int(OPTIMIZER.config.get("translategemma_batch", OPTIMIZER.config["nllb_batch"]))
     return int(OPTIMIZER.config["nllb_batch"])
+
+
+def _tune_batch_for_free_vram(translator):
+    """Refine the NLLB batch from the VRAM free once the model is resident."""
+    if config.TRANSLATOR_ENGINE != "nllb":
+        return
+    model_id = getattr(translator, "model_id", config.NLLB_MODEL_ID)
+    apply_dynamic_translation_batch(model_id, lambda message: log(message, "INFO"))
 
 
 def _resolve_worker_translator(manager):
@@ -247,41 +256,45 @@ def _run_worker_batches(data, translator, batch_size, job_config):
 
 
 def _run_job_batches(data, translator, job_config):
-    """Process all manifest-driven translation batches for a job."""
+    """Process all manifest-driven translation batches for a job.
+
+    Cues are batched in order of text length and the results put back in cue
+    order. Every item in a batch is padded to the longest one and beam search
+    runs until the longest finishes, so mixing a five-word cue with a
+    forty-word one wastes most of the batch; neighbours of similar length keep
+    the padding small and let larger batches actually pay off.
+    """
     batch_texts = [item["text"] for item in data]
     batch_size = _resolve_translation_batch_size()
-    translations = []
-    total_dur = data[-1]["end"] if data else 0
+    order = sorted(range(len(batch_texts)), key=lambda index: len(batch_texts[index]))
+    translations = [""] * len(batch_texts)
     start_real = time.time()
 
-    for batch_start in range(0, len(batch_texts), batch_size):
-        chunk = batch_texts[batch_start : batch_start + batch_size]
-        translations.extend(
-            _translate_chunk_with_oom_fallback(
-                translator,
-                chunk,
-                job_config["src_code"],
-                job_config["tgt_code"],
-            )
-        )
-        current_idx = min(batch_start + batch_size, len(data))
-        current_audio_time = data[current_idx - 1]["end"]
-        speed, eta, timestamp = _build_progress_values(
-            current_audio_time,
-            total_dur,
-            start_real,
-        )
-        utils.print_progress_bar(
-            current_audio_time,
-            total_dur,
-            prefix=job_config["prefix_str"],
-            timestamp_str=timestamp,
-            speed=speed,
-            eta=eta,
-        )
-        _cleanup_intermediate_memory(batch_start + batch_size < len(batch_texts))
+    for batch_start in range(0, len(order), batch_size):
+        indices = order[batch_start : batch_start + batch_size]
+        translated = _translate_batch_checked(translator, [batch_texts[index] for index in indices], job_config)
+        for index, text in zip(indices, translated):
+            translations[index] = text
+        _print_job_progress(job_config["prefix_str"], min(batch_start + batch_size, len(order)), len(order), start_real)
+        _cleanup_intermediate_memory(batch_start + batch_size < len(order))
 
     return translations
+
+
+def _translate_batch_checked(translator, chunk, job_config):
+    """Translate one batch and insist on exactly one result per input."""
+    translated = _translate_chunk_with_oom_fallback(translator, chunk, job_config["src_code"], job_config["tgt_code"])
+    if len(translated) != len(chunk):
+        raise RuntimeError(f"Translator returned {len(translated)} results for a batch of {len(chunk)}")
+    return translated
+
+
+def _print_job_progress(prefix, done, total, start_real):
+    """Report translation progress by cue count (cues are not processed in time order)."""
+    elapsed = time.time() - start_real
+    speed = done / elapsed if elapsed > 0 else 0
+    eta = (total - done) / speed if speed > 0 else 0
+    utils.print_progress_bar(done, total, prefix=prefix, timestamp_str=f"{done}/{total} cues", speed=speed, eta=eta)
 
 
 def run_translation_worker(*worker_args):
@@ -381,15 +394,52 @@ def _save_optional_reused_pivot_english_output(pivot_job, pivot_data):
 
 
 def _reuse_existing_pivot_output_if_available(pivot_job):
-    """Reuse a previously generated pivot output file when present."""
+    """Reuse a previously generated pivot output file when it matches the current input.
+
+    The pivot file survives failed or interrupted runs so it can be resumed.
+    A leftover whose cue timings no longer line up with the current segments
+    (for example after re-transcription) is discarded instead of reused.
+    """
     output_path = pivot_job["output"]
     if not os.path.exists(output_path):
         return False
 
-    pivot_data = _load_segments(output_path)
+    pivot_data = _load_pivot_output_matching_input(output_path, pivot_job["input"])
+    if pivot_data is None:
+        log("[Isolation] Existing pivot output does not match current segments. Discarding it.", "WARNING")
+        _discard_temp_file(output_path)
+        return False
     log("[Isolation] Reusing existing pivot output. Skipping pivot pass.")
     _save_optional_reused_pivot_english_output(pivot_job, pivot_data)
     return True
+
+
+def _load_pivot_output_matching_input(output_path, input_path):
+    """Return the stored pivot data when its timings match the input segments, else None."""
+    try:
+        pivot_data = _load_segments(output_path)
+        source_data = _load_segments(input_path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return pivot_data if _pivot_matches_source(pivot_data, source_data) else None
+
+
+def _pivot_matches_source(pivot_data, source_data):
+    """Return True when every stored pivot cue lines up with its source cue."""
+    if not isinstance(pivot_data, list) or not isinstance(source_data, list):
+        return False
+    if len(pivot_data) != len(source_data):
+        return False
+    return all(_pivot_item_matches(pivot_item, source_item) for pivot_item, source_item in zip(pivot_data, source_data))
+
+
+def _pivot_item_matches(pivot_item, source_item):
+    """Return True when a stored pivot cue carries text and the same timings as its source cue."""
+    if not isinstance(pivot_item, dict) or not isinstance(source_item, dict):
+        return False
+    if not isinstance(pivot_item.get("text"), str):
+        return False
+    return pivot_item.get("start") == source_item.get("start") and pivot_item.get("end") == source_item.get("end")
 
 
 def _run_pivot_phase(pivot_job, translator):
@@ -481,6 +531,7 @@ def run_batch_translation_worker(manifest_path):
 
     manager = ModelManager()
     translator = _resolve_worker_translator(manager)
+    _tune_batch_for_free_vram(translator)
 
     batch_failure = _run_batch_jobs_with_failure_capture(pivot_job, jobs, translator)
 

@@ -53,6 +53,10 @@ Create two release docs under `docs/releases/`:
    - Concise public-facing body used verbatim as the GitHub Release body.
    - Naming convention: `v{N.N.N}_github_description.md` (underscore, no
      hyphen).
+   - **Do not start the file with an `#` H1 title.** `release.yml` pins the
+     release title to the bare tag (`name: ${{ github.ref_name }}`), so the
+     page already reads `vX.Y.Z`; a leading H1 renders as a second, oversized
+     title. Open with the summary paragraph and use `##` for sections.
    - If this file exists when the `v{version}` tag is pushed, the
      `.github/workflows/release.yml` workflow picks it up automatically and
      uses it as the release body. If absent, the workflow falls back to

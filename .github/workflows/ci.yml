@@ -126,7 +126,10 @@ jobs:
 
       - name: Run dependency vulnerability scan (pip-audit)
         run: |
-          poetry run pip-audit
+          # Audit the lock for this platform (main + ml groups) rather than the CI venv,
+          # which is installed without the ml group and so never contained torch.
+          poetry run python tests/tools/lock_requirements.py audit-requirements.txt
+          poetry run pip-audit --requirement audit-requirements.txt --no-deps --disable-pip
 
       - name: Run Radon Complexity (A-grade enforced)
         run: |

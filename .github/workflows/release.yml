@@ -136,10 +136,14 @@ jobs:
       - if: steps.notes.outputs.use_body == 'true'
         uses: softprops/action-gh-release@v3.0.3
         with:
+          # Keep the release title the bare tag (e.g. "v1.2.3"); the body
+          # carries the detail and must not repeat a title heading.
+          name: ${{ github.ref_name }}
           body_path: docs/releases/${{ github.ref_name }}_github_description.md
           files: release-assets/*
       - if: steps.notes.outputs.use_body == 'false'
         uses: softprops/action-gh-release@v3.0.3
         with:
+          name: ${{ github.ref_name }}
           generate_release_notes: true
           files: release-assets/*

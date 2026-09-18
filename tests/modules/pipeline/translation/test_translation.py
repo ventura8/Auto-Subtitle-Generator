@@ -1,6 +1,12 @@
 import json
+import os
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
+
+
+def _fake_work_dir(folder, base_name):
+    """Return the work-directory path without touching the filesystem."""
+    return os.path.join(folder, f"{base_name}.asg-temp")
 
 
 class TestTranslation(unittest.TestCase):
@@ -29,6 +35,16 @@ class TestTranslation(unittest.TestCase):
         missing, skipped = translation._identify_missing_targets("en", "folder", "base")
         self.assertEqual(len(missing), 0)
         self.assertEqual(skipped, 1)
+
+    @patch("modules.pipeline.translation.utils.validate_srt", return_value=True)
+    @patch("os.path.exists", return_value=True)
+    def test_identify_missing_targets_redoes_everything_when_outputs_are_untrusted(self, mock_exists, mock_validate):
+        # The SRT files beside the video were made for a different input of the same name.
+        config.TARGET_LANGUAGES = {"es": {"code": "spa", "label": "Esp"}, "fr": {"code": "fra", "label": "Fr"}}
+        missing, skipped = translation._identify_missing_targets("en", "folder", "base", reuse_outputs=False)
+        self.assertEqual(missing, ["es", "fr"])
+        self.assertEqual(skipped, 0)
+        mock_validate.assert_not_called()
 
     @patch("modules.pipeline.translation.subprocess.Popen")
     @patch("modules.pipeline.translation.utils.save_translated_srt")
@@ -97,10 +113,11 @@ class TestTranslation(unittest.TestCase):
 
         with (
             patch("builtins.open", m_open),
+            patch("modules.workdir.ensure_work_dir", side_effect=_fake_work_dir),
             patch("modules.pipeline.translation.atomic_text_writer", mock_open()),
             patch("modules.pipeline.translation.subprocess.TimeoutExpired", FakeTimeoutExpired),
         ):
-            translation.translate_segments(segments, "en", MagicMock(), "folder", "base")
+            translation.translate_segments(segments, "en", MagicMock(), {"folder": "folder", "base_name": "base"})
 
         # Should have called Popen (worker start)
         mock_popen.assert_called()

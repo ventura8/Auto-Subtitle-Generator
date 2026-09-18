@@ -4,10 +4,23 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 
+def _fake_work_dir(folder, base_name):
+    """Return the work-directory path without touching the filesystem."""
+    return os.path.join(folder, f"{base_name}.asg-temp")
+
+
 class TestCoverageAutoSubtitle(unittest.TestCase):
     def setUp(self):
         global auto_subtitle
         import auto_subtitle
+
+        # These tests use cwd-relative fake videos; never create real work directories.
+        work_dir_patcher = patch("modules.workdir.ensure_work_dir", side_effect=_fake_work_dir)
+        work_dir_patcher.start()
+        self.addCleanup(work_dir_patcher.stop)
+        purge_patcher = patch("modules.workdir.purge_work_dir", return_value=True)
+        purge_patcher.start()
+        self.addCleanup(purge_patcher.stop)
 
         # Reset torch handle per test while restoring original value on cleanup.
         torch_patcher = patch("auto_subtitle.torch", None, create=True)
