@@ -14,11 +14,14 @@ FFmpeg the open descriptor rather than the name:
   exact open file. ``/dev/fd/N`` may share the file offset with our descriptor
   (macOS ``dup`` semantics), so ``rewind_inputs`` runs right before every
   child is spawned.
-* Windows: there is no ``O_NOFOLLOW`` and no fd passing. Each component below
-  the root is checked for links/junctions, the file is opened after an
-  ``lstat`` symlink check and ``fstat`` is compared against it; the open handle
-  then denies rename/delete of the file for as long as it is held, so the
-  pathname FFmpeg opens cannot be re-pointed while processing runs.
+* Windows: there is no ``O_NOFOLLOW`` and no fd passing, and a held file
+  handle pins only the file, not the directory chain FFmpeg would walk by
+  pathname. Each component below the root is checked for links/junctions,
+  the file is opened after an ``lstat`` symlink check and ``fstat`` is
+  compared against it, and the bytes are then copied *from that handle* into
+  a private, randomly named directory beside the input. FFmpeg/FFprobe read
+  the copy, whose location an attacker cannot predict or re-point without
+  making the run fail outright. The copy is removed when the binding closes.
 
 The binding is active for the ``with`` block and looked up by pathname via
 ``media_source``/``stat_input`` so the pipeline's string-based call chain stays
@@ -28,18 +31,23 @@ component is protected and the parent directory is opened by pathname.
 
 import contextlib
 import os
+import shutil
 import stat
 import sys
+import tempfile
 
 _IS_POSIX = sys.platform != "win32"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _FILE_FLAGS = os.O_RDONLY | _NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
 _DIR_FD_SUPPORTED = _IS_POSIX and os.open in os.supports_dir_fd
+_PRIVATE_COPY_PREFIX = ".asg-input-"
 
 _active_bindings: dict[str, "BoundInput"] = {}
-# Single slot: the user-selected input directory, or None when no root is registered.
-_trusted_root: list[str | None] = [None]
+# Single slot: (pathname form of the selected input directory, its resolved form) or None.
+# Collected paths are matched against the pathname form; the resolved form, taken at
+# selection time, is what gets opened, so a link planted at the root later is refused.
+_trusted_root: list[tuple[str, str] | None] = [None]
 
 
 class InputRefusedError(OSError):
@@ -49,30 +57,51 @@ class InputRefusedError(OSError):
 class BoundInput:
     """An open descriptor for an input video plus the arguments FFmpeg needs to read it."""
 
-    def __init__(self, path, fd, owns_fd=True):
+    def __init__(self, path, fd):
         self.path = path
         self.fd = fd
-        self._owns_fd = owns_fd
+        self._private_copy: str | None = None
 
     def __fspath__(self):
         return self.path
 
     def media_source(self):
         """Return ``(ffmpeg input argument, fds to inherit)`` for a child process."""
-        if not _IS_POSIX:
-            return self.path, ()
-        return f"/dev/fd/{self.fd}", (self.fd,)
+        if _IS_POSIX:
+            return f"/dev/fd/{self.fd}", (self.fd,)
+        return self._private_copy_path(), ()
+
+    def _private_copy_path(self):
+        """Copy the bound bytes into a private directory once and return the copy's path."""
+        if self._private_copy is None:
+            copy_dir = tempfile.mkdtemp(prefix=_PRIVATE_COPY_PREFIX, dir=os.path.dirname(self.path))
+            self._private_copy = os.path.join(copy_dir, os.path.basename(self.path))
+            os.lseek(self.fd, 0, os.SEEK_SET)
+            with os.fdopen(os.dup(self.fd), "rb") as source, open(self._private_copy, "xb") as target:
+                shutil.copyfileobj(source, target)
+        return self._private_copy
 
     def close(self):
-        """Close the descriptor if this binding owns it."""
-        if self._owns_fd and self.fd is not None:
+        """Close the descriptor and remove the private copy, if one was made."""
+        if self.fd is not None:
             os.close(self.fd)
         self.fd = None
+        if self._private_copy is not None:
+            # Best effort by pathname: if the directory chain was swapped mid-run the copy
+            # (our own bytes, nothing foreign) is left behind in the attacker-controlled folder.
+            with contextlib.suppress(OSError):
+                os.remove(self._private_copy)
+                os.rmdir(os.path.dirname(self._private_copy))
+            self._private_copy = None
 
 
 def set_input_root(path):
     """Record the user-selected input directory; everything below it is opened without following links."""
-    _trusted_root[0] = os.path.abspath(os.fspath(path)) if path else None
+    if not path:
+        _trusted_root[0] = None
+        return
+    root = os.path.abspath(os.fspath(path))
+    _trusted_root[0] = (root, os.path.realpath(root))
 
 
 def is_link(path):
@@ -82,11 +111,11 @@ def is_link(path):
 
 def _split_trusted(path):
     """Return ``(trusted directory, [components to open without following links])`` for ``path``."""
-    root = _trusted_root[0]
-    if root is not None:
-        rel = os.path.relpath(path, root)
-        if rel != os.curdir and not rel.startswith(os.pardir):
-            return root, rel.split(os.sep)
+    trusted = _trusted_root[0]
+    if trusted is not None:
+        root, resolved_root = trusted
+        if path != root and os.path.commonpath([path, root]) == root:
+            return resolved_root, os.path.relpath(path, root).split(os.sep)
     return os.path.dirname(path) or os.curdir, [os.path.basename(path)]
 
 
@@ -99,7 +128,7 @@ def _refuse(fd, message):
 def _open_regular_posix(path):
     """Open ``path`` component by component below the trusted directory, never following a link."""
     trusted_dir, components = _split_trusted(path)
-    dir_fd = os.open(trusted_dir, _DIR_FLAGS)
+    dir_fd = _open_trusted_dir(trusted_dir, path)
     try:
         for name in components[:-1]:
             next_fd = _open_component(name, dir_fd, path)
@@ -113,6 +142,14 @@ def _open_regular_posix(path):
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         _refuse(fd, f"Refusing input {path}: not a regular file")
     return fd
+
+
+def _open_trusted_dir(trusted_dir, path):
+    """Open the trusted directory itself without following a link planted at its name."""
+    try:
+        return os.open(trusted_dir, _DIR_FLAGS | _NOFOLLOW)
+    except OSError as e:
+        raise InputRefusedError(f"Refusing input {path}: cannot open {trusted_dir} without following links") from e
 
 
 def _open_component(name, dir_fd, path):
@@ -141,6 +178,8 @@ def _open_regular_fallback(path):
 def _reject_linked_components(path):
     """Refuse when any directory between the trusted directory and ``path`` is a link or junction."""
     current, components = _split_trusted(path)
+    if is_link(current):
+        _refuse(None, f"Refusing input {path}: {current} is a link")
     for name in components[:-1]:
         current = os.path.join(current, name)
         if is_link(current):
@@ -169,7 +208,8 @@ def bind_input(path, strict=True):
     key = os.path.abspath(os.fspath(path))
     outer = _active_bindings.get(key)
     if outer is not None:
-        yield BoundInput(outer.path, outer.fd, owns_fd=False)
+        # Share the outer binding (and any private copy it made); only the outer block closes it.
+        yield outer
         return
     try:
         bound = open_bound_input(key)

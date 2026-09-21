@@ -80,8 +80,7 @@ class InputBindingTests(unittest.TestCase):
     def test_nested_bind_reuses_outer_descriptor(self):
         with bind_input(self.video) as outer:
             with bind_input(self.video) as inner:
-                self.assertEqual(inner.fd, outer.fd)
-                self.assertFalse(inner._owns_fd)
+                self.assertIs(inner, outer)
             # Inner exit must not close the outer descriptor.
             os.fstat(outer.fd)
             self.assertEqual(media_source(self.video)[0], media_source(outer.path)[0])
@@ -154,6 +153,68 @@ class InputBindingTests(unittest.TestCase):
         self.assertFalse(input_binding.is_link(self.video))
         with patch("os.path.islink", return_value=False), patch("os.path.isjunction", return_value=True, create=True):
             self.assertTrue(input_binding.is_link(self.folder))
+
+    def test_dotdot_prefixed_child_name_stays_inside_the_root(self):
+        root = os.path.join(self.folder, "drop")
+        os.makedirs(os.path.join(root, "..clips"))
+        clip = os.path.join(root, "..clips", "movie.mp4")
+        with open(clip, "wb") as handle:
+            handle.write(b"original")
+        set_input_root(root)
+        self.assertEqual(input_binding._split_trusted(clip), (os.path.realpath(root), ["..clips", "movie.mp4"]))
+        with bind_input(clip) as bound:
+            self.assertEqual(os.read(bound.fd, 8), b"original")
+
+    def test_root_replaced_by_a_link_after_selection_is_refused(self):
+        root = os.path.join(self.folder, "drop")
+        os.mkdir(root)
+        clip = os.path.join(root, "movie.mp4")
+        with open(clip, "wb") as handle:
+            handle.write(b"original")
+        set_input_root(root)
+        os.rename(root, root + ".bak")
+        victim_dir = os.path.join(self.folder, "victim")
+        os.mkdir(victim_dir)
+        os.rename(self.secret, os.path.join(victim_dir, "movie.mp4"))
+        self._symlink_or_skip(victim_dir, root)
+        self.assertTrue(os.path.isfile(clip))
+        with self.assertRaises(InputRefusedError):
+            with bind_input(clip):
+                pass
+        with self.assertRaises(InputRefusedError):
+            input_binding._open_regular_fallback(clip)
+
+    def test_selected_root_that_is_itself_a_symlink_is_honoured(self):
+        # A user may legitimately drag a symlinked folder: the target is resolved at selection time.
+        real_root = os.path.join(self.folder, "real-root")
+        os.mkdir(real_root)
+        clip_real = os.path.join(real_root, "movie.mp4")
+        with open(clip_real, "wb") as handle:
+            handle.write(b"original")
+        linked_root = os.path.join(self.folder, "linked-root")
+        self._symlink_or_skip(real_root, linked_root)
+        set_input_root(linked_root)
+        with bind_input(os.path.join(linked_root, "movie.mp4")) as bound:
+            self.assertEqual(os.read(bound.fd, 8), b"original")
+
+    def test_fallback_platform_hands_ffmpeg_a_private_copy(self):
+        with patch.object(input_binding, "_IS_POSIX", False), patch.object(input_binding, "_DIR_FD_SUPPORTED", False):
+            with bind_input(self.video) as bound:
+                source, pass_fds = media_source(self.video)
+                self.assertEqual(pass_fds, ())
+                self.assertNotEqual(source, self.video)
+                self.assertTrue(os.path.basename(os.path.dirname(source)).startswith(input_binding._PRIVATE_COPY_PREFIX))
+                self.assertEqual(os.path.dirname(os.path.dirname(source)), self.folder)
+                with open(source, "rb") as handle:
+                    self.assertEqual(handle.read(), b"original")
+                # Repeated lookups reuse the same copy; a nested bind shares it.
+                self.assertEqual(media_source(self.video)[0], source)
+                with bind_input(self.video) as inner:
+                    self.assertEqual(inner.media_source()[0], source)
+                self.assertTrue(os.path.exists(source))
+                copy_dir = os.path.dirname(source)
+            self.assertFalse(os.path.exists(copy_dir))
+            self.assertIsNone(bound.fd)
 
 
 if __name__ == "__main__":

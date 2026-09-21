@@ -585,11 +585,12 @@ def _process_batch_video(video_path, index, total_files, process_context):
     start_time = time.time()
     # Keep one descriptor bound for the whole item so the summary probe reads the same
     # file as the pipeline; an unbindable input is reported by process_video itself.
-    with bind_input(video_path, strict=False):
+    with bind_input(video_path, strict=False) as bound:
         process_result = process_video(video_path, model_mgr, forced_lang, forced_prompt)
         status = utils.classify_batch_result(process_result)
         elapsed_seconds = time.time() - start_time
-        summary_message, media_seconds, item_stats = utils.build_file_summary(video_path, elapsed_seconds, status)
+        # A rejected input is never probed, not even for the summary line.
+        summary_message, media_seconds, item_stats = utils.build_file_summary(video_path, elapsed_seconds, status, probe=bound is not None)
     log(summary_message, "INFO")
     return status, media_seconds, item_stats
 

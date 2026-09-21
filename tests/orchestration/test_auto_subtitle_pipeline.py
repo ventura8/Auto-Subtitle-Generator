@@ -30,7 +30,7 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
 
         # process_video binds the input to an open descriptor; these tests use paths that
         # do not exist on disk, so stub the binding (input_binding has its own tests).
-        bind_patcher = patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext())
+        bind_patcher = patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext(MagicMock(name="bound")))
         bind_patcher.start()
         self.addCleanup(bind_patcher.stop)
 
@@ -491,6 +491,18 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             self.assertTrue(any("Total processing speed: 2.00x realtime" in str(call.args[0]) for call in mock_log.call_args_list))
             self.assertTrue(any("Media duration: 00:02:00" in str(call.args[0]) for call in mock_log.call_args_list))
             self.assertTrue(any("Elapsed: 00:01:00" in str(call.args[0]) for call in mock_log.call_args_list))
+
+    def test_process_video_batch_never_probes_an_input_whose_binding_was_refused(self):
+        with (
+            patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext(None)),
+            patch("auto_subtitle.process_video", return_value=(None, None, None)),
+            patch("modules.runtime.batch_summary.get_audio_duration") as mock_probe,
+            patch("auto_subtitle.log") as mock_log,
+        ):
+            auto_subtitle.process_video_batch(["planted.mp4"], MagicMock(), None, None)
+
+        mock_probe.assert_not_called()
+        self.assertTrue(any("Media duration: N/A" in str(call.args[0]) for call in mock_log.call_args_list))
 
     def test_process_video_batch_logs_batch_summary_for_multiple_files(self):
         with (
