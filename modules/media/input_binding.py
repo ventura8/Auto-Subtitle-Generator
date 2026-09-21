@@ -29,7 +29,7 @@ _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXE
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
 _DIR_FD_SUPPORTED = _IS_POSIX and os.open in os.supports_dir_fd
 
-_active_bindings = {}
+_active_bindings: dict[str, "BoundInput"] = {}
 
 
 class InputRefusedError(OSError):
