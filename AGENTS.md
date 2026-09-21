@@ -14,8 +14,9 @@ child processes for translation, and `audio-separator` for vocal isolation.
 - **Core Orchestrator**: `auto_subtitle.py`.
 - **Modular Subpackages**: `modules/` (`configuration/`, `media/`, `pipeline/`,
   `runtime/`, `subtitles/`), plus `modules/safe_io.py` for symlink-safe
-  sidecar/temp writes and `modules/workdir.py` for the per-video work
-  directory that holds every temporary artifact.
+  sidecar/temp writes, `modules/media/input_binding.py` for descriptor-bound
+  input reads, and `modules/workdir.py` for the per-video work directory that
+  holds every temporary artifact.
 
 ______________________________________________________________________
 
@@ -178,6 +179,32 @@ ______________________________________________________________________
      A resumed vocal stem must probe to the same duration as `*_temp.wav`;
      a truncated stem is discarded. A resumed `*.pivot_pivoted.json` must
      match the current segment timings; a stale one is discarded.
+1. **Descriptor-Bound Input Reads**:
+   - The input folder is untrusted for *reads* as well as writes.
+     `collect_video_files` (`modules/media/file_utils.py`) skips a top-level
+     symlink or junction (`input_binding.is_link`), never descends into a
+     linked directory, and accepts only regular files whose `realpath` stays
+     inside the selected folder. Rejections are logged at `WARNING`.
+   - A pathname check is not enough: model loading leaves a window in which
+     the validated file or a parent directory can be swapped for a link.
+     `process_video` therefore holds `input_binding.bind_input(video_path)`
+     around the whole pipeline (and `_process_batch_video` around the batch
+     item; nested binds share the outer one). `get_input_files` registers the
+     selected folder with `set_input_root`; on POSIX the root and every
+     component below it are opened relative to the previous descriptor with
+     `O_NOFOLLOW`, `fstat` must report a regular file, and FFprobe/FFmpeg
+     receive `/dev/fd/N` via `pass_fds`. `rewind_inputs` runs immediately
+     before **every** spawn (`/dev/fd` may share the offset on macOS). On
+     Windows the bytes are copied from the validated handle into
+     `tempfile.mkdtemp()` under `%TEMP%` — never beside the input, whose
+     owner could re-create the path under a swapped parent — and FFmpeg reads
+     the copy.
+   - **Never** hand FFprobe/FFmpeg the raw `video_path`: resolve it through
+     `input_binding.media_source(path)` and pass the returned fds on. The
+     resume decision (`workdir.bind_work_dir_to_source`) is made *after*
+     binding and `source_stamp` reads through `stat_input`, recording device,
+     inode, size and mtime. An input whose binding was refused is never
+     probed, not even for the batch summary (`build_file_summary(probe=False)`).
 1. **Long Inputs Are Chunked Where Memory Demands It**:
    - Audio-Separator loads the whole input into RAM at 44.1 kHz stereo
      float32 and writes a stem of the same shape, so inputs longer than
