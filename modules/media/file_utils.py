@@ -92,13 +92,14 @@ def _collect_from_directory(path, supported_extensions):
         # os.walk never descends into symlinked directories, but drop them so
         # a later pass can't be tricked into treating them as inputs either.
         dir_names[:] = [name for name in dir_names if not os.path.islink(os.path.join(root, name))]
-        for file_name in filenames:
-            if not _is_supported_video_file(file_name, supported_extensions):
-                continue
-            file_path = os.path.abspath(os.path.join(root, file_name))
-            if _is_safe_input_file(file_path, input_root):
-                files.append(file_path)
+        files.extend(_collect_safe_files(root, filenames, supported_extensions, input_root))
     return files
+
+
+def _collect_safe_files(root, filenames, supported_extensions, input_root):
+    """Return absolute paths of supported, symlink-free files from one walked directory."""
+    candidates = (os.path.abspath(os.path.join(root, name)) for name in filenames if _is_supported_video_file(name, supported_extensions))
+    return [file_path for file_path in candidates if _is_safe_input_file(file_path, input_root)]
 
 
 def _is_safe_input_file(file_path, input_root):
