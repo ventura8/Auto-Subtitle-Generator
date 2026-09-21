@@ -25,6 +25,7 @@ import time
 from modules import models, utils
 from modules.configuration import config
 from modules.media.ffmpeg_utils import build_primary_media_metadata_args
+from modules.media.input_binding import bind_input, media_source
 from modules.models import OPTIMIZER, ModelManager
 from modules.pipeline.transcription import transcribe_video_audio
 from modules.pipeline.translation import translate_segments
@@ -265,9 +266,10 @@ def embed_subtitles(video_path, srt_files, src_lang=None):
     temp_output = None
     try:
         temp_output = reserve_temp_path(output_path)
-        cmd = _build_embed_command(video_path, srt_files, normalized_ext, temp_output.path, src_lang)
+        source, pass_fds = media_source(video_path)
+        cmd = _build_embed_command(source, srt_files, normalized_ext, temp_output.path, src_lang)
         total_dur = utils.get_audio_duration(video_path)
-        utils.run_ffmpeg_progress(cmd, "  [Finalizing] Muxing Video", total_dur)
+        utils.run_ffmpeg_progress(cmd, "  [Finalizing] Muxing Video", total_dur, pass_fds=pass_fds)
         promote_temp_path(temp_output, output_path)
         return output_path
     except (OSError, RuntimeError, ValueError) as e:
@@ -482,7 +484,10 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
             "base_name": base_name,
             "output_path": output_path,
         }
-        return _process_video_pipeline(video_path, model_mgr, pipeline_context)
+        # Hold the input open so FFprobe/FFmpeg read the file validated here, not whatever
+        # the pathname resolves to later.
+        with bind_input(video_path):
+            return _process_video_pipeline(video_path, model_mgr, pipeline_context)
 
     except (RuntimeError, OSError, ValueError, TypeError, KeyError) as e:
         log(f"Processing failed for {video_path}: {e}", "ERROR")
@@ -529,10 +534,13 @@ def _process_batch_video(video_path, index, total_files, process_context):
     model_mgr, forced_lang, forced_prompt = process_context
     print(f"\n[{index + 1}/{total_files}] Processing: {video_path}")
     start_time = time.time()
-    process_result = process_video(video_path, model_mgr, forced_lang, forced_prompt)
-    status = utils.classify_batch_result(process_result)
-    elapsed_seconds = time.time() - start_time
-    summary_message, media_seconds, item_stats = utils.build_file_summary(video_path, elapsed_seconds, status)
+    # Keep one descriptor bound for the whole item so the summary probe reads the same
+    # file as the pipeline; an unbindable input is reported by process_video itself.
+    with bind_input(video_path, strict=False):
+        process_result = process_video(video_path, model_mgr, forced_lang, forced_prompt)
+        status = utils.classify_batch_result(process_result)
+        elapsed_seconds = time.time() - start_time
+        summary_message, media_seconds, item_stats = utils.build_file_summary(video_path, elapsed_seconds, status)
     log(summary_message, "INFO")
     return status, media_seconds, item_stats
 

@@ -1,3 +1,4 @@
+import contextlib
 import os
 import unittest
 from types import SimpleNamespace
@@ -13,6 +14,12 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
         torch_patcher = patch("auto_subtitle.torch", None, create=True)
         torch_patcher.start()
         self.addCleanup(torch_patcher.stop)
+
+        # process_video binds the input to an open descriptor; these tests use paths that
+        # do not exist on disk, so stub the binding (input_binding has its own tests).
+        bind_patcher = patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext())
+        bind_patcher.start()
+        self.addCleanup(bind_patcher.stop)
 
     @patch("auto_subtitle.print_progress_bar")
     @patch("auto_subtitle.log")

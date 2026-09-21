@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import os
 import sys
 import unittest
@@ -19,6 +20,12 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         torch_patcher = patch.object(auto_subtitle, "torch", sys.modules["torch"], create=True)
         torch_patcher.start()
         self.addCleanup(torch_patcher.stop)
+
+        # process_video binds the input to an open descriptor; these tests use paths that
+        # do not exist on disk, so stub the binding (input_binding has its own tests).
+        bind_patcher = patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext())
+        bind_patcher.start()
+        self.addCleanup(bind_patcher.stop)
 
         config_patcher = patch.multiple(
             config,
