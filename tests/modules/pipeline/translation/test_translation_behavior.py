@@ -5,6 +5,11 @@ from unittest.mock import MagicMock, mock_open, patch
 from modules.pipeline import translation
 
 
+def _fake_work_dir(folder, base_name):
+    """Return the work-directory path without touching the filesystem."""
+    return os.path.join(folder, f"{base_name}.asg-temp")
+
+
 class TestCoverageTranslation(unittest.TestCase):
     def test_identify_missing_targets_no_targets(self):
         with patch("modules.configuration.config.TARGET_LANGUAGES", {"en": {"code": "eng_Latn", "label": "English"}}):
@@ -177,7 +182,7 @@ class TestCoverageTranslation(unittest.TestCase):
         ):
             pivot, source_code, input_file = translation._build_pivot_config(worker_context, "input.json", temp_files)
 
-        expected_path = os.path.join("folder", "base.pivot_pivoted.json")
+        expected_path = os.path.join("folder", "base.asg-temp", "base.pivot_pivoted.json")
         self.assertIsNone(pivot)
         self.assertEqual(source_code, "eng_Latn")
         self.assertEqual(input_file, expected_path)
@@ -188,6 +193,23 @@ class TestCoverageTranslation(unittest.TestCase):
             ensure_ascii=False,
         )
         mock_log.assert_any_call("  [Translate] Reusing existing English pivot SRT.", "INFO")
+
+    def test_build_pivot_config_ignores_pivot_srt_when_outputs_are_untrusted(self):
+        worker_context = {
+            "src_lang": "ro",
+            "src_code": "ron_Latn",
+            "folder": "folder",
+            "base_name": "base",
+            "missing_langs": ["en", "fr"],
+            "reuse_outputs": False,
+        }
+        with (
+            patch("modules.configuration.config.TARGET_LANGUAGES", {"en": {"code": "eng_Latn", "label": "English"}}),
+            patch("modules.pipeline.translation._load_reusable_pivot_srt_data") as mock_load,
+        ):
+            pivot, _source_code, _input_file = translation._build_pivot_config(worker_context, "input.json", [])
+        mock_load.assert_not_called()
+        self.assertIsNotNone(pivot)
 
     def test_build_manifest_jobs_skips_en_when_pivot_enabled(self):
         worker_context = {
@@ -279,7 +301,12 @@ class TestCoverageTranslation(unittest.TestCase):
         mock_poll.assert_called_once()
         mock_log.assert_any_call("!!! Translation worker failed with code 2", "ERROR")
         mock_cleanup_worker.assert_called_once_with(mock_proc)
-        mock_cleanup_temp.assert_called_once_with(worker_context["temp_files"])
+        # A failed worker keeps its temp files (pivot output etc.) so the next run can resume.
+        mock_cleanup_temp.assert_not_called()
+        mock_log.assert_any_call(
+            f"  [Temp] Translation did not finish; keeping resumable files in {os.path.join('folder', 'base.asg-temp')}",
+            "WARNING",
+        )
 
     @patch("modules.pipeline.translation.subprocess.Popen")
     @patch("modules.utils.register_subprocess")
@@ -337,7 +364,7 @@ class TestCoverageTranslation(unittest.TestCase):
             patch("modules.configuration.config.get_nllb_code", return_value="eng_Latn"),
             patch("modules.pipeline.translation._execute_translation_workers") as mock_exec,
         ):
-            result = translation.translate_segments([segment], "en", None, "folder", "base")
+            result = translation.translate_segments([segment], "en", None, {"folder": "folder", "base_name": "base"})
 
         self.assertEqual(result, {})
         mock_exec.assert_called_once()
@@ -360,7 +387,10 @@ class TestCoverageTranslation(unittest.TestCase):
         mock_popen.return_value.__enter__.return_value = mock_proc
         mock_poll.return_value = set()
 
-        with patch("modules.configuration.config.TARGET_LANGUAGES", {"fr": {"code": "fra_Latn", "label": "French"}}):
+        with (
+            patch("modules.configuration.config.TARGET_LANGUAGES", {"fr": {"code": "fra_Latn", "label": "French"}}),
+            patch("modules.workdir.ensure_work_dir", side_effect=_fake_work_dir),
+        ):
             translation._execute_translation_workers(["fr"], [], "eng_Latn", "folder", "base", [])
         mock_log.assert_any_call("!   [Cleanup] Terminating orphaned translation worker...", "WARNING")
         mock_proc.terminate.assert_called_once()
@@ -368,7 +398,7 @@ class TestCoverageTranslation(unittest.TestCase):
 
     def test_translate_segments_no_missing(self):
         with patch("modules.pipeline.translation._identify_missing_targets", return_value=([], 0)):
-            res = translation.translate_segments([], "en", MagicMock(), "folder", "base")
+            res = translation.translate_segments([], "en", MagicMock(), {"folder": "folder", "base_name": "base"})
             self.assertEqual(res, {})
 
     def test_translate_segments_no_source_data(self):
@@ -376,7 +406,7 @@ class TestCoverageTranslation(unittest.TestCase):
             patch("modules.pipeline.translation._identify_missing_targets", return_value=(["fr"], 0)),
             patch("modules.pipeline.translation._prepare_source_data", return_value=([], [])),
         ):
-            res = translation.translate_segments([], "en", MagicMock(), "folder", "base")
+            res = translation.translate_segments([], "en", MagicMock(), {"folder": "folder", "base_name": "base"})
             self.assertEqual(res, {})
 
 

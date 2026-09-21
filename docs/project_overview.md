@@ -27,6 +27,7 @@ automatic hardware detection to maximize performance.
 │   ├── subtitles/              # Subtitle IO and timestamp helpers
 │   ├── models.py               # AI model wrappers + optimizer
 │   ├── safe_io.py              # Symlink-safe sidecar/temp file writes
+│   ├── workdir.py              # Per-video work directory (all temp files)
 │   └── utils.py                # Shared utility helpers
 ├── docs/                       # Technical documentation
 │   └── releases/               # Versioned release notes

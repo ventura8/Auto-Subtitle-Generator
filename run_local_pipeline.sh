@@ -74,7 +74,11 @@ echo "==> Step 17: Run Bandit Security Scan"
 invoke_poetry run bandit -c pyproject.toml -q -r auto_subtitle.py modules -lll -iii
 
 echo "==> Step 18: Run dependency vulnerability scan (pip-audit)"
-invoke_poetry run pip-audit
+# Audit the lock for this platform (main + ml groups), not the possibly stale/partial venv.
+audit_requirements="$(mktemp)"
+invoke_poetry run python tests/tools/lock_requirements.py "$audit_requirements"
+invoke_poetry run pip-audit --requirement "$audit_requirements" --no-deps --disable-pip
+rm -f "$audit_requirements"
 
 echo "==> Step 20: Run Radon Complexity (A-grade enforced)"
 invoke_poetry run radon cc auto_subtitle.py modules tests -s -a | tee radon_report.txt
@@ -97,7 +101,7 @@ echo "==> Step 23: Run Tests with Coverage"
 invoke_poetry run pytest -m "not e2e" -o addopts= --strict-config --strict-markers --cov=auto_subtitle --cov=modules --cov-branch --cov-report=xml --cov-report=json --cov-report=term --cov-fail-under=90 tests/
 
 echo "==> Step 24: Enforce per-file coverage >= 90%"
-for cov_file in "auto_subtitle.py" "modules/configuration/config.py" "modules/pipeline/isolated_translator.py" "modules/models.py" "modules/pipeline/transcription.py" "modules/pipeline/translation.py" "modules/utils.py"; do
+for cov_file in "auto_subtitle.py" "modules/configuration/config.py" "modules/configuration/version.py" "modules/pipeline/isolated_translator.py" "modules/models.py" "modules/pipeline/transcription.py" "modules/pipeline/translation.py" "modules/utils.py" "modules/workdir.py"; do
     echo "   -> Checking $cov_file"
     invoke_poetry run coverage report --include="$cov_file" --fail-under=90 -m
 done

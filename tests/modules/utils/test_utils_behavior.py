@@ -2,11 +2,17 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 from modules import utils
+
+
+def _fake_work_dir(folder, base_name):
+    """Return the work-directory path without touching the filesystem."""
+    return os.path.join(folder, f"{base_name}.asg-temp")
 
 
 class TestCoverageUtils(unittest.TestCase):
@@ -69,6 +75,22 @@ class TestCoverageUtils(unittest.TestCase):
 
         with patch("os.name", "nt"), patch("modules.runtime.logging_utils.ctypes.windll", windll_stub, create=True):
             utils.init_console()  # Should just pass
+
+    def test_init_console_reconfigures_streams_to_utf8(self):
+        # A redirected stdout on Windows defaults to the ANSI code page and
+        # crashed on transcript characters such as "ă".
+        stdout, stderr = MagicMock(), MagicMock()
+        with patch("sys.stdout", stdout), patch("sys.stderr", stderr), patch("os.name", "posix"):
+            utils.init_console()
+        stdout.reconfigure.assert_called_once_with(encoding="utf-8", errors="replace")
+        stderr.reconfigure.assert_called_once_with(encoding="utf-8", errors="replace")
+
+    def test_init_console_tolerates_streams_without_reconfigure(self):
+        plain = MagicMock(spec=[])  # e.g. a pytest capture object or a closed stream
+        failing = MagicMock()
+        failing.reconfigure.side_effect = ValueError("I/O operation on closed file")
+        with patch("sys.stdout", plain), patch("sys.stderr", failing), patch("os.name", "posix"):
+            utils.init_console()  # Must not raise
 
     def test_setup_signal_handlers(self):
         with patch("signal.signal") as mock_sig, patch("sys.platform", "linux"):
@@ -199,6 +221,7 @@ class TestCoverageUtils(unittest.TestCase):
     def test_extract_clean_audio_reuse(self):
         with (
             patch("os.path.exists", return_value=True),
+            patch("modules.media.ffmpeg_utils.ensure_work_dir", side_effect=_fake_work_dir),
             patch("modules.media.ffmpeg_utils.get_audio_duration", return_value=123.45),
             patch("modules.media.ffmpeg_utils.run_ffmpeg_progress") as mock_run_ffmpeg_progress,
             patch("modules.media.ffmpeg_utils.log"),
@@ -211,6 +234,7 @@ class TestCoverageUtils(unittest.TestCase):
         scratch = SimpleNamespace(path="video_temp.scratch.wav")
         with (
             patch("os.path.exists", side_effect=[False, False]),
+            patch("modules.media.ffmpeg_utils.ensure_work_dir", side_effect=_fake_work_dir),
             patch("modules.media.ffmpeg_utils.get_audio_duration", return_value=123.45),
             patch("modules.media.ffmpeg_utils.run_ffmpeg_progress", side_effect=RuntimeError("Extraction failed")),
             patch("modules.media.ffmpeg_utils.reserve_temp_path", return_value=scratch),
@@ -226,6 +250,7 @@ class TestCoverageUtils(unittest.TestCase):
         scratch = SimpleNamespace(path="video_temp.scratch.wav")
         with (
             patch("os.path.exists", return_value=False),
+            patch("modules.media.ffmpeg_utils.ensure_work_dir", side_effect=_fake_work_dir),
             patch("modules.media.ffmpeg_utils.get_audio_duration", side_effect=subprocess.TimeoutExpired("ffprobe", 30)),
             patch("modules.media.ffmpeg_utils.run_ffmpeg_progress") as mock_run,
             patch("modules.media.ffmpeg_utils.reserve_temp_path", return_value=scratch),
@@ -243,6 +268,7 @@ class TestCoverageUtils(unittest.TestCase):
         scratch = SimpleNamespace(path="video_temp.scratch.wav")
         with (
             patch("os.path.exists", side_effect=[False, True]),
+            patch("modules.media.ffmpeg_utils.ensure_work_dir", side_effect=_fake_work_dir),
             patch("modules.media.ffmpeg_utils.get_audio_duration", return_value=10.0),
             patch("modules.media.ffmpeg_utils.run_ffmpeg_progress"),
             patch("modules.media.ffmpeg_utils.reserve_temp_path", return_value=scratch),
@@ -273,13 +299,15 @@ class TestCoverageUtils(unittest.TestCase):
             self.assertIsNotNone(name)
 
     def test_save_srt_failure_cleanup(self):
-        with (
-            patch("modules.safe_io.promote_temp_path", side_effect=OSError("Replace fail")),
-            patch("modules.safe_io.discard_temp_path") as mock_discard,
-        ):
-            with self.assertRaises(OSError):
-                utils.save_srt([], "test.srt")
-            mock_discard.assert_called_once()
+        # Discard is mocked, so write inside a throwaway directory rather than the repo root.
+        with tempfile.TemporaryDirectory() as folder:
+            with (
+                patch("modules.safe_io.promote_temp_path", side_effect=OSError("Replace fail")),
+                patch("modules.safe_io.discard_temp_path") as mock_discard,
+            ):
+                with self.assertRaises(OSError):
+                    utils.save_srt([], os.path.join(folder, "test.srt"))
+                mock_discard.assert_called_once()
 
     def test_check_srt_corruption(self):
         from modules.subtitles import srt_io

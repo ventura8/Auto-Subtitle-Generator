@@ -40,6 +40,13 @@ whisper:
   # Use Vocal Separation: If true, use BS-Roformer to clean the audio.
   # Set to false if the isolated track sounds 'metallic' or missing content.
   use_vocal_separation: true
+
+  # Separation Chunking: long inputs are separated in chunks of this many minutes and the
+  # vocal stems are joined afterwards. Bounds RAM (~3 GB per 30-min chunk) and keeps every
+  # intermediate WAV far below the 4 GB RIFF limit, so multi-hour videos work on any machine.
+  # Each finished chunk is kept in the work directory, so an interrupted separation resumes
+  # from the last completed chunk. Set to 0 to always separate the whole file in one pass.
+  separation_chunk_minutes: 30
  
 # -----------------------------------------------------------------------------
 # Hallucination & Noise Filters
@@ -216,12 +223,16 @@ models:
   # Note: These are GATED models. Access requires accepting model conditions on Hugging Face.
   translategemma: "google/translategemma-12b-it"
 
-  # NLLB Translation Model (HuggingFace ID)
-  # Available Options:
-  # - "facebook/nllb-200-3.3B"            (High quality, slower, ~8-10GB VRAM)
-  # - "facebook/nllb-200-1.3B"            (Balanced, faster, ~4-5GB VRAM)
-  # - "facebook/nllb-200-distilled-600M"  (Fastest, lower quality, ~1-2GB VRAM)
-  nllb: "facebook/nllb-200-3.3B"
+  # NLLB Translation Model (HuggingFace ID, or "auto")
+  # "auto" picks the largest model whose fp16 weights fit about 60% of the card's VRAM.
+  # A model that does not fit fails to load and falls back to the CPU with a logged warning: an 8 GB
+  # RTX 3080 forced onto the 3.3B model ran at 0.4x realtime on the CPU with the GPU idle,
+  # while the distilled 1.3B on the same card stays on the GPU and is many times faster.
+  #   >= 11 GB -> "facebook/nllb-200-3.3B"            (6.3 GB weights, best quality)
+  #   >=  5 GB -> "facebook/nllb-200-distilled-1.3B"  (2.6 GB weights, close to 3.3B quality)
+  #   <   5 GB -> "facebook/nllb-200-distilled-600M"  (1.2 GB weights, fastest)
+  # Set an explicit id to force a model; a warning is logged when it will not fit comfortably.
+  nllb: "auto"
   
   # Audio Separator Model (BS-Roformer Checkpoint)
   # Common options supported by python-audio-separator:
@@ -237,6 +248,8 @@ models:
 # Leave these commented out or set to null to let the auto-optimizer decide based on hardware.
 performance:
   # Target VRAM in GB for dynamic scaling (Recommended: 28 for 32GB cards)
+  # Cap the VRAM the pipeline plans against (GB), e.g. on a shared GPU. Affects model
+  # selection ("auto"), Whisper precision, and batch sizing. null = use the full card.
   max_vram_usage_gb: null
  
   # Whisper workers (Parallel transcription: 10+ recommended for 9950X)

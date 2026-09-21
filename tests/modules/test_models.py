@@ -35,6 +35,7 @@ class TestModels(unittest.TestCase):
         opt = models.SystemOptimizer()
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.device_count.return_value = 1
         props = MagicMock()
         props.name = "GPU"
         props.total_memory = 12 * 1024**3
@@ -55,6 +56,7 @@ class TestModels(unittest.TestCase):
         opt = models.SystemOptimizer()
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.device_count.return_value = 1
         props = MagicMock()
         props.name = "RTX 5090"
         props.total_memory = 32 * 1024**3
@@ -66,7 +68,7 @@ class TestModels(unittest.TestCase):
         self.assertEqual(opt.gpu_name, "RTX 5090")
         self.assertEqual(opt.vram_gb, 32)
         self.assertEqual(opt.profile, "ULTRA")
-        self.assertEqual(opt.config["nllb_batch"], 8)
+        self.assertEqual(opt.config["nllb_batch"], 16)
         self.assertEqual(opt.config["translategemma_batch"], 24)
         self.assertEqual(opt.config["translategemma_max_new_tokens"], 192)
 
@@ -91,7 +93,7 @@ class TestModels(unittest.TestCase):
         # and the resulting profile is capped below the dedicated-VRAM ULTRA tier.
         self.assertEqual(opt.vram_gb, 32)
         self.assertEqual(opt.profile, "HIGH")
-        self.assertEqual(opt.config["nllb_batch"], 8)
+        self.assertEqual(opt.config["nllb_batch"], 16)
         self.assertEqual(opt.config["translategemma_batch"], 8)
 
     def test_system_optimizer_detect_hardware_mps_low_memory(self):
@@ -114,7 +116,7 @@ class TestModels(unittest.TestCase):
         # Half of the 16 GB unified pool lands below the HIGH threshold.
         self.assertEqual(opt.vram_gb, 8)
         self.assertEqual(opt.profile, "MID")
-        self.assertEqual(opt.config["nllb_batch"], 6)
+        self.assertEqual(opt.config["nllb_batch"], 16)
 
     def test_system_optimizer_detect_hardware_mps_non_positive_memory(self):
         opt = models.SystemOptimizer()
@@ -171,6 +173,7 @@ class TestModels(unittest.TestCase):
         fake_module.WhisperModel.side_effect = [cuda_model, cpu_model]
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.device_count.return_value = 1
 
         with patch("modules.models._import_module", return_value=fake_module), patch("modules.models.torch", mock_torch):
             wrapper = models.WhisperModel()
@@ -188,6 +191,7 @@ class TestModels(unittest.TestCase):
                 fake_module.WhisperModel.side_effect = [RuntimeError(dll_name), cpu_model]
                 mock_torch = MagicMock()
                 mock_torch.cuda.is_available.return_value = True
+                mock_torch.cuda.device_count.return_value = 1
 
                 with patch("modules.models._import_module", return_value=fake_module), patch("modules.models.torch", mock_torch):
                     wrapper = models.WhisperModel()
@@ -204,6 +208,7 @@ class TestModels(unittest.TestCase):
         fake_module.WhisperModel.side_effect = [gpu_model, cpu_model]
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.device_count.return_value = 1
 
         with patch("modules.models._import_module", return_value=fake_module), patch("modules.models.torch", mock_torch):
             wrapper = models.WhisperModel()
@@ -253,6 +258,7 @@ class TestModels(unittest.TestCase):
 
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.device_count.return_value = 1
 
         with patch("modules.translators.nllb.torch", mock_torch):
             result = translator.translate(["hello"], "eng_Latn", "ita_Latn")
@@ -440,6 +446,7 @@ class TestModels(unittest.TestCase):
     def test_cleanup_torch_cache_with_cuda(self):
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.device_count.return_value = 1
         with patch("modules.models.torch", mock_torch), patch("modules.models.gc.collect"):
             models._cleanup_torch_cache()
         mock_torch.cuda.empty_cache.assert_called_once()
@@ -447,6 +454,7 @@ class TestModels(unittest.TestCase):
     def test_resolve_device_map(self):
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.device_count.return_value = 1
         with patch("modules.translators.common.torch", mock_torch):
             self.assertEqual(nllb_backend._resolve_device_map(), "cuda:0")
         with patch("modules.translators.common.torch", None):

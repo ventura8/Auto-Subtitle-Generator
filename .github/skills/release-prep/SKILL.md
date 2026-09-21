@@ -29,6 +29,9 @@ if ($branch -match '(?<version>v?\d+\.\d+\.\d+)$') {
 1. Update `pyproject.toml` `[project] version = "$rawVersion"`.
 1. Create or update `docs/releases/$version.md`.
 1. Create or update `docs/releases/${version}_github_description.md`.
+   Start it with the summary paragraph, never an `#` H1 title: the GitHub
+   release title is pinned to the bare tag (`vX.Y.Z`), so a leading H1
+   renders as a duplicate oversized title.
 1. Sync `README.md`, `docs/`, `AGENTS.md`, and skill references.
 1. Run full local validation (`.\run_local_pipeline.ps1`).
 1. Prepare commit title/body with a comprehensive release summary

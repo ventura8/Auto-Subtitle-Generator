@@ -9,10 +9,11 @@ from collections import namedtuple
 from typing import Any
 
 from .configuration import config
+from .runtime import vram_tuning
 from .runtime.model_cache import is_corrupt_model_error as _is_corrupt_checkpoint_error
 from .runtime.model_cache import purge_separator_checkpoint as _purge_cached_separator_checkpoint
 from .runtime.model_cache import purge_whisper_model_cache as _purge_whisper_model_cache
-from .runtime.optional_imports import is_mps_available, load_optional_torch
+from .runtime.optional_imports import is_cuda_usable, is_mps_available, load_optional_torch
 from .translators import nllb as nllb_backend
 from .translators import translategemma as translategemma_backend
 
@@ -56,6 +57,8 @@ class SystemOptimizer:
             "ffmpeg_threads": max(1, min(self.cpu_cores, 8)),
             "whisper_workers": 1,
             "whisper_beam_overridden": False,
+            "nllb_batch_overridden": False,
+            "max_vram_usage_gb": 0,
         }
         self.config = dict(self._default_config)
 
@@ -73,7 +76,7 @@ class SystemOptimizer:
 
     def _detect_gpu_props(self):
         """Detect GPU properties from available acceleration backends."""
-        if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
+        if is_cuda_usable(torch):
             props = torch.cuda.get_device_properties(0)
             name = getattr(props, "name", "CUDA GPU")
             vram = int(getattr(props, "total_memory", 0) / (1024**3))
@@ -84,32 +87,40 @@ class SystemOptimizer:
         """Populate hardware fields and keep profile-derived defaults stable."""
         _ = verbose
         self.gpu_name, self.vram_gb, self.profile = self._detect_gpu_props()
+        self._reprofile_for_cap()
         self._apply_profile_tuning()
 
+    def apply_vram_cap(self, cap_gb):
+        """Plan against at most ``cap_gb`` of VRAM: re-derive the tier and its caps for a GPU."""
+        self.config["max_vram_usage_gb"] = float(cap_gb)
+        self._reprofile_for_cap()
+        self._apply_profile_tuning()
+
+    def _reprofile_for_cap(self):
+        """Lower a GPU tier to match ``max_vram_usage_gb`` when a cap is set."""
+        if self.profile == "CPU_ONLY" or self.effective_vram_gb() == self.vram_gb:
+            return
+        capped = _resolve_hardware_profile(self.effective_vram_gb())
+        self.profile = "HIGH" if self.gpu_name.startswith("Apple") and capped == "ULTRA" else capped
+
     def _apply_profile_tuning(self):
-        """Apply profile-aware defaults for throughput-critical model settings."""
-        if self.profile == "ULTRA":
-            self.config["nllb_batch"] = 8
-            self.config["translategemma_batch"] = 24
-            self.config["translategemma_max_new_tokens"] = 192
-            return
+        """Apply profile caps for throughput-critical settings.
 
-        if self.profile == "HIGH":
-            self.config["nllb_batch"] = 8
-            self.config["translategemma_batch"] = 8
-            self.config["translategemma_max_new_tokens"] = 192
-            return
+        ``nllb_batch`` here is the profile's *maximum*; the translation worker
+        refines it downward from the VRAM actually free after the model loads
+        (``apply_dynamic_translation_batch``) unless the user pinned it.
+        """
+        nllb_batch, gemma_batch, gemma_tokens = _PROFILE_TUNING.get(self.profile, _PROFILE_TUNING["CPU_ONLY"])
+        # The worker loads config (which may pin nllb_batch) before detecting hardware.
+        if not self.config.get("nllb_batch_overridden"):
+            self.config["nllb_batch"] = nllb_batch
+        self.config["translategemma_batch"] = gemma_batch
+        self.config["translategemma_max_new_tokens"] = gemma_tokens
 
-        if self.profile == "MID":
-            self.config["nllb_batch"] = 6
-            self.config["translategemma_batch"] = 4
-            self.config["translategemma_max_new_tokens"] = 160
-            return
-
-        # CPU-only: keep memory pressure controlled while preserving quality.
-        self.config["nllb_batch"] = 2
-        self.config["translategemma_batch"] = 1
-        self.config["translategemma_max_new_tokens"] = 144
+    def effective_vram_gb(self):
+        """VRAM the pipeline may plan against: detected, capped by ``performance.max_vram_usage_gb``."""
+        cap = float(self.config.get("max_vram_usage_gb") or 0)
+        return min(self.vram_gb, cap) if cap > 0 else self.vram_gb
 
     def snapshot(self):
         """Return a lightweight dict snapshot of detected hardware state."""
@@ -121,13 +132,34 @@ class SystemOptimizer:
         }
 
 
+# (nllb_batch cap, translategemma_batch, translategemma_max_new_tokens) per profile.
+# NLLB throughput rose from 7.3 to 12.4 lines/s going from batch 8 to 16 on calibration. Pinned
+# at 32 on a GPU shared with another process, the same translation took 23 min against 3.5 min
+# at 8 or 16 (allocator retry churn), so 16 is the ceiling everywhere the memory allows and
+# dynamic sizing trims it to the VRAM actually free.
+_PROFILE_TUNING = {
+    "ULTRA": (16, 24, 192),
+    "HIGH": (16, 8, 192),
+    "MID": (16, 4, 160),
+    "LOW": (8, 1, 144),
+    "CPU_ONLY": (2, 1, 144),
+}
+
+
 def _resolve_hardware_profile(vram_gb):
-    """Resolve runtime hardware profile from detected GPU memory."""
+    """Resolve runtime hardware profile from detected GPU memory.
+
+    Thresholds follow what fits: NLLB-200-3.3B fp16 (6.7 GB) needs a 12 GB
+    card to leave headroom, the distilled 1.3B fits from 6 GB, and below that
+    Faster-Whisper drops to int8 weights and NLLB to the distilled 600M.
+    """
     if vram_gb >= 24:
         return "ULTRA"
-    if vram_gb >= 10:
+    if vram_gb >= 12:
         return "HIGH"
-    return "MID"
+    if vram_gb >= 6:
+        return "MID"
+    return "LOW"
 
 
 def _usable_unified_memory_gb(total_memory_gb):
@@ -234,7 +266,7 @@ class ModelManager:
     def get_nllb(self):
         """Return lazily initialized NLLB translator wrapper."""
         if self._nllb is None:
-            self._nllb = nllb_backend.NLLBTranslator()
+            self._nllb = nllb_backend.NLLBTranslator(model_id=resolve_nllb_model_id())
         return self._nllb
 
     def offload_nllb(self):
@@ -295,8 +327,56 @@ OPTIMIZER = SystemOptimizer()
 def _cleanup_torch_cache():
     """Run conservative garbage collection and optional CUDA cache cleanup."""
     gc.collect()
-    if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
+    if is_cuda_usable(torch):
         torch.cuda.empty_cache()
+
+
+def resolve_nllb_model_id():
+    """Return the NLLB model to load: the configured id, or the largest that fits the card on ``auto``."""
+    model_id, note = vram_tuning.select_nllb_model(config.NLLB_MODEL_ID, OPTIMIZER.effective_vram_gb())
+    if note:
+        LOGGER.log(logging.WARNING if config.NLLB_MODEL_ID != vram_tuning.AUTO else logging.INFO, "NLLB model %s (%s)", model_id, note)
+    return model_id
+
+
+def apply_dynamic_translation_batch(model_id, logger_func=None):
+    """Size ``nllb_batch`` from the VRAM free after the translator loaded; returns the batch.
+
+    Honours an explicit ``performance.nllb_batch`` and does nothing without a
+    CUDA device, where the profile cap already applies.
+    """
+    cap = int(OPTIMIZER.config["nllb_batch"])
+    if OPTIMIZER.config.get("nllb_batch_overridden") or not _should_try_cuda_whisper():
+        return cap
+    free_gb = _cuda_free_gb()
+    if free_gb is None:
+        return cap
+    free_gb = min(free_gb, _budget_headroom_gb(model_id))
+    batch = vram_tuning.dynamic_batch_size(free_gb, model_id, config.NLLB_NUM_BEAMS, cap)
+    OPTIMIZER.config["nllb_batch"] = batch
+    message = vram_tuning.describe_budget(OPTIMIZER.effective_vram_gb(), free_gb, model_id, batch, cap)
+    (logger_func or LOGGER.info)(message)
+    return batch
+
+
+def _budget_headroom_gb(model_id):
+    """VRAM left for activations inside ``max_vram_usage_gb`` once the model's weights are counted.
+
+    Unbounded when no cap is set, so the real free memory decides.
+    """
+    if float(OPTIMIZER.config.get("max_vram_usage_gb") or 0) <= 0:
+        return float("inf")
+    weights = vram_tuning.NLLB_WEIGHT_GB.get(model_id, 0.0)
+    return max(0.0, OPTIMIZER.effective_vram_gb() - weights)
+
+
+def _cuda_free_gb():
+    """Free VRAM on the active CUDA device in GB, or None when it cannot be read."""
+    try:
+        free_bytes, _total = torch.cuda.mem_get_info()
+    except (RuntimeError, AttributeError, ValueError):
+        return None
+    return free_bytes / (1024**3)
 
 
 def _is_cuda_runtime_missing_error(error: Exception) -> bool:
@@ -328,17 +408,19 @@ def _build_cpu_whisper_model(faster_whisper_model):
 
 
 def _build_cuda_whisper_model(faster_whisper_model):
-    """Build a CUDA-backed Whisper model with float16 compute."""
+    """Build a CUDA-backed Whisper model; fp16 with room to spare, int8 weights on small cards."""
+    compute_type = vram_tuning.whisper_compute_type(OPTIMIZER.effective_vram_gb())
+    LOGGER.info("Faster-Whisper CUDA compute type: %s (%s GB VRAM)", compute_type, OPTIMIZER.effective_vram_gb())
     return faster_whisper_model(
         config.WHISPER_MODEL_SIZE,
         device="cuda",
-        compute_type="float16",
+        compute_type=compute_type,
     )
 
 
 def _should_try_cuda_whisper() -> bool:
     """Return True when torch CUDA runtime appears available."""
-    return bool(torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available())
+    return is_cuda_usable(torch)
 
 
 def _cuda_runtime_installation_guidance():

@@ -86,7 +86,7 @@ class TestRealPipelineE2E(unittest.TestCase):
         # Run real NLLB translation in an unmocked subprocess using the distilled 600M model on CPU:
         code = """
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ["USE_TORCHAUDIO"] = "0"
 from modules.configuration import config
 config.NLLB_MODEL_ID = "facebook/nllb-200-distilled-600M"

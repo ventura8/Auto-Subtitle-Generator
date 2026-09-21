@@ -4,7 +4,7 @@ import importlib
 from typing import Any
 
 from modules.runtime.model_cache import is_corrupt_model_error, purge_hf_model_cache
-from modules.runtime.optional_imports import is_mps_available, load_optional_torch
+from modules.runtime.optional_imports import is_cuda_usable, is_mps_available, load_optional_torch
 
 __all__ = [
     "add_device_load_kwargs",
@@ -75,7 +75,7 @@ def import_transformers_module():
 
 def resolve_device_map():
     """Resolve explicit device mapping for transformer loading."""
-    if torch is not None and torch.cuda.is_available():
+    if is_cuda_usable(torch):
         return "cuda:0"
     if is_mps_available(torch):
         return "mps"

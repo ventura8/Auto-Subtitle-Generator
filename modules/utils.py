@@ -50,8 +50,11 @@ def _get_segment_class():
 
 
 def cleanup_temp_files(folder, base_name, video_filename):
-    """Clean up temporary WAV/MP3 files.
+    """Sweep legacy temp files written beside the video by older releases.
 
+    Current releases keep every temp artifact in the per-video work directory
+    (see ``modules.workdir``); this shallow sweep only removes the known
+    sidecar names that earlier versions left next to the input video.
     safe_io scratch entries (``.asg-tmp-*``) are deliberately not matched:
     they are owned and removed by their reservation, and this scan must never
     recurse into a directory found in the untrusted input folder.
@@ -79,6 +82,8 @@ def _is_temp_file(filename, base_name, video_filename):
     """
     if filename == video_filename:
         return False
+    if filename == f"{base_name}.source_lang.txt":
+        return True
     return _has_temp_name_prefix(filename, base_name) and filename.endswith(TEMP_EXTENSIONS)
 
 

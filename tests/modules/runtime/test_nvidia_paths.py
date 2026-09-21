@@ -97,6 +97,18 @@ class TestNvidiaPaths(unittest.TestCase):
         with patch.dict(os.environ, env_without_key, clear=True):
             self.assertFalse(nvidia_paths.is_cuda_explicitly_disabled())
 
+    def test_is_cuda_explicitly_disabled_treats_negative_ids_as_opt_out(self):
+        # --cpu sets -1: an empty string is not honoured by every torch build.
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear=False):
+            self.assertTrue(nvidia_paths.is_cuda_explicitly_disabled())
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": " -1, -2 "}, clear=False):
+            self.assertTrue(nvidia_paths.is_cuda_explicitly_disabled())
+        # A real id anywhere in the list keeps CUDA enabled.
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0,-1"}, clear=False):
+            self.assertFalse(nvidia_paths.is_cuda_explicitly_disabled())
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-abc"}, clear=False):
+            self.assertFalse(nvidia_paths.is_cuda_explicitly_disabled())
+
     def test_prepare_nvidia_paths_skipped_when_cuda_disabled(self):
         # Injecting the bundled cuBLAS dir on a CPU-only run makes libnvblas.so
         # hijack CPU BLAS and abort when no GPU is present.

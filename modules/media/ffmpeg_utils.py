@@ -12,6 +12,7 @@ from ..runtime.logging_utils import log, register_subprocess, unregister_subproc
 from ..runtime.progress import print_progress_bar
 from ..safe_io import discard_temp_path, promote_temp_path, reserve_temp_path
 from ..subtitles.timestamp_utils import parse_timestamp
+from ..workdir import ensure_work_dir
 from .input_binding import media_source
 
 
@@ -90,10 +91,16 @@ def get_audio_duration(file_path):
 
 
 def extract_clean_audio(video_path):
-    """Extracts audio from video, normalizes volume, and returns WAV path."""
-    base_dir = os.path.dirname(video_path)
+    """Extracts audio from video, normalizes volume, and returns WAV path.
+
+    The WAV lives in the per-video work directory (``<base>.asg-temp/``) so it
+    can be reused on resume and is removed together with the directory once
+    the video is finished.
+    """
+    base_dir = os.path.dirname(video_path) or "."
     base_name = os.path.splitext(os.path.basename(video_path))[0]
-    temp_wav = os.path.join(base_dir, f"{base_name}_temp.wav")
+    work_dir = ensure_work_dir(base_dir, base_name)
+    temp_wav = os.path.join(work_dir, f"{base_name}_temp.wav")
 
     if _has_valid_temp_audio(temp_wav):
         log("  [Pre-Process] Found valid existing temp audio.")
@@ -102,7 +109,7 @@ def extract_clean_audio(video_path):
     log("  [Pre-Process] Extracting & Normalizing Audio...", "INFO")
 
     # FFmpeg -y follows symlinks, so extract into a private scratch file and promote.
-    scratch = reserve_temp_path(temp_wav)
+    scratch = reserve_temp_path(temp_wav, scratch_dir=work_dir)
     source, pass_fds = media_source(video_path)
     cmd = [
         FFMPEG_CMD,
@@ -118,6 +125,9 @@ def extract_clean_audio(video_path):
         "pcm_f32le",
         "-af",
         "loudnorm=I=-16:TP=-1.5:LRA=11",
+        # A plain RIFF WAV caps at 4 GB (about 17 h at this format); RF64 lifts that.
+        "-rf64",
+        "auto",
         scratch.path,
     ]
 
@@ -135,6 +145,82 @@ def extract_clean_audio(video_path):
         if not promoted:
             discard_temp_path(scratch)
     return temp_wav
+
+
+def run_ffmpeg_quiet(cmd):
+    """Run an FFmpeg command with no progress UI, raising RuntimeError on a non-zero exit.
+
+    Used for the many short cut/trim/join operations of chunked vocal
+    separation, where a progress bar per call would only be noise.
+    """
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        creationflags=(subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0),
+        encoding="utf-8",
+        errors="replace",
+    ) as process:
+        register_subprocess(process)
+        try:
+            _, stderr_text = process.communicate()
+        finally:
+            unregister_subprocess(process)
+    if process.returncode != 0:
+        raise RuntimeError(f"FFmpeg failed ({process.returncode}): {(stderr_text or '').strip()[-400:]}")
+
+
+def write_audio_window(source_path, target_path, start_seconds, length_seconds, mono_16k=False):
+    """Write ``length_seconds`` of ``source_path`` starting at ``start_seconds`` as float WAV.
+
+    ``mono_16k`` downmixes and resamples to the 16 kHz mono format Whisper
+    consumes, which also keeps a joined multi-hour stem far below the RIFF
+    limit. ``target_path`` must be a private scratch path: FFmpeg ``-y``
+    follows symlinks.
+    """
+    cmd = [FFMPEG_CMD, "-y", "-loglevel", "error", "-ss", f"{start_seconds:.3f}", "-t", f"{length_seconds:.3f}", "-i", source_path]
+    if mono_16k:
+        cmd += ["-ac", "1", "-ar", "16000"]
+    cmd += ["-c:a", "pcm_f32le", "-rf64", "auto", target_path]
+    run_ffmpeg_quiet(cmd)
+
+
+def concat_audio_files(source_paths, target_path, list_path):
+    """Join same-format WAV files in order into ``target_path`` (RF64 once it outgrows RIFF).
+
+    ``list_path`` is where the concat manifest is written; it must live inside
+    a private scratch directory owned by this process, like ``target_path``.
+    """
+    # FFmpeg resolves relative manifest entries against the manifest's own
+    # directory, not the working directory, so a relative input path would
+    # point the join at the wrong place.
+    with open(list_path, "w", encoding="utf-8") as handle:
+        for path in source_paths:
+            handle.write(f"file '{_concat_quote(os.path.abspath(path))}'\n")
+    run_ffmpeg_quiet(
+        [
+            FFMPEG_CMD,
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-c:a",
+            "copy",
+            "-rf64",
+            "auto",
+            target_path,
+        ]
+    )
+
+
+def _concat_quote(path):
+    """Escape a path for the FFmpeg concat demuxer's single-quoted ``file`` directive."""
+    return path.replace("'", "'\\''")
 
 
 def run_ffmpeg_progress(cmd, desc, total_duration, pass_fds=()):

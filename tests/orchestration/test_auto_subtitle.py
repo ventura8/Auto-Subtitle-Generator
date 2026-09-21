@@ -8,6 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 
+def _fake_work_dir(folder, base_name):
+    """Return the work-directory path without touching the filesystem."""
+    return os.path.join(folder, f"{base_name}.asg-temp")
+
+
 class TestAutoSubtitleUltimate(unittest.TestCase):
     def setUp(self):
         # Lazy import to ensure coverage measurement
@@ -16,6 +21,18 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         import modules.pipeline.translation as translation
         from modules import models
         from modules.configuration import config
+
+        # These tests use cwd-relative fake videos; never create real work directories.
+        for target in ("modules.workdir.ensure_work_dir",):
+            work_dir_patcher = patch(target, side_effect=_fake_work_dir)
+            work_dir_patcher.start()
+            self.addCleanup(work_dir_patcher.stop)
+        purge_patcher = patch("modules.workdir.purge_work_dir", return_value=True)
+        self.mock_purge_work_dir = purge_patcher.start()
+        self.addCleanup(purge_patcher.stop)
+        exists_patcher = patch("modules.workdir.work_dir_exists", return_value=False)
+        exists_patcher.start()
+        self.addCleanup(exists_patcher.stop)
 
         torch_patcher = patch.object(auto_subtitle, "torch", sys.modules["torch"], create=True)
         torch_patcher.start()
@@ -77,6 +94,11 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         self.assertEqual(args.lang, "ro")
         self.assertEqual(args.prompt, "Hello")
         self.assertTrue(args.cpu)
+
+    def test_parse_cli_args_version(self):
+        with self.assertRaises(SystemExit) as ctx, patch("sys.stdout"):
+            auto_subtitle.parse_cli_args(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
 
     def test_is_usable_language_filtering(self):
         self.assertTrue(auto_subtitle.is_usable_language("en"))
@@ -153,10 +175,14 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
         self.assertEqual(result, ([mock_seg], "en", expected_output))
         mock_extract.assert_called_once_with(video_path)
-        mock_save_srt.assert_called_once_with([mock_seg], expected_src_srt)
-        mock_translate.assert_called_once_with([mock_seg], "en", mock_mgr, expected_folder, "video")
+        mock_save_srt.assert_called_once_with([mock_seg], expected_src_srt, scratch_dir=os.path.join(expected_folder, "video.asg-temp"))
+        mock_translate.assert_called_once_with(
+            [mock_seg], "en", mock_mgr, {"folder": expected_folder, "base_name": "video", "reuse_outputs": True}
+        )
         mock_embed.assert_called_once_with(video_path, [], "en")
+        # Success is a terminal state: legacy sweep runs and the work directory is purged.
         mock_cleanup.assert_called_once_with(expected_folder, "video", "video.mp4")
+        self.mock_purge_work_dir.assert_called_once_with(expected_folder, "video")
 
     def test_resume_processing_from_existing_files(self):
         # Test that the pipeline resumes correctly when SRT/Vocals already exist
@@ -186,7 +212,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                     m_translate.assert_called_once()
                     m_embed.assert_called_once()
 
-    def test_cleanup_on_transcription_failure(self):
+    def test_failure_keeps_work_dir_for_resume(self):
         with patch.dict(sys.modules, {"audio_separator": MagicMock(), "audio_separator.separator": MagicMock()}):
             sys.modules["audio_separator.separator"].Separator.return_value.separate.return_value = []
             with patch("modules.utils.extract_clean_audio", return_value="temp.wav"):
@@ -201,7 +227,9 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                             mock_mgr.get_whisper.return_value = m_whisper.return_value
                             res = auto_subtitle.process_video(os.path.abspath("fail.mp4"), mock_mgr)
                             self.assertEqual(res, (None, None, None))
-                            m_clean.assert_called()
+                            # A failed video keeps every temp artifact so the next run can resume.
+                            m_clean.assert_not_called()
+                            self.mock_purge_work_dir.assert_not_called()
 
     def test_nllb_translation_generic_error_handling(self):
         # Test how _translate_segments handles a failed NLLB translation subprocess
@@ -463,7 +491,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
             self.assertIn("mov_text", cmd)  # since .mp4
             # FFmpeg must write to the unpredictable scratch path, never the final name
             self.assertEqual(cmd[-1], ".temp_output.vid.scratch.mp4")
-            m_promote.assert_called_once_with(scratch, "vid_multilang.mp4")
+            m_promote.assert_called_once_with(scratch, os.path.join(".", "vid_multilang.mp4"))
 
             # Verify metadata
             self.assertIn("language=en", cmd)
@@ -527,7 +555,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
     def test_bootstrap_cpu_env(self):
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0"}, clear=False):
             auto_subtitle.bootstrap_cpu_env(["--cpu"])
-            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "")
+            self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "-1")
 
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0"}, clear=False):
             auto_subtitle.bootstrap_cpu_env(["--lang", "en"])

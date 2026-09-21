@@ -83,6 +83,8 @@ class TestSafeIO(unittest.TestCase):
         # a symlink (to a directory holding a symlink to the victim) in its
         # place while the writer holds the handle. Content must go through the
         # descriptor, and promotion must be refused.
+        if os.name == "nt":
+            self.skipTest("Windows prevents renaming a directory while a child file handle is held open")
         path = os.path.join(self.folder, "movie.en.srt")
         with self.assertRaises(safe_io.SymlinkRefusedError):
             with safe_io.atomic_text_writer(path) as fh:
