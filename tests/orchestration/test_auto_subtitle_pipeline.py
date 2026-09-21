@@ -334,7 +334,7 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             patch("os.walk", return_value=[]) as mock_walk,
         ):
             files, lang, prompt = auto_subtitle.get_input_files()
-            mock_walk.assert_called_once_with("input")
+            mock_walk.assert_called_once_with("input", followlinks=False)
             self.assertEqual(files, [])
             self.assertIsNone(lang)
             self.assertIsNone(prompt)
@@ -348,14 +348,55 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
         self.assertTrue(any(item[2] == "EN" for item in embedded))
 
     def test_get_input_files_exclude_multilang(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("vid.mp4", "vid_multilang.mp4"):
+                open(os.path.join(folder, name), "wb").close()
+            with patch("argparse.ArgumentParser.parse_args", return_value=MagicMock(input_path=folder, cpu=False, lang=None, prompt=None)):
+                files, _, _ = auto_subtitle.get_input_files()
+            self.assertEqual([os.path.basename(f) for f in files], ["vid.mp4"])
+
+    @staticmethod
+    def _symlink_or_skip(target, link):
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as e:
+            raise unittest.SkipTest(f"symlinks unavailable: {e}")
+
+    def test_collect_video_files_skips_planted_symlinks(self):
+        import tempfile
+
+        from modules.media import file_utils
+
+        with tempfile.TemporaryDirectory() as victim, tempfile.TemporaryDirectory() as folder:
+            secret = os.path.join(victim, "secret.mp4")
+            open(secret, "wb").close()
+            open(os.path.join(folder, "real.mp4"), "wb").close()
+            self._symlink_or_skip(secret, os.path.join(folder, "vacation.mp4"))
+            # Symlinked directory containing supported media must not be walked.
+            self._symlink_or_skip(victim, os.path.join(folder, "clips"))
+            # Link pointing back inside the folder is still refused: only regular files count.
+            self._symlink_or_skip(os.path.join(folder, "real.mp4"), os.path.join(folder, "alias.mp4"))
+
+            with patch("modules.media.file_utils.log"):
+                files = file_utils._collect_video_files(folder)
+            self.assertEqual([os.path.basename(f) for f in files], ["real.mp4"])
+
+            # A top-level symlink dropped onto the prompt is refused outright.
+            with patch("modules.media.file_utils.log") as mock_log:
+                self.assertEqual(file_utils._collect_video_files(os.path.join(folder, "vacation.mp4")), [])
+            self.assertTrue(any("symlink" in str(c.args[0]).lower() for c in mock_log.call_args_list))
+
+    def test_collect_video_files_rejects_real_path_outside_input_root(self):
+        from modules.media import file_utils
+
         with (
-            patch("argparse.ArgumentParser.parse_args", return_value=MagicMock(input_path="folder", cpu=False, lang=None, prompt=None)),
-            patch("os.path.isfile", return_value=False),
-            patch("os.path.isdir", return_value=True),
-            patch("os.walk", return_value=[(".", [], ["vid.mp4", "vid_multilang.mp4"])]),
+            patch("os.lstat", return_value=SimpleNamespace(st_mode=0o100644)),
+            patch("os.path.realpath", side_effect=lambda p: "/victim/secret.mp4" if p.endswith(".mp4") else "/drop"),
+            patch("modules.media.file_utils.log"),
         ):
-            files, _, _ = auto_subtitle.get_input_files()
-            self.assertEqual(len(files), 1)
+            self.assertFalse(file_utils._is_safe_input_file("/drop/vacation.mp4", "/drop"))
 
     def test_collect_video_files_file_input_filters_unsupported_or_multilang(self):
         from modules.media import file_utils

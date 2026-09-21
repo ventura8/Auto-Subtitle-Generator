@@ -1,6 +1,13 @@
-"""File collection and path resolution utilities."""
+"""File collection and path resolution utilities.
+
+Input folders are untrusted (USB drops, shared directories, returned zips). A
+planted symlink named ``clip.mp4`` would otherwise be read by FFmpeg and the
+target stream-copied into the untrusted folder, so collection accepts only
+regular files whose real path stays inside the selected input.
+"""
 
 import os
+import stat
 
 from ..configuration import config
 from ..runtime.logging_utils import log
@@ -20,6 +27,10 @@ def _collect_video_files(path):
     """Collect supported input videos from a file or directory path."""
     files = []
     supported_extensions = _get_supported_video_extensions()
+
+    if os.path.islink(path):
+        log(f"Skipping symlink input: {path}", "WARNING")
+        return files
 
     if os.path.isfile(path):
         file_name = os.path.basename(path)
@@ -74,11 +85,34 @@ def _is_supported_video_file(file_name, supported_extensions):
 
 
 def _collect_from_directory(path, supported_extensions):
-    """Collect all supported video files from a directory tree."""
+    """Collect supported regular video files that stay inside the input directory tree."""
     files = []
-    for root, _, filenames in os.walk(path):
+    input_root = os.path.realpath(path)
+    for root, dir_names, filenames in os.walk(path, followlinks=False):
+        # os.walk never descends into symlinked directories, but drop them so
+        # a later pass can't be tricked into treating them as inputs either.
+        dir_names[:] = [name for name in dir_names if not os.path.islink(os.path.join(root, name))]
         for file_name in filenames:
             if not _is_supported_video_file(file_name, supported_extensions):
                 continue
-            files.append(os.path.abspath(os.path.join(root, file_name)))
+            file_path = os.path.abspath(os.path.join(root, file_name))
+            if _is_safe_input_file(file_path, input_root):
+                files.append(file_path)
     return files
+
+
+def _is_safe_input_file(file_path, input_root):
+    """Return True for a regular (non-symlink) file whose real path is inside ``input_root``."""
+    try:
+        if not stat.S_ISREG(os.lstat(file_path).st_mode):
+            log(f"Skipping non-regular or symlink input: {file_path}", "WARNING")
+            return False
+    except OSError as e:
+        log(f"Skipping unreadable input {file_path}: {e}", "WARNING")
+        return False
+
+    real_path = os.path.realpath(file_path)
+    if os.path.commonpath([real_path, input_root]) != input_root:
+        log(f"Skipping input outside the selected folder: {file_path}", "WARNING")
+        return False
+    return True
