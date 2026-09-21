@@ -19,9 +19,10 @@ FFmpeg the open descriptor rather than the name:
   pathname. Each component below the root is checked for links/junctions,
   the file is opened after an ``lstat`` symlink check and ``fstat`` is
   compared against it, and the bytes are then copied *from that handle* into
-  a private, randomly named directory beside the input. FFmpeg/FFprobe read
-  the copy, whose location an attacker cannot predict or re-point without
-  making the run fail outright. The copy is removed when the binding closes.
+  a private directory under the user's temp location (``TMPDIR``/``TEMP``),
+  which a party controlling the input folder cannot modify. FFmpeg/FFprobe
+  read that copy. It costs a full copy of each input on Windows; the copy is
+  removed when the binding closes.
 
 The binding is active for the ``with`` block and looked up by pathname via
 ``media_source``/``stat_input`` so the pipeline's string-based call chain stays
@@ -74,7 +75,9 @@ class BoundInput:
     def _private_copy_path(self):
         """Copy the bound bytes into a private directory once and return the copy's path."""
         if self._private_copy is None:
-            copy_dir = tempfile.mkdtemp(prefix=_PRIVATE_COPY_PREFIX, dir=os.path.dirname(self.path))
+            # Never beside the input: a directory the attacker can list and re-create under a
+            # swapped parent is no boundary. The user's temp dir is outside their reach.
+            copy_dir = tempfile.mkdtemp(prefix=_PRIVATE_COPY_PREFIX)
             self._private_copy = os.path.join(copy_dir, os.path.basename(self.path))
             os.lseek(self.fd, 0, os.SEEK_SET)
             with os.fdopen(os.dup(self.fd), "rb") as source, open(self._private_copy, "xb") as target:
@@ -87,8 +90,6 @@ class BoundInput:
             os.close(self.fd)
         self.fd = None
         if self._private_copy is not None:
-            # Best effort by pathname: if the directory chain was swapped mid-run the copy
-            # (our own bytes, nothing foreign) is left behind in the attacker-controlled folder.
             with contextlib.suppress(OSError):
                 os.remove(self._private_copy)
                 os.rmdir(os.path.dirname(self._private_copy))

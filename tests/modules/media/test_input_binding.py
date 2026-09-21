@@ -204,7 +204,9 @@ class InputBindingTests(unittest.TestCase):
                 self.assertEqual(pass_fds, ())
                 self.assertNotEqual(source, self.video)
                 self.assertTrue(os.path.basename(os.path.dirname(source)).startswith(input_binding._PRIVATE_COPY_PREFIX))
-                self.assertEqual(os.path.dirname(os.path.dirname(source)), self.folder)
+                # The copy lives in the user's temp dir, never inside the (attacker-controlled) input tree.
+                self.assertEqual(os.path.realpath(os.path.dirname(os.path.dirname(source))), os.path.realpath(tempfile.gettempdir()))
+                self.assertNotEqual(os.path.commonpath([source, self.folder]), self.folder)
                 with open(source, "rb") as handle:
                     self.assertEqual(handle.read(), b"original")
                 # Repeated lookups reuse the same copy; a nested bind shares it.
@@ -215,6 +217,28 @@ class InputBindingTests(unittest.TestCase):
                 copy_dir = os.path.dirname(source)
             self.assertFalse(os.path.exists(copy_dir))
             self.assertIsNone(bound.fd)
+
+    def test_fallback_copy_is_unaffected_by_a_parent_swap_after_it_is_made(self):
+        root = os.path.join(self.folder, "drop")
+        os.makedirs(os.path.join(root, "clips"))
+        clip = os.path.join(root, "clips", "movie.mp4")
+        with open(clip, "wb") as handle:
+            handle.write(b"original")
+        set_input_root(root)
+        with patch.object(input_binding, "_IS_POSIX", False), patch.object(input_binding, "_DIR_FD_SUPPORTED", False):
+            with bind_input(clip):
+                source, _ = media_source(clip)
+                # Attacker swaps clips/ for a link to their own tree and plants a same-named file there.
+                os.rename(os.path.join(root, "clips"), os.path.join(root, "clips.bak"))
+                attacker = os.path.join(self.folder, "attacker")
+                os.mkdir(attacker)
+                self._symlink_or_skip(attacker, os.path.join(root, "clips"))
+                with open(os.path.join(attacker, "movie.mp4"), "wb") as handle:
+                    handle.write(b"planted!")
+                self.assertEqual(media_source(clip)[0], source)
+                with open(source, "rb") as handle:
+                    self.assertEqual(handle.read(), b"original")
+            self.assertFalse(os.path.exists(os.path.dirname(source)))
 
 
 if __name__ == "__main__":
