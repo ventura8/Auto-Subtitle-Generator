@@ -21,12 +21,16 @@ def classify_batch_result(process_result):
     return "no_speech"
 
 
-def build_file_summary(video_path, elapsed_seconds, status):
-    """Build per-file metrics summary and return message, media duration, and batch item stats."""
+def build_file_summary(video_path, elapsed_seconds, status, probe=True):
+    """Build per-file metrics summary and return message, media duration, and batch item stats.
+
+    ``probe=False`` skips the FFprobe duration lookup; used when the input could
+    not be bound, so a rejected pathname is never handed to FFprobe.
+    """
     file_name = os.path.basename(video_path)
     elapsed_text = format_elapsed_time(elapsed_seconds)
     try:
-        media_seconds = get_audio_duration(video_path)
+        media_seconds = get_audio_duration(video_path) if probe else 0.0
         speed_summary = format_total_processing_speed(media_seconds, elapsed_seconds)
         media_text = format_elapsed_time(media_seconds) if media_seconds > 0 else "N/A"
         summary_message = (

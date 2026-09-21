@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import os
 import sys
 import unittest
@@ -36,6 +37,12 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         torch_patcher = patch.object(auto_subtitle, "torch", sys.modules["torch"], create=True)
         torch_patcher.start()
         self.addCleanup(torch_patcher.stop)
+
+        # process_video binds the input to an open descriptor; these tests use paths that
+        # do not exist on disk, so stub the binding (input_binding has its own tests).
+        bind_patcher = patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext(MagicMock(name="bound")))
+        bind_patcher.start()
+        self.addCleanup(bind_patcher.stop)
 
         config_patcher = patch.multiple(
             config,
@@ -125,16 +132,18 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
             self.assertEqual(files, [os.path.abspath("test.mp4")])
 
     def test_get_input_files_directory(self):
-        with (
-            patch("os.path.isdir", return_value=True),
-            patch("os.walk", return_value=[("input_dir", [], ["vid1.mp4", "vid2.mkv", "readme.txt"])]),
-            patch("sys.argv", ["utils.py", "input_dir"]),
-            patch.object(config, "VIDEO_EXTENSIONS", {".mp4", ".mkv"}),
-        ):
-            with patch("os.path.isfile", side_effect=lambda x: x.endswith(".mp4") or x.endswith(".mkv")):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as input_dir:
+            for name in ("vid1.mp4", "vid2.mkv", "readme.txt"):
+                open(os.path.join(input_dir, name), "wb").close()
+            with (
+                patch("sys.argv", ["utils.py", input_dir]),
+                patch.object(config, "VIDEO_EXTENSIONS", {".mp4", ".mkv"}),
+            ):
                 files, _, _ = auto_subtitle.get_input_files()
                 self.assertEqual(len(files), 2)
-                self.assertIn(os.path.abspath(os.path.join("input_dir", "vid1.mp4")), files)
+                self.assertIn(os.path.join(input_dir, "vid1.mp4"), files)
 
     def test_process_video_end_to_end_flow(self):
         # Test the high-level orchestration of process_video
@@ -437,13 +446,16 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
     @patch("builtins.input", return_value="")
     @patch("os.path.isdir", return_value=True)
     @patch("os.path.isfile", return_value=False)
-    @patch("os.walk")
-    def test_get_input_files(self, mock_walk, mock_isfile, mock_isdir, mock_input, mock_args):
-        # Scenario 1: Arg provided, is folder
-        mock_args.return_value = argparse.Namespace(input_path="myfolder", lang="en", prompt="hello", cpu=False)
-        mock_walk.return_value = [("myfolder", [], ["vid.mp4", "ignore.txt"])]
+    def test_get_input_files(self, mock_isfile, mock_isdir, mock_input, mock_args):
+        import tempfile
 
-        files, lang, prompt = auto_subtitle.get_input_files()
+        # Scenario 1: Arg provided, is folder
+        with tempfile.TemporaryDirectory() as myfolder:
+            for name in ("vid.mp4", "ignore.txt"):
+                open(os.path.join(myfolder, name), "wb").close()
+            mock_args.return_value = argparse.Namespace(input_path=myfolder, lang="en", prompt="hello", cpu=False)
+
+            files, lang, prompt = auto_subtitle.get_input_files()
 
         self.assertEqual(lang, "en")
         self.assertEqual(prompt, "hello")

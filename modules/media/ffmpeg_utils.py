@@ -13,6 +13,7 @@ from ..runtime.progress import print_progress_bar
 from ..safe_io import discard_temp_path, promote_temp_path, reserve_temp_path
 from ..subtitles.timestamp_utils import parse_timestamp
 from ..workdir import ensure_work_dir
+from .input_binding import media_source, rewind_inputs
 
 
 def _resolve_ffmpeg_pair(bin_dir, ext):
@@ -79,8 +80,10 @@ FFMPEG_CMD, FFPROBE_CMD = get_ffmpeg_paths()
 def get_audio_duration(file_path):
     """Returns duration of audio file in seconds."""
     try:
-        cmd = [FFPROBE_CMD, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
-        return float(subprocess.check_output(cmd, timeout=30).decode().strip())
+        source, pass_fds = media_source(file_path)
+        cmd = [FFPROBE_CMD, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", source]
+        rewind_inputs(pass_fds)
+        return float(subprocess.check_output(cmd, timeout=30, pass_fds=pass_fds).decode().strip())
     except Exception as exc:
         if isinstance(exc, (OSError, ValueError)) or _is_called_process_error(exc):
             return 0.0
@@ -108,11 +111,12 @@ def extract_clean_audio(video_path):
 
     # FFmpeg -y follows symlinks, so extract into a private scratch file and promote.
     scratch = reserve_temp_path(temp_wav, scratch_dir=work_dir)
+    source, pass_fds = media_source(video_path)
     cmd = [
         FFMPEG_CMD,
         "-y",
         "-i",
-        video_path,
+        source,
         "-vn",
         "-ac",
         "1",
@@ -131,7 +135,7 @@ def extract_clean_audio(video_path):
     promoted = False
     try:
         total_dur = get_audio_duration(video_path)
-        run_ffmpeg_progress(cmd, "  [Sample] Extracting Audio", total_dur)
+        run_ffmpeg_progress(cmd, "  [Sample] Extracting Audio", total_dur, pass_fds=pass_fds)
         _validate_clean_audio_file(scratch.path)
         promote_temp_path(scratch, temp_wav)
         promoted = True
@@ -220,9 +224,13 @@ def _concat_quote(path):
     return path.replace("'", "'\\''")
 
 
-def run_ffmpeg_progress(cmd, desc, total_duration):
-    """Executes FFmpeg command with a real-time progress bar UI."""
+def run_ffmpeg_progress(cmd, desc, total_duration, pass_fds=()):
+    """Executes FFmpeg command with a real-time progress bar UI.
+
+    ``pass_fds`` inherits descriptor-bound inputs (see ``input_binding``) into the child.
+    """
     start_time = time.time()
+    rewind_inputs(pass_fds)
     with subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -230,6 +238,7 @@ def run_ffmpeg_progress(cmd, desc, total_duration):
         creationflags=(subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0),
         encoding="utf-8",
         errors="replace",
+        pass_fds=pass_fds,
     ) as process:
         register_subprocess(process)
         try:

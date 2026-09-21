@@ -1,3 +1,4 @@
+import contextlib
 import os
 import unittest
 from types import SimpleNamespace
@@ -26,6 +27,12 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
         torch_patcher = patch("auto_subtitle.torch", None, create=True)
         torch_patcher.start()
         self.addCleanup(torch_patcher.stop)
+
+        # process_video binds the input to an open descriptor; these tests use paths that
+        # do not exist on disk, so stub the binding (input_binding has its own tests).
+        bind_patcher = patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext(MagicMock(name="bound")))
+        bind_patcher.start()
+        self.addCleanup(bind_patcher.stop)
 
     @patch("auto_subtitle.print_progress_bar")
     @patch("auto_subtitle.log")
@@ -347,7 +354,7 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             patch("os.walk", return_value=[]) as mock_walk,
         ):
             files, lang, prompt = auto_subtitle.get_input_files()
-            mock_walk.assert_called_once_with("input")
+            mock_walk.assert_called_once_with("input", followlinks=False)
             self.assertEqual(files, [])
             self.assertIsNone(lang)
             self.assertIsNone(prompt)
@@ -361,14 +368,92 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
         self.assertTrue(any(item[2] == "EN" for item in embedded))
 
     def test_get_input_files_exclude_multilang(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("vid.mp4", "vid_multilang.mp4"):
+                open(os.path.join(folder, name), "wb").close()
+            with patch("argparse.ArgumentParser.parse_args", return_value=MagicMock(input_path=folder, cpu=False, lang=None, prompt=None)):
+                files, _, _ = auto_subtitle.get_input_files()
+            self.assertEqual([os.path.basename(f) for f in files], ["vid.mp4"])
+
+    @staticmethod
+    def _symlink_or_skip(target, link):
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as e:
+            raise unittest.SkipTest(f"symlinks unavailable: {e}")
+
+    def test_collect_video_files_skips_planted_symlinks(self):
+        import tempfile
+
+        from modules.media import file_utils
+
+        with tempfile.TemporaryDirectory() as victim, tempfile.TemporaryDirectory() as folder:
+            secret = os.path.join(victim, "secret.mp4")
+            open(secret, "wb").close()
+            open(os.path.join(folder, "real.mp4"), "wb").close()
+            self._symlink_or_skip(secret, os.path.join(folder, "vacation.mp4"))
+            # Symlinked directory containing supported media must not be walked.
+            self._symlink_or_skip(victim, os.path.join(folder, "clips"))
+            # Link pointing back inside the folder is still refused: only regular files count.
+            self._symlink_or_skip(os.path.join(folder, "real.mp4"), os.path.join(folder, "alias.mp4"))
+
+            with patch("modules.media.file_utils.log"):
+                files = file_utils._collect_video_files(folder)
+            self.assertEqual([os.path.basename(f) for f in files], ["real.mp4"])
+
+            # A top-level symlink dropped onto the prompt is refused outright.
+            with patch("modules.media.file_utils.log") as mock_log:
+                self.assertEqual(file_utils._collect_video_files(os.path.join(folder, "vacation.mp4")), [])
+            self.assertTrue(any("symlink" in str(c.args[0]).lower() for c in mock_log.call_args_list))
+
+    def test_collect_video_files_treats_junctions_as_links(self):
+        import tempfile
+
+        from modules.media import file_utils
+
+        with tempfile.TemporaryDirectory() as folder:
+            os.mkdir(os.path.join(folder, "junction"))
+            open(os.path.join(folder, "junction", "leak.mp4"), "wb").close()
+            open(os.path.join(folder, "real.mp4"), "wb").close()
+            junction = os.path.join(folder, "junction")
+            with patch("modules.media.input_binding.os.path.isjunction", lambda p: os.path.abspath(p) == junction, create=True):
+                files = file_utils._collect_video_files(folder)
+                self.assertEqual([os.path.basename(f) for f in files], ["real.mp4"])
+                with patch("modules.media.file_utils.log"):
+                    self.assertEqual(file_utils._collect_video_files(junction), [])
+
+    def test_get_input_files_registers_the_selected_folder_as_input_root(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder, "vid.mp4"), "wb").close()
+            with (
+                patch("argparse.ArgumentParser.parse_args", return_value=MagicMock(input_path=folder, cpu=False, lang=None, prompt=None)),
+                patch("auto_subtitle.set_input_root") as mock_root,
+            ):
+                auto_subtitle.get_input_files()
+            mock_root.assert_called_once_with(folder)
+            with (
+                patch(
+                    "argparse.ArgumentParser.parse_args",
+                    return_value=MagicMock(input_path=os.path.join(folder, "vid.mp4"), cpu=False, lang=None, prompt=None),
+                ),
+                patch("auto_subtitle.set_input_root") as mock_root,
+            ):
+                auto_subtitle.get_input_files()
+            mock_root.assert_called_once_with(folder)
+
+    def test_collect_video_files_rejects_real_path_outside_input_root(self):
+        from modules.media import file_utils
+
         with (
-            patch("argparse.ArgumentParser.parse_args", return_value=MagicMock(input_path="folder", cpu=False, lang=None, prompt=None)),
-            patch("os.path.isfile", return_value=False),
-            patch("os.path.isdir", return_value=True),
-            patch("os.walk", return_value=[(".", [], ["vid.mp4", "vid_multilang.mp4"])]),
+            patch("os.lstat", return_value=SimpleNamespace(st_mode=0o100644)),
+            patch("os.path.realpath", side_effect=lambda p: "/victim/secret.mp4" if p.endswith(".mp4") else "/drop"),
+            patch("modules.media.file_utils.log"),
         ):
-            files, _, _ = auto_subtitle.get_input_files()
-            self.assertEqual(len(files), 1)
+            self.assertFalse(file_utils._is_safe_input_file("/drop/vacation.mp4", "/drop"))
 
     def test_collect_video_files_file_input_filters_unsupported_or_multilang(self):
         from modules.media import file_utils
@@ -406,6 +491,18 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             self.assertTrue(any("Total processing speed: 2.00x realtime" in str(call.args[0]) for call in mock_log.call_args_list))
             self.assertTrue(any("Media duration: 00:02:00" in str(call.args[0]) for call in mock_log.call_args_list))
             self.assertTrue(any("Elapsed: 00:01:00" in str(call.args[0]) for call in mock_log.call_args_list))
+
+    def test_process_video_batch_never_probes_an_input_whose_binding_was_refused(self):
+        with (
+            patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext(None)),
+            patch("auto_subtitle.process_video", return_value=(None, None, None)),
+            patch("modules.runtime.batch_summary.get_audio_duration") as mock_probe,
+            patch("auto_subtitle.log") as mock_log,
+        ):
+            auto_subtitle.process_video_batch(["planted.mp4"], MagicMock(), None, None)
+
+        mock_probe.assert_not_called()
+        self.assertTrue(any("Media duration: N/A" in str(call.args[0]) for call in mock_log.call_args_list))
 
     def test_process_video_batch_logs_batch_summary_for_multiple_files(self):
         with (

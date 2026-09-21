@@ -113,7 +113,7 @@ class TestExtractionRf64Guard(unittest.TestCase):
                 handle.write(b"\x00" * 16)
             captured = {}
 
-            def fake_run(cmd, _desc, _dur):
+            def fake_run(cmd, _desc, _dur, pass_fds=()):
                 captured["cmd"] = cmd
                 with open(cmd[-1], "wb") as handle:
                     handle.write(b"\x00" * 4096)

@@ -18,8 +18,9 @@ performance on any system.
 
 ## **📝 Release Notes**
 
-- v1.2.0: [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md)
-- GitHub release body (copy-ready): [docs/releases/v1.2.0_github_description.md](docs/releases/v1.2.0_github_description.md)
+- v1.2.4: [docs/releases/v1.2.4.md](docs/releases/v1.2.4.md)
+- GitHub release body (copy-ready): [docs/releases/v1.2.4_github_description.md](docs/releases/v1.2.4_github_description.md)
+- Earlier releases: [docs/releases/](docs/releases/)
 
 ## **🌟 Key Features**
 
@@ -161,6 +162,13 @@ global reach:
   speech, or skipped because its output already exists) the work directory
   is removed, and legacy sidecars from older releases are swept from the video
   folder.
+- **Untrusted Input Folders Are Safe:** A video is only processed if it is a
+  plain regular file inside the folder you selected. Symlinks and Windows
+  junctions are skipped with a warning, and the pipeline keeps the validated
+  file open for the whole run so FFmpeg reads exactly that file — a link or
+  directory swapped in afterwards (on a USB stick or a shared folder) can
+  never make it read, transcribe, or copy media from elsewhere on your machine.
+  On Windows the input is copied to `%TEMP%` for the duration of its run.
 - **VRAM-Aware Tuning:** The translation model is chosen to fit the card
   (`models.nllb: auto` picks NLLB-3.3B from 11 GB, the distilled 1.3B from
   5 GB, the distilled 600M below), Whisper drops to int8 weights on small

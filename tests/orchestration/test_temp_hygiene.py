@@ -212,7 +212,7 @@ class TestEmbedScratch(_WorkDirCase):
             return auto_subtitle.embed_subtitles(self.video, [(os.path.join(self.folder, "movie.en.srt"), "en", "English")], "en")
 
     def test_mux_scratch_is_in_work_dir_and_promoted(self):
-        def fake_ffmpeg(cmd, _desc, _dur):
+        def fake_ffmpeg(cmd, _desc, _dur, pass_fds=()):
             self.assertTrue(cmd[-1].startswith(os.path.join(self.work_dir, safe_io.SCRATCH_PREFIX)))
             with open(cmd[-1], "wb") as handle:
                 handle.write(b"muxed")
@@ -235,7 +235,7 @@ class TestEmbedScratch(_WorkDirCase):
 
 class TestExtractCleanAudioWorkDir(_WorkDirCase):
     def test_extracted_audio_lands_in_work_dir(self):
-        def fake_ffmpeg(cmd, _desc, _dur):
+        def fake_ffmpeg(cmd, _desc, _dur, pass_fds=()):
             self.assertTrue(cmd[-1].startswith(os.path.join(self.work_dir, safe_io.SCRATCH_PREFIX)))
             with open(cmd[-1], "wb") as handle:
                 handle.write(b"\x00" * 4096)

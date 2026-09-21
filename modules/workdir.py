@@ -41,6 +41,7 @@ import os
 import stat
 import time
 
+from .media.input_binding import stat_input
 from .runtime.logging_utils import log
 from .safe_io import SCRATCH_PREFIX, SymlinkRefusedError, atomic_text_writer
 
@@ -105,12 +106,16 @@ def _reject_occupied_name(path):
 
 
 def source_stamp(video_path):
-    """Return the identity (size, mtime) of the input a work directory belongs to, or None."""
+    """Return the identity (device, inode, size, mtime) of the input a work directory belongs to, or None.
+
+    Taken from the bound descriptor when the input is bound, so the stamp
+    describes the file that will actually be processed.
+    """
     try:
-        info = os.stat(video_path)
+        info = stat_input(video_path)
     except OSError:
         return None
-    return {"size": info.st_size, "mtime_ns": info.st_mtime_ns}
+    return {"device": info.st_dev, "inode": info.st_ino, "size": info.st_size, "mtime_ns": info.st_mtime_ns}
 
 
 def bind_work_dir_to_source(folder, base_name, video_path):

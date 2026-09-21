@@ -115,6 +115,42 @@
   sweep of the video folder deliberately does not match these entries and
   never walks a directory found in the untrusted input folder.
 
+### Descriptor-bound input reads (defined in `modules/media/input_binding.py`)
+
+- **Threat model**: The input directory is untrusted for reads too. A
+  planted `vacation.mp4 → ~/Videos/private.mp4` symlink would otherwise be
+  collected, followed by FFmpeg `-i`, transcribed, and stream-copied next to
+  the link as `vacation_multilang.mp4`. Collection
+  (`modules/media/file_utils.py`) skips top-level links and junctions, never
+  descends into linked directories, and keeps only regular files whose real
+  path stays inside the selected folder — but that is a pathname check, and
+  model loading leaves minutes in which the file or a parent directory can be
+  swapped for a link before FFprobe/FFmpeg open it.
+- **Mechanism**: `process_video` holds `bind_input(video_path)` for the whole
+  pipeline. `get_input_files` registers the selected folder via
+  `set_input_root` (pathname form to match collected paths; `realpath` taken
+  at selection time to open, so a folder selected through a symlink works
+  while a link planted at the root later is refused). On POSIX the root is
+  opened with `O_DIRECTORY | O_NOFOLLOW`, each component below it and the file
+  are opened relative to the previous descriptor with `O_NOFOLLOW`, and
+  `fstat` must report a regular file; a swapped component raises
+  `InputRefusedError`. `media_source(path)` then returns `/dev/fd/N` plus the
+  fd to inherit, and `get_audio_duration`, `extract_clean_audio` and the
+  final mux pass it through `pass_fds`, calling `rewind_inputs` right before
+  each spawn because `/dev/fd` can share the file offset (macOS).
+- **Windows fallback**: no `O_NOFOLLOW` and no fd passing; a held handle pins
+  the file but not the directory chain FFmpeg walks by pathname. Components
+  are checked with `is_link`, the file is opened after an `lstat` check with
+  `fstat` identity compared, and the bytes are copied from that handle into
+  `tempfile.mkdtemp()` under the user's `%TEMP%`. FFmpeg reads the copy,
+  removed on close.
+- **Resume and summary**: binding happens before
+  `workdir.bind_work_dir_to_source`; `source_stamp` reads through
+  `stat_input` (fstat of the bound descriptor) and records device, inode,
+  size and mtime. `_process_batch_video` holds a non-strict outer binding and
+  passes `probe=False` to `build_file_summary` when it was refused, so a
+  rejected pathname is never handed to FFprobe.
+
 ### Chunked vocal separation (defined in `modules/pipeline/transcription.py`)
 
 - **Why**: Audio-Separator calls `librosa.load` on the whole input at
