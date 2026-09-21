@@ -57,6 +57,7 @@ class BoundInput:
         return f"/dev/fd/{self.fd}", (self.fd,)
 
     def close(self):
+        """Close the descriptor if this binding owns it."""
         if self._owns_fd and self.fd is not None:
             os.close(self.fd)
         self.fd = None
