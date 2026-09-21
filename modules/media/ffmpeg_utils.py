@@ -13,7 +13,7 @@ from ..runtime.progress import print_progress_bar
 from ..safe_io import discard_temp_path, promote_temp_path, reserve_temp_path
 from ..subtitles.timestamp_utils import parse_timestamp
 from ..workdir import ensure_work_dir
-from .input_binding import media_source
+from .input_binding import media_source, rewind_inputs
 
 
 def _resolve_ffmpeg_pair(bin_dir, ext):
@@ -82,6 +82,7 @@ def get_audio_duration(file_path):
     try:
         source, pass_fds = media_source(file_path)
         cmd = [FFPROBE_CMD, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", source]
+        rewind_inputs(pass_fds)
         return float(subprocess.check_output(cmd, timeout=30, pass_fds=pass_fds).decode().strip())
     except Exception as exc:
         if isinstance(exc, (OSError, ValueError)) or _is_called_process_error(exc):
@@ -229,6 +230,7 @@ def run_ffmpeg_progress(cmd, desc, total_duration, pass_fds=()):
     ``pass_fds`` inherits descriptor-bound inputs (see ``input_binding``) into the child.
     """
     start_time = time.time()
+    rewind_inputs(pass_fds)
     with subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,

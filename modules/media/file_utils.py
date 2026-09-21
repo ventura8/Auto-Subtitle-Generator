@@ -11,6 +11,7 @@ import stat
 
 from ..configuration import config
 from ..runtime.logging_utils import log
+from .input_binding import is_link
 
 
 def collect_video_files(path):
@@ -28,8 +29,8 @@ def _collect_video_files(path):
     files = []
     supported_extensions = _get_supported_video_extensions()
 
-    if os.path.islink(path):
-        log(f"Skipping symlink input: {path}", "WARNING")
+    if is_link(path):
+        log(f"Skipping symlink or junction input: {path}", "WARNING")
         return files
 
     if os.path.isfile(path):
@@ -89,9 +90,9 @@ def _collect_from_directory(path, supported_extensions):
     files = []
     input_root = os.path.realpath(path)
     for root, dir_names, filenames in os.walk(path, followlinks=False):
-        # os.walk never descends into symlinked directories, but drop them so
-        # a later pass can't be tricked into treating them as inputs either.
-        dir_names[:] = [name for name in dir_names if not os.path.islink(os.path.join(root, name))]
+        # os.walk never descends into symlinked directories, but junctions and any
+        # later pass are another matter: drop every linked directory explicitly.
+        dir_names[:] = [name for name in dir_names if not is_link(os.path.join(root, name))]
         files.extend(_collect_safe_files(root, filenames, supported_extensions, input_root))
     return files
 

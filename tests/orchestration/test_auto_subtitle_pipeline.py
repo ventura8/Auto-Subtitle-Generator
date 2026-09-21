@@ -408,6 +408,43 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
                 self.assertEqual(file_utils._collect_video_files(os.path.join(folder, "vacation.mp4")), [])
             self.assertTrue(any("symlink" in str(c.args[0]).lower() for c in mock_log.call_args_list))
 
+    def test_collect_video_files_treats_junctions_as_links(self):
+        import tempfile
+
+        from modules.media import file_utils
+
+        with tempfile.TemporaryDirectory() as folder:
+            os.mkdir(os.path.join(folder, "junction"))
+            open(os.path.join(folder, "junction", "leak.mp4"), "wb").close()
+            open(os.path.join(folder, "real.mp4"), "wb").close()
+            junction = os.path.join(folder, "junction")
+            with patch("modules.media.input_binding.os.path.isjunction", lambda p: os.path.abspath(p) == junction, create=True):
+                files = file_utils._collect_video_files(folder)
+                self.assertEqual([os.path.basename(f) for f in files], ["real.mp4"])
+                with patch("modules.media.file_utils.log"):
+                    self.assertEqual(file_utils._collect_video_files(junction), [])
+
+    def test_get_input_files_registers_the_selected_folder_as_input_root(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder, "vid.mp4"), "wb").close()
+            with (
+                patch("argparse.ArgumentParser.parse_args", return_value=MagicMock(input_path=folder, cpu=False, lang=None, prompt=None)),
+                patch("auto_subtitle.set_input_root") as mock_root,
+            ):
+                auto_subtitle.get_input_files()
+            mock_root.assert_called_once_with(folder)
+            with (
+                patch(
+                    "argparse.ArgumentParser.parse_args",
+                    return_value=MagicMock(input_path=os.path.join(folder, "vid.mp4"), cpu=False, lang=None, prompt=None),
+                ),
+                patch("auto_subtitle.set_input_root") as mock_root,
+            ):
+                auto_subtitle.get_input_files()
+            mock_root.assert_called_once_with(folder)
+
     def test_collect_video_files_rejects_real_path_outside_input_root(self):
         from modules.media import file_utils
 

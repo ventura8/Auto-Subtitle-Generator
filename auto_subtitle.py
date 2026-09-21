@@ -26,7 +26,7 @@ from modules import models, utils, workdir
 from modules.configuration import config
 from modules.configuration.version import __version__
 from modules.media.ffmpeg_utils import build_primary_media_metadata_args
-from modules.media.input_binding import bind_input, media_source
+from modules.media.input_binding import bind_input, media_source, set_input_root
 from modules.models import OPTIMIZER, ModelManager
 from modules.pipeline.transcription import transcribe_video_audio
 from modules.pipeline.translation import translate_segments
@@ -503,19 +503,19 @@ def process_video(video_path, model_mgr, forced_lang=None, forced_prompt=None):
 
     result = (None, None, None)
     try:
-        # Resume state must belong to this exact input, not an earlier file of the same name.
-        binding = workdir.bind_work_dir_to_source(folder, base_name, video_path)
-        pipeline_context = {
-            "forced_lang": forced_lang,
-            "forced_prompt": forced_prompt,
-            "folder": folder,
-            "base_name": base_name,
-            "output_path": output_path,
-            "input_changed": binding == workdir.BIND_CHANGED,
-        }
-        # Hold the input open so FFprobe/FFmpeg read the file validated here, not whatever
-        # the pathname resolves to later.
+        # Hold the input open so the resume decision, FFprobe and FFmpeg all see the file
+        # validated here, not whatever the pathname resolves to later.
         with bind_input(video_path):
+            # Resume state must belong to this exact input, not an earlier file of the same name.
+            binding = workdir.bind_work_dir_to_source(folder, base_name, video_path)
+            pipeline_context = {
+                "forced_lang": forced_lang,
+                "forced_prompt": forced_prompt,
+                "folder": folder,
+                "base_name": base_name,
+                "output_path": output_path,
+                "input_changed": binding == workdir.BIND_CHANGED,
+            }
             result = _process_video_pipeline(video_path, model_mgr, pipeline_context)
         return result
 
@@ -564,6 +564,8 @@ def get_input_files(parsed_args=None):
 
     path = utils.resolve_input_path(args.input_path)
     files = utils.collect_video_files(path)
+    # Everything below the selected folder is opened without following links at bind time.
+    set_input_root(path if os.path.isdir(path) else os.path.dirname(path))
 
     return files, args.lang, args.prompt
 

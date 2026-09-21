@@ -3,20 +3,27 @@
 ``collect_video_files`` filters symlinks out of the input folder, but that check
 is on a *pathname*. Between collection and the FFprobe/FFmpeg opens (model
 loading can take minutes) a party with write access to the input folder could
-swap the validated regular file for a symlink. ``bind_input`` closes that gap by
-opening the file itself and handing FFmpeg the open descriptor rather than the
-name:
+swap the validated regular file, or one of its parent directories, for a
+symlink. ``bind_input`` closes that gap by opening the file itself and handing
+FFmpeg the open descriptor rather than the name:
 
-* POSIX: the parent directory is opened as a descriptor, the file is opened
-  relative to it with ``O_NOFOLLOW``, ``fstat`` confirms a regular file, and
-  FFmpeg/FFprobe receive ``/dev/fd/N`` for that exact open file.
-* Windows: there is no ``O_NOFOLLOW`` and no fd passing. The file is opened
-  after an ``lstat`` symlink check and ``fstat`` is compared against it; the
-  open handle then denies rename/delete of the file for as long as it is held,
-  so the pathname FFmpeg opens cannot be re-pointed while processing runs.
+* POSIX: the user-selected input directory (``set_input_root``) is opened as a
+  descriptor, every directory component below it and the file itself are
+  opened relative to the previous descriptor with ``O_NOFOLLOW``, ``fstat``
+  confirms a regular file, and FFmpeg/FFprobe receive ``/dev/fd/N`` for that
+  exact open file. ``/dev/fd/N`` may share the file offset with our descriptor
+  (macOS ``dup`` semantics), so ``rewind_inputs`` runs right before every
+  child is spawned.
+* Windows: there is no ``O_NOFOLLOW`` and no fd passing. Each component below
+  the root is checked for links/junctions, the file is opened after an
+  ``lstat`` symlink check and ``fstat`` is compared against it; the open handle
+  then denies rename/delete of the file for as long as it is held, so the
+  pathname FFmpeg opens cannot be re-pointed while processing runs.
 
 The binding is active for the ``with`` block and looked up by pathname via
-``media_source`` so the pipeline's string-based call chain stays unchanged.
+``media_source``/``stat_input`` so the pipeline's string-based call chain stays
+unchanged. Without a registered root (direct API use) only the final
+component is protected and the parent directory is opened by pathname.
 """
 
 import contextlib
@@ -25,11 +32,14 @@ import stat
 import sys
 
 _IS_POSIX = sys.platform != "win32"
-_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_FILE_FLAGS = os.O_RDONLY | _NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
 _DIR_FD_SUPPORTED = _IS_POSIX and os.open in os.supports_dir_fd
 
 _active_bindings: dict[str, "BoundInput"] = {}
+# Single slot: the user-selected input directory, or None when no root is registered.
+_trusted_root: list[str | None] = [None]
 
 
 class InputRefusedError(OSError):
@@ -51,9 +61,6 @@ class BoundInput:
         """Return ``(ffmpeg input argument, fds to inherit)`` for a child process."""
         if not _IS_POSIX:
             return self.path, ()
-        # /dev/fd/N may share the file offset with our descriptor (macOS dup semantics);
-        # children run one at a time, so rewind before each one.
-        os.lseek(self.fd, 0, os.SEEK_SET)
         return f"/dev/fd/{self.fd}", (self.fd,)
 
     def close(self):
@@ -63,6 +70,26 @@ class BoundInput:
         self.fd = None
 
 
+def set_input_root(path):
+    """Record the user-selected input directory; everything below it is opened without following links."""
+    _trusted_root[0] = os.path.abspath(os.fspath(path)) if path else None
+
+
+def is_link(path):
+    """Return True for a symlink or a Windows directory junction."""
+    return os.path.islink(path) or getattr(os.path, "isjunction", lambda _p: False)(path)
+
+
+def _split_trusted(path):
+    """Return ``(trusted directory, [components to open without following links])`` for ``path``."""
+    root = _trusted_root[0]
+    if root is not None:
+        rel = os.path.relpath(path, root)
+        if rel != os.curdir and not rel.startswith(os.pardir):
+            return root, rel.split(os.sep)
+    return os.path.dirname(path) or os.curdir, [os.path.basename(path)]
+
+
 def _refuse(fd, message):
     if fd is not None:
         os.close(fd)
@@ -70,11 +97,15 @@ def _refuse(fd, message):
 
 
 def _open_regular_posix(path):
-    """Open ``path`` relative to its parent directory descriptor without following the final link."""
-    parent = os.path.dirname(path) or "."
-    dir_fd = os.open(parent, _DIR_FLAGS)
+    """Open ``path`` component by component below the trusted directory, never following a link."""
+    trusted_dir, components = _split_trusted(path)
+    dir_fd = os.open(trusted_dir, _DIR_FLAGS)
     try:
-        fd = os.open(os.path.basename(path), _FILE_FLAGS, dir_fd=dir_fd)
+        for name in components[:-1]:
+            next_fd = _open_component(name, dir_fd, path)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        fd = os.open(components[-1], _FILE_FLAGS, dir_fd=dir_fd)
     except OSError as e:
         raise InputRefusedError(f"Refusing input {path}: {e.strerror or e}") from e
     finally:
@@ -84,8 +115,17 @@ def _open_regular_posix(path):
     return fd
 
 
+def _open_component(name, dir_fd, path):
+    """Open directory ``name`` relative to ``dir_fd`` without following links; ENOTDIR/ELOOP means a link."""
+    try:
+        return os.open(name, _DIR_FLAGS | _NOFOLLOW, dir_fd=dir_fd)
+    except NotADirectoryError as e:
+        raise InputRefusedError(f"Refusing input {path}: directory {name!r} was replaced by a link") from e
+
+
 def _open_regular_fallback(path):
     """Open ``path`` on platforms without O_NOFOLLOW, verifying the opened file is the lstat'ed one."""
+    _reject_linked_components(path)
     try:
         before = os.lstat(path)
     except OSError as e:
@@ -96,6 +136,15 @@ def _open_regular_fallback(path):
     if not _same_regular_file(before, os.fstat(fd)):
         _refuse(fd, f"Refusing input {path}: file changed while opening")
     return fd
+
+
+def _reject_linked_components(path):
+    """Refuse when any directory between the trusted directory and ``path`` is a link or junction."""
+    current, components = _split_trusted(path)
+    for name in components[:-1]:
+        current = os.path.join(current, name)
+        if is_link(current):
+            _refuse(None, f"Refusing input {path}: {current} is a link")
 
 
 def _same_regular_file(before, after):
@@ -143,3 +192,17 @@ def media_source(path):
     if bound is None:
         return os.fspath(path), ()
     return bound.media_source()
+
+
+def stat_input(path):
+    """``os.stat`` for ``path``, taken from the bound descriptor when one is active."""
+    bound = _active_bindings.get(os.path.abspath(os.fspath(path)))
+    if bound is None:
+        return os.stat(path)
+    return os.fstat(bound.fd)
+
+
+def rewind_inputs(pass_fds):
+    """Rewind inherited input descriptors; call immediately before spawning each child."""
+    for fd in pass_fds:
+        os.lseek(fd, 0, os.SEEK_SET)

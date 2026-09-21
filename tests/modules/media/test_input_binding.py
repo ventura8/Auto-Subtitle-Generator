@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from modules.media import input_binding
-from modules.media.input_binding import InputRefusedError, bind_input, media_source
+from modules.media.input_binding import InputRefusedError, bind_input, media_source, rewind_inputs, set_input_root, stat_input
 
 
 class InputBindingTests(unittest.TestCase):
@@ -21,6 +21,7 @@ class InputBindingTests(unittest.TestCase):
         self.secret = os.path.join(self.folder, "secret.mp4")
         with open(self.secret, "wb") as handle:
             handle.write(b"secret")
+        self.addCleanup(set_input_root, None)
 
     def _symlink_or_skip(self, target, link):
         try:
@@ -40,9 +41,14 @@ class InputBindingTests(unittest.TestCase):
                 self.assertEqual(source, f"/dev/fd/{bound.fd}")
                 self.assertEqual(pass_fds, (bound.fd,))
             bound_id = os.fstat(bound.fd).st_ino
-            # Swap the name for a symlink to another file mid-run: the descriptor is unaffected.
-            os.remove(self.video)
-            self._symlink_or_skip(self.secret, self.video)
+            if sys.platform == "win32":
+                # The held handle denies rename/delete, so the name cannot be re-pointed at all.
+                with self.assertRaises(PermissionError):
+                    os.remove(self.video)
+            else:
+                # Swap the name for a symlink to another file mid-run: the descriptor is unaffected.
+                os.remove(self.video)
+                self._symlink_or_skip(self.secret, self.video)
             self.assertEqual(os.fstat(bound.fd).st_ino, bound_id)
             self.assertEqual(os.read(bound.fd, 8), b"original")
         self.assertIsNone(bound.fd)
@@ -99,6 +105,55 @@ class InputBindingTests(unittest.TestCase):
             with bind_input(self.video):
                 raise RuntimeError("boom")
         self.assertEqual(media_source(self.video), (self.video, ()))
+
+    def test_stat_input_uses_the_bound_descriptor(self):
+        with bind_input(self.video) as bound:
+            self.assertEqual(stat_input(self.video).st_ino, os.fstat(bound.fd).st_ino)
+        self.assertEqual(stat_input(self.video).st_ino, os.stat(self.video).st_ino)
+
+    def test_rewind_inputs_resets_offset_before_each_child(self):
+        with bind_input(self.video) as bound:
+            os.read(bound.fd, 4)
+            self.assertEqual(os.lseek(bound.fd, 0, os.SEEK_CUR), 4)
+            rewind_inputs(media_source(self.video)[1])
+            self.assertEqual(os.lseek(bound.fd, 0, os.SEEK_CUR), 0 if sys.platform != "win32" else 4)
+
+    def test_swapped_parent_directory_below_root_is_refused(self):
+        victim_dir = os.path.join(self.folder, "victim")
+        os.mkdir(victim_dir)
+        os.rename(self.secret, os.path.join(victim_dir, "movie.mp4"))
+        root = os.path.join(self.folder, "drop")
+        os.mkdir(os.path.join(root))
+        os.mkdir(os.path.join(root, "clips"))
+        clip = os.path.join(root, "clips", "movie.mp4")
+        with open(clip, "wb") as handle:
+            handle.write(b"original")
+        set_input_root(root)
+        with bind_input(clip) as bound:
+            self.assertEqual(os.read(bound.fd, 8), b"original")
+        # After collection, clips/ is renamed away and a link to the victim directory takes its place.
+        os.rename(os.path.join(root, "clips"), os.path.join(root, "clips.bak"))
+        self._symlink_or_skip(victim_dir, os.path.join(root, "clips"))
+        self.assertTrue(os.path.isfile(clip))
+        with self.assertRaises(InputRefusedError):
+            with bind_input(clip):
+                pass
+        if input_binding._DIR_FD_SUPPORTED:
+            with self.assertRaises(InputRefusedError):
+                input_binding._open_regular_fallback(clip)
+
+    def test_path_outside_root_falls_back_to_parent_open(self):
+        set_input_root(os.path.join(self.folder, "elsewhere"))
+        with bind_input(self.video) as bound:
+            self.assertEqual(os.read(bound.fd, 8), b"original")
+
+    def test_is_link_detects_symlinks_and_junctions(self):
+        link = os.path.join(self.folder, "link.mp4")
+        self._symlink_or_skip(self.video, link)
+        self.assertTrue(input_binding.is_link(link))
+        self.assertFalse(input_binding.is_link(self.video))
+        with patch("os.path.islink", return_value=False), patch("os.path.isjunction", return_value=True, create=True):
+            self.assertTrue(input_binding.is_link(self.folder))
 
 
 if __name__ == "__main__":
