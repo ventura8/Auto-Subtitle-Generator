@@ -86,6 +86,16 @@ class TestNvidiaPaths(unittest.TestCase):
             nvidia_paths._preload_runtime_libraries("/test/dir")
         mock_preload.assert_called_once_with(os.path.join("/test/dir", "libcudnn.so"))
 
+    def test_preload_runtime_libraries_survives_unreadable_directory(self):
+        """A directory that disappears or denies access mid-scan must not propagate."""
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("os.listdir", side_effect=OSError("permission denied")),
+            patch("modules.runtime.nvidia_paths._preload_shared_library") as mock_preload,
+        ):
+            nvidia_paths._preload_runtime_libraries("/test/dir")
+        mock_preload.assert_not_called()
+
     def test_is_cuda_explicitly_disabled_detects_cpu_only_opt_out(self):
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": ""}, clear=False):
             self.assertTrue(nvidia_paths.is_cuda_explicitly_disabled())
