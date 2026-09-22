@@ -1,10 +1,12 @@
 """Cache corruption detection and purging utilities for downloaded AI models."""
 
+import contextlib
 import os
 import shutil
 import stat
 import tempfile
 
+from ..workdir import open_dir_handle
 from .optional_imports import resolve_hf_hub_cache
 
 KNOWN_CORRUPT_TOKENS = (
@@ -46,12 +48,10 @@ def purge_whisper_model_cache(model_size_or_id: str) -> None:
     purge_hf_model_cache(clean_id)
 
 
-def _remove_matching_file(target_path: str) -> None:
-    """Safely attempt to remove a single target file."""
-    try:
-        os.remove(target_path)
-    except OSError:
-        pass
+def _remove_matching_file(dir_fd: int, entry: str) -> None:
+    """Unlink one matching entry relative to the held directory descriptor."""
+    with contextlib.suppress(OSError):
+        os.unlink(entry, dir_fd=dir_fd)
 
 
 def _is_entry_matching(entry: str, model_filename: str, base_prefix: str) -> bool:
@@ -64,42 +64,56 @@ def _is_entry_matching(entry: str, model_filename: str, base_prefix: str) -> boo
     return entry in allowed_entries
 
 
-def _is_safe_purge_directory(directory: str) -> bool:
-    """Reject a cache directory that another user could have planted or replaced.
+def _safe_listdir(dir_fd: int) -> list[str]:
+    """List the bound directory, returning an empty list when it is unreadable."""
+    with contextlib.suppress(OSError):
+        return os.listdir(dir_fd)
+    return []
+
+
+def _is_own_directory(dir_fd: int) -> bool:
+    """Return True when the bound descriptor is a directory owned by this user.
 
     The separator cache may live under the shared temp directory, which is world
-    writable. Purging there blindly would follow whatever a different user left
-    behind, so only a real directory owned by this user is accepted.
+    writable. The check runs against the held descriptor, never the pathname, so
+    a directory swapped in after the check cannot be purged instead.
     """
     try:
-        entry_stat = os.lstat(directory)
+        entry_stat = os.fstat(dir_fd)
     except OSError:
         return False
-    if stat.S_ISLNK(entry_stat.st_mode):
+    if not stat.S_ISDIR(entry_stat.st_mode):
         return False
     geteuid = getattr(os, "geteuid", None)
-    if geteuid is not None and entry_stat.st_uid != geteuid():
-        return False
-    return True
+    return geteuid is None or entry_stat.st_uid == geteuid()
 
 
-def _safe_listdir(directory: str | None) -> list[str]:
-    """Safely list directory contents, returning empty list on failure or missing path."""
-    if not directory or not os.path.isdir(directory):
-        return []
-    try:
-        return os.listdir(directory)
-    except OSError:
-        return []
+def _unlink_matching_entries(dir_fd: int, model_filename: str, base_prefix: str) -> None:
+    """Unlink every entry in the bound directory belonging to the model's file set."""
+    for entry in _safe_listdir(dir_fd):
+        if _is_entry_matching(entry, model_filename, base_prefix):
+            _remove_matching_file(dir_fd, entry)
 
 
 def _purge_directory_checkpoint_files(directory: str | None, model_filename: str, base_prefix: str) -> None:
-    """Purge matching checkpoint files from a single directory."""
-    if not directory or not _is_safe_purge_directory(directory):
+    """Purge matching checkpoint files from a single directory, bound to a descriptor.
+
+    Every listing and unlink runs relative to a descriptor opened with
+    ``O_NOFOLLOW``, so the directory validated is the directory operated on. If
+    the platform cannot bind a descriptor, the purge is abandoned rather than
+    falling back to pathname access.
+    """
+    if not directory:
         return
-    for entry in _safe_listdir(directory):
-        if _is_entry_matching(entry, model_filename, base_prefix):
-            _remove_matching_file(os.path.join(directory, entry))
+    dir_fd = open_dir_handle(directory)
+    if dir_fd is None:
+        return
+    try:
+        if _is_own_directory(dir_fd):
+            _unlink_matching_entries(dir_fd, model_filename, base_prefix)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(dir_fd)
 
 
 def purge_separator_checkpoint(model_filename: str, model_file_dir: str | None = None) -> None:

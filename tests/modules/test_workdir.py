@@ -303,10 +303,10 @@ class TestWorkDir(unittest.TestCase):
     def test_open_dir_handle_returns_none_when_unsupported(self):
         workdir.ensure_work_dir(self.folder, "movie")
         with patch("modules.workdir._DIR_FD_SUPPORTED", False):
-            self.assertIsNone(workdir._open_dir_handle(self.work_dir))
+            self.assertIsNone(workdir.open_dir_handle(self.work_dir))
 
     def test_open_dir_handle_returns_none_for_missing_directory(self):
-        self.assertIsNone(workdir._open_dir_handle(os.path.join(self.folder, "missing")))
+        self.assertIsNone(workdir.open_dir_handle(os.path.join(self.folder, "missing")))
 
     def test_close_handle_tolerates_none_and_bad_descriptor(self):
         workdir._close_handle(None)
@@ -319,7 +319,7 @@ class TestWorkDir(unittest.TestCase):
             patch("modules.workdir._DIR_FD_SUPPORTED", True),
             patch("modules.workdir.os.open", return_value=7) as mock_open,
         ):
-            self.assertEqual(workdir._open_dir_handle("some/dir"), 7)
+            self.assertEqual(workdir.open_dir_handle("some/dir"), 7)
         mock_open.assert_called_once_with("some/dir", workdir._DIR_OPEN_FLAGS)
 
     def test_open_dir_handle_returns_none_when_open_fails(self):
@@ -327,7 +327,7 @@ class TestWorkDir(unittest.TestCase):
             patch("modules.workdir._DIR_FD_SUPPORTED", True),
             patch("modules.workdir.os.open", side_effect=OSError("replaced by a link")),
         ):
-            self.assertIsNone(workdir._open_dir_handle("some/dir"))
+            self.assertIsNone(workdir.open_dir_handle("some/dir"))
 
     def test_binding_accepts_descriptor_still_naming_the_directory(self):
         identity = (11, 22)

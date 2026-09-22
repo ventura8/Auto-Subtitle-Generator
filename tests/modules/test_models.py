@@ -9,7 +9,7 @@ from modules.translators import translategemma as translategemma_backend
 
 
 def _fake_dir_stat(mode=stat.S_IFDIR | 0o755, uid=None):
-    """Build an os.stat_result standing in for a real lstat() of a directory."""
+    """Build an os.stat_result standing in for a real fstat() of a bound directory."""
     if uid is None:
         geteuid = getattr(os, "geteuid", None)
         uid = geteuid() if geteuid is not None else 0
@@ -557,51 +557,69 @@ class TestModels(unittest.TestCase):
             "other.ckpt",
         ]
         with (
-            patch("os.path.isdir", side_effect=lambda d: d == "/fake/dir"),
-            patch("os.lstat", return_value=_fake_dir_stat()),
+            patch("modules.runtime.model_cache.open_dir_handle", side_effect=lambda d: 9 if d == "/fake/dir" else None),
+            patch("os.fstat", return_value=_fake_dir_stat()),
             patch("os.listdir", return_value=fake_files),
-            patch("os.remove") as mock_remove,
+            patch("os.close"),
+            patch("os.unlink") as mock_unlink,
         ):
             models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
-            self.assertEqual(mock_remove.call_count, 3)
-            removed_files = [call.args[0] for call in mock_remove.call_args_list]
-            self.assertIn(os.path.join("/fake/dir", "test_model.ckpt"), removed_files)
-            self.assertIn(os.path.join("/fake/dir", "test_model.yaml"), removed_files)
-            self.assertIn(os.path.join("/fake/dir", "test_model.json"), removed_files)
-            self.assertNotIn(os.path.join("/fake/dir", "test_model_backup.ckpt"), removed_files)
-            self.assertNotIn(os.path.join("/fake/dir", "test_model.notes.txt"), removed_files)
+            self.assertEqual(mock_unlink.call_count, 3)
+            removed = [call.args[0] for call in mock_unlink.call_args_list]
+            bound_to_descriptor = [call.kwargs.get("dir_fd") for call in mock_unlink.call_args_list]
+            self.assertEqual(bound_to_descriptor, [9, 9, 9], "unlink must be relative to the held descriptor")
+            self.assertIn("test_model.ckpt", removed)
+            self.assertIn("test_model.yaml", removed)
+            self.assertIn("test_model.json", removed)
+            self.assertNotIn("test_model_backup.ckpt", removed)
+            self.assertNotIn("test_model.notes.txt", removed)
 
-    def test_purge_cached_separator_checkpoint_skips_symlinked_directory(self):
+    def test_purge_cached_separator_checkpoint_abandons_when_descriptor_unavailable(self):
+        """Without a bound descriptor the purge stops; it never falls back to pathnames."""
         with (
-            patch("os.path.isdir", return_value=True),
-            patch("os.lstat", return_value=_fake_dir_stat(mode=stat.S_IFLNK | 0o777)),
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=None),
             patch("os.listdir", return_value=["test_model.ckpt"]),
+            patch("os.unlink") as mock_unlink,
             patch("os.remove") as mock_remove,
         ):
             models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_unlink.assert_not_called()
             mock_remove.assert_not_called()
+
+    def test_purge_cached_separator_checkpoint_skips_non_directory_descriptor(self):
+        with (
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=9),
+            patch("os.fstat", return_value=_fake_dir_stat(mode=stat.S_IFREG | 0o644)),
+            patch("os.listdir", return_value=["test_model.ckpt"]),
+            patch("os.close"),
+            patch("os.unlink") as mock_unlink,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_unlink.assert_not_called()
 
     def test_purge_cached_separator_checkpoint_skips_foreign_owned_directory(self):
         if not hasattr(os, "geteuid"):
             self.skipTest("ownership checks require POSIX uids")
         with (
-            patch("os.path.isdir", return_value=True),
-            patch("os.lstat", return_value=_fake_dir_stat(uid=os.geteuid() + 1)),
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=9),
+            patch("os.fstat", return_value=_fake_dir_stat(uid=os.geteuid() + 1)),
             patch("os.listdir", return_value=["test_model.ckpt"]),
-            patch("os.remove") as mock_remove,
+            patch("os.close"),
+            patch("os.unlink") as mock_unlink,
         ):
             models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
-            mock_remove.assert_not_called()
+            mock_unlink.assert_not_called()
 
-    def test_purge_cached_separator_checkpoint_skips_unstatable_directory(self):
+    def test_purge_cached_separator_checkpoint_skips_unstatable_descriptor(self):
         with (
-            patch("os.path.isdir", return_value=True),
-            patch("os.lstat", side_effect=OSError("gone")),
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=9),
+            patch("os.fstat", side_effect=OSError("gone")),
             patch("os.listdir", return_value=["test_model.ckpt"]),
-            patch("os.remove") as mock_remove,
+            patch("os.close"),
+            patch("os.unlink") as mock_unlink,
         ):
             models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
-            mock_remove.assert_not_called()
+            mock_unlink.assert_not_called()
 
     def test_separator_model_retries_on_corrupt_checkpoint(self):
         fake_module = MagicMock()

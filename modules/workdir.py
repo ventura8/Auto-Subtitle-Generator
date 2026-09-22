@@ -188,7 +188,7 @@ def purge_work_dir(folder, base_name):
 def _purge_real_work_dir(path):
     """Empty the validated work directory through a bound handle and remove it."""
     identity = _directory_identity(path)
-    dir_fd = _open_dir_handle(path)
+    dir_fd = open_dir_handle(path)
     try:
         if not _binding_is_valid(path, dir_fd, identity):
             log(f"  [Temp] Not removing {path}: it changed during cleanup.", "WARNING")
@@ -272,7 +272,7 @@ def remove_scratch_dir(scratch_dir):
     identity = _directory_identity(scratch_dir)
     if identity is None:
         return not os.path.lexists(scratch_dir)
-    dir_fd = _open_dir_handle(scratch_dir)
+    dir_fd = open_dir_handle(scratch_dir)
     try:
         if not _binding_is_valid(scratch_dir, dir_fd, identity):
             return False
@@ -303,8 +303,11 @@ def _directory_identity(path):
     return (entry_stat.st_dev, entry_stat.st_ino) if stat.S_ISDIR(entry_stat.st_mode) else None
 
 
-def _open_dir_handle(path):
-    """Open ``path`` as a directory without following links; None when unsupported or unopenable."""
+def open_dir_handle(path):
+    """Open ``path`` as a directory without following links; None when unsupported or unopenable.
+
+    Shared with the model cache purge, which needs the same descriptor binding.
+    """
     if not _DIR_FD_SUPPORTED:
         return None
     try:
