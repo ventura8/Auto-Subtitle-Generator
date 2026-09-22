@@ -291,6 +291,39 @@ jobs:
           poetry run python tests/tools/transform_metrics.py coverage.xml assets/coverage.svg
           cat coverage_summary.md >> $GITHUB_STEP_SUMMARY
 
+  sonarqube:
+    name: "🛰️ SonarQube Cloud Analysis"
+    needs: [static_analysis, technical_validation]
+    runs-on: ubuntu-latest
+    # Secrets are not exposed to pull requests opened from forks, which would
+    # make the scan fail on an unauthenticated request. Skip it there instead.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          # Sonar needs full history to attribute issues to their commit and to
+          # resolve the "new code" period; a shallow clone degrades both.
+          fetch-depth: 0
+
+      - name: Download Coverage Artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: coverage-artifacts
+
+      - name: SonarQube Cloud Scan
+        uses: SonarSource/sonarqube-scan-action@v8.2.2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: "https://sonarcloud.io"
+
+      - name: Enforce SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1.2.1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: "https://sonarcloud.io"
+
   e2e_real_dependencies:
     name: "🚀 Real Dependencies E2E (${{ matrix.os }})"
     needs: [static_analysis, technical_validation]

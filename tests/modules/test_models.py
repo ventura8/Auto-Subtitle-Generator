@@ -1,10 +1,19 @@
 import os
+import stat
 import unittest
 from unittest.mock import MagicMock, patch
 
 from modules import models
 from modules.translators import nllb as nllb_backend
 from modules.translators import translategemma as translategemma_backend
+
+
+def _fake_dir_stat(mode=stat.S_IFDIR | 0o755, uid=None):
+    """Build an os.stat_result standing in for a real lstat() of a directory."""
+    if uid is None:
+        geteuid = getattr(os, "geteuid", None)
+        uid = geteuid() if geteuid is not None else 0
+    return os.stat_result((mode, 0, 0, 1, uid, 0, 0, 0, 0, 0))
 
 
 class TestModels(unittest.TestCase):
@@ -332,7 +341,7 @@ class TestModels(unittest.TestCase):
 
         self.assertEqual(loaded, "tokenizer")
         self.assertEqual(auto_tokenizer.from_pretrained.call_count, 2)
-        self.assertEqual(auto_tokenizer.from_pretrained.call_args_list[1].kwargs["local_files_only"], True)
+        self.assertTrue(auto_tokenizer.from_pretrained.call_args_list[1].kwargs["local_files_only"])
         self.assertEqual(auto_tokenizer.from_pretrained.call_args_list[1].kwargs["token"], "secret")
 
     def test_load_translategemma_model_falls_back_to_local_files(self):
@@ -347,7 +356,7 @@ class TestModels(unittest.TestCase):
 
         self.assertEqual(loaded, "model")
         self.assertEqual(auto_model.from_pretrained.call_count, 2)
-        self.assertEqual(auto_model.from_pretrained.call_args_list[1].kwargs["local_files_only"], True)
+        self.assertTrue(auto_model.from_pretrained.call_args_list[1].kwargs["local_files_only"])
 
     def test_resolve_generation_device_from_parameters_fallback(self):
         parameter = MagicMock()
@@ -419,10 +428,14 @@ class TestModels(unittest.TestCase):
             patch("modules.models.SeparatorModel", return_value=separator_wrapper) as mock_sep,
             patch("modules.models._cleanup_torch_cache") as mock_cleanup,
         ):
-            self.assertIs(manager.get_whisper(), manager.get_whisper())
-            self.assertIs(manager.get_nllb(), manager.get_nllb())
-            self.assertIs(manager.get_translategemma(), manager.get_translategemma())
-            self.assertIs(manager.get_separator("out"), manager.get_separator("out"))
+            first_whisper = manager.get_whisper()
+            first_nllb = manager.get_nllb()
+            first_translategemma = manager.get_translategemma()
+            first_separator = manager.get_separator("out")
+            self.assertIs(manager.get_whisper(), first_whisper)
+            self.assertIs(manager.get_nllb(), first_nllb)
+            self.assertIs(manager.get_translategemma(), first_translategemma)
+            self.assertIs(manager.get_separator("out"), first_separator)
             mock_whisper.assert_called_once()
             mock_nllb.assert_called_once()
             mock_translategemma.assert_called_once()
@@ -545,6 +558,7 @@ class TestModels(unittest.TestCase):
         ]
         with (
             patch("os.path.isdir", side_effect=lambda d: d == "/fake/dir"),
+            patch("os.lstat", return_value=_fake_dir_stat()),
             patch("os.listdir", return_value=fake_files),
             patch("os.remove") as mock_remove,
         ):
@@ -556,6 +570,38 @@ class TestModels(unittest.TestCase):
             self.assertIn(os.path.join("/fake/dir", "test_model.json"), removed_files)
             self.assertNotIn(os.path.join("/fake/dir", "test_model_backup.ckpt"), removed_files)
             self.assertNotIn(os.path.join("/fake/dir", "test_model.notes.txt"), removed_files)
+
+    def test_purge_cached_separator_checkpoint_skips_symlinked_directory(self):
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("os.lstat", return_value=_fake_dir_stat(mode=stat.S_IFLNK | 0o777)),
+            patch("os.listdir", return_value=["test_model.ckpt"]),
+            patch("os.remove") as mock_remove,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_remove.assert_not_called()
+
+    def test_purge_cached_separator_checkpoint_skips_foreign_owned_directory(self):
+        if not hasattr(os, "geteuid"):
+            self.skipTest("ownership checks require POSIX uids")
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("os.lstat", return_value=_fake_dir_stat(uid=os.geteuid() + 1)),
+            patch("os.listdir", return_value=["test_model.ckpt"]),
+            patch("os.remove") as mock_remove,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_remove.assert_not_called()
+
+    def test_purge_cached_separator_checkpoint_skips_unstatable_directory(self):
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("os.lstat", side_effect=OSError("gone")),
+            patch("os.listdir", return_value=["test_model.ckpt"]),
+            patch("os.remove") as mock_remove,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_remove.assert_not_called()
 
     def test_separator_model_retries_on_corrupt_checkpoint(self):
         fake_module = MagicMock()

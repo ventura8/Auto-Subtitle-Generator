@@ -262,8 +262,10 @@ class TestWorkDir(unittest.TestCase):
 
     def test_directory_identity_matches_itself(self):
         workdir.ensure_work_dir(self.folder, "movie")
-        self.assertIsNotNone(workdir._directory_identity(self.work_dir))
-        self.assertEqual(workdir._directory_identity(self.work_dir), workdir._directory_identity(self.work_dir))
+        first_identity = workdir._directory_identity(self.work_dir)
+        second_identity = workdir._directory_identity(self.work_dir)
+        self.assertIsNotNone(first_identity)
+        self.assertEqual(first_identity, second_identity)
 
     def test_listdir_target_prefers_descriptor(self):
         self.assertEqual(workdir._listdir_target("some/path", None), "some/path")

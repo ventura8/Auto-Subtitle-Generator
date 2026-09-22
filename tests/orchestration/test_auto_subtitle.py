@@ -459,7 +459,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
         self.assertEqual(lang, "en")
         self.assertEqual(prompt, "hello")
-        self.assertTrue("vid.mp4" in files[0])
+        self.assertIn("vid.mp4", files[0])
 
         # Scenario 2: No arg, prompt user
         mock_args.return_value = argparse.Namespace(input_path=None, lang=None, prompt=None, cpu=True)
@@ -546,7 +546,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                 nvidia_paths.load_nvidia_paths(m_torch)
 
                 # Check that paths were added
-                self.assertTrue(len(os.environ["PATH"]) > 0)
+                self.assertGreater(len(os.environ["PATH"]), 0)
                 # Should have found bin/lib for cudnn/cublas
                 # Logic: /site-packages/nvidia/cudnn/bin, lib...
                 # We expect multiple add_dll_directory calls

@@ -358,7 +358,7 @@ def _process_single_job(job, idx, total_jobs, translator):
         _save_job_translations(job_config["output_file"], translations, data)
         _wait_for_parent_to_consume_output(job_config["output_file"], lang)
 
-    except (OSError, json.JSONDecodeError, RuntimeError, ValueError, KeyError) as e:
+    except (OSError, RuntimeError, ValueError, KeyError) as e:
         log(f"[Isolation] Job {lang} failed: {e}", "ERROR")
         raise
     finally:

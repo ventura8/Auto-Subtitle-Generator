@@ -2,6 +2,8 @@
 
 import os
 import shutil
+import stat
+import tempfile
 
 from .optional_imports import resolve_hf_hub_cache
 
@@ -62,6 +64,25 @@ def _is_entry_matching(entry: str, model_filename: str, base_prefix: str) -> boo
     return entry in allowed_entries
 
 
+def _is_safe_purge_directory(directory: str) -> bool:
+    """Reject a cache directory that another user could have planted or replaced.
+
+    The separator cache may live under the shared temp directory, which is world
+    writable. Purging there blindly would follow whatever a different user left
+    behind, so only a real directory owned by this user is accepted.
+    """
+    try:
+        entry_stat = os.lstat(directory)
+    except OSError:
+        return False
+    if stat.S_ISLNK(entry_stat.st_mode):
+        return False
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and entry_stat.st_uid != geteuid():
+        return False
+    return True
+
+
 def _safe_listdir(directory: str | None) -> list[str]:
     """Safely list directory contents, returning empty list on failure or missing path."""
     if not directory or not os.path.isdir(directory):
@@ -74,7 +95,7 @@ def _safe_listdir(directory: str | None) -> list[str]:
 
 def _purge_directory_checkpoint_files(directory: str | None, model_filename: str, base_prefix: str) -> None:
     """Purge matching checkpoint files from a single directory."""
-    if not directory:
+    if not directory or not _is_safe_purge_directory(directory):
         return
     for entry in _safe_listdir(directory):
         if _is_entry_matching(entry, model_filename, base_prefix):
@@ -85,7 +106,9 @@ def purge_separator_checkpoint(model_filename: str, model_file_dir: str | None =
     """Remove corrupted separator model checkpoints and configs from cache."""
     candidate_dirs = [
         model_file_dir,
-        "/tmp/audio-separator-models",
+        # Honour TMPDIR rather than assuming /tmp, and never trust the result
+        # blindly: _purge_directory_checkpoint_files vets each directory first.
+        os.path.join(tempfile.gettempdir(), "audio-separator-models"),
         os.path.expanduser("~/.cache/audio-separator-models"),
     ]
     base_prefix = os.path.splitext(model_filename)[0]

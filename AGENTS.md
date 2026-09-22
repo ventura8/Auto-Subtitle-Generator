@@ -76,6 +76,9 @@ ______________________________________________________________________
   1. Test suite execution with coverage (`pytest --cov`).
   1. Per-file $\\ge 90%$ coverage verification.
   1. Badge and metric generation (`genbadge`, `transform_metrics.py`).
+- SonarQube Cloud analysis runs in CI only (`sonar-project.properties`), not in the
+  local gate. The zero-suppression rule covers it: never add `# NOSONAR` and never
+  resolve a Sonar finding as "Won't fix" or "False positive" to pass the gate.
 
 ### 6. Prefer Installed Dependencies Over Built Ones (Mandatory)
 

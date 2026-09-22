@@ -127,7 +127,7 @@ class TestChunkedSeparation(_ChunkCase):
         # Output trim: skip the leading pad, keep exactly the window, downmix to 16 kHz mono.
         self.assertEqual(trim.args[2:4], (2.0, 60.0))
         self.assertTrue(trim.kwargs["mono_16k"])
-        self.assertEqual(trim.args[1] != os.path.join(self.work_dir, "movie_sepchunk_001.wav"), True, "written via scratch, promoted after")
+        self.assertNotEqual(trim.args[1], os.path.join(self.work_dir, "movie_sepchunk_001.wav"), "written via scratch, promoted after")
         self.assertTrue(os.path.isfile(os.path.join(self.work_dir, "movie_sepchunk_001.wav")))
 
     def test_first_chunk_has_no_leading_pad(self):
