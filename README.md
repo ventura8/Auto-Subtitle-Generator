@@ -18,8 +18,8 @@ performance on any system.
 
 ## **📝 Release Notes**
 
-- v1.2.4: [docs/releases/v1.2.4.md](docs/releases/v1.2.4.md)
-- GitHub release body (copy-ready): [docs/releases/v1.2.4_github_description.md](docs/releases/v1.2.4_github_description.md)
+- v1.2.5: [docs/releases/v1.2.5.md](docs/releases/v1.2.5.md)
+- GitHub release body (copy-ready): [docs/releases/v1.2.5_github_description.md](docs/releases/v1.2.5_github_description.md)
 - Earlier releases: [docs/releases/](docs/releases/)
 
 ## **🌟 Key Features**
@@ -350,6 +350,48 @@ The quality gate installs `main + dev` dependencies while excluding the heavy
 `ml` group.
 
 Coverage is enforced at **at least 90%** (`--cov-fail-under=90`).
+
+### **📦 Dependency Notes**
+
+The `ml` group deliberately does **not** pin `nvidia-cublas`, `nvidia-cuda-nvrtc`
+or `nvidia-nvjitlink`. `torch` pulls `cuda-toolkit`, and the two `torch` entries
+resolve to different `cuda-toolkit` versions (13.2.1 for the `+cu132` build,
+13.0.3 for the plain PyPI build macOS selects), which require different
+`nvidia-*` versions. Pinning for one branch makes the lock unsolvable for the
+other. `nvidia-cudnn-cu13` stays pinned only because both builds agree on it.
+
+Dependency markers carry only `platform_system`. `requires-python` already pins
+3.12, so repeating `python_version` / `implementation_name` on every entry only
+enlarges the marker space Poetry must intersect. With them present,
+`poetry lock` does not terminate.
+
+### **🛰️ SonarQube Cloud**
+
+Static analysis is additionally reported to
+[SonarQube Cloud](https://sonarcloud.io/summary/new_code?id=ventura8_Auto-Subtitle-Generator).
+Analysis settings live in `sonar-project.properties`; the CI job reuses the
+`coverage.xml` produced by the test stage rather than re-running the suite.
+
+The scan runs in CI only — it needs the `SONAR_TOKEN` repository secret, and it is
+skipped for pull requests from forks, where secrets are unavailable. The quality
+gate blocks the build on failure.
+
+To scan locally, export a token from **My Account → Security** on sonarcloud.io:
+
+```bash
+poetry run pytest -m "not e2e" --cov=auto_subtitle --cov=modules \
+  --cov-branch --cov-report=xml tests/
+
+SONAR_TOKEN="<token>" npx --yes sonarqube-scanner \
+  -Dsonar.host.url=https://sonarcloud.io
+```
+
+Automatic Analysis is deliberately **off** on the SonarCloud project: it cannot
+ingest a coverage report, so coverage would read 0%, and it conflicts with CI
+analysis. Leave it off.
+
+The zero-suppression policy extends to Sonar: never add `# NOSONAR` or resolve a
+finding as "Won't fix" to clear the gate.
 
 ## **⚙️ Customization**
 

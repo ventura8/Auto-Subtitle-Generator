@@ -36,23 +36,23 @@ class TestIsolatedTranslator(unittest.TestCase):
         with (
             patch.object(isolated_translator, "run_batch_translation_worker") as mock_run,
             patch.object(isolated_translator.utils, "init_console"),
-            patch.object(sys, "argv", ["isolated_translator.py", "--batch", "manifest.json"]),
+            patch.object(isolated_translator, "_load_contained_manifest", return_value={"jobs": []}),
+            patch.object(sys, "argv", ["isolated_translator.py", "--batch-stdin", "/work/movie.asg-temp"]),
         ):
             with self.assertRaises(SystemExit):
                 isolated_translator.main()
 
-            mock_run.assert_called_with("manifest.json")
+            mock_run.assert_called_with({"jobs": []})
             mock_exit.assert_called_with(0)
 
     @patch("modules.pipeline.isolated_translator._process_single_job")
     @patch("modules.pipeline.isolated_translator.ModelManager")
     @patch("modules.pipeline.isolated_translator.config.load_config")
     @patch("modules.pipeline.isolated_translator.OPTIMIZER")
-    @patch("builtins.open", new_callable=unittest.mock.mock_open, read_data='{"jobs": [{"lang": "es"}]}')
-    def test_run_batch_translation_worker(self, mock_open, mock_opt, mock_load, mock_mm, mock_proc):
+    def test_run_batch_translation_worker(self, mock_opt, mock_load, mock_mm, mock_proc):
         from modules.pipeline import isolated_translator
 
-        isolated_translator.run_batch_translation_worker("manifest.json")
+        isolated_translator.run_batch_translation_worker({"jobs": [{"lang": "es"}]})
         mock_proc.assert_called()
         self.assertEqual(mock_proc.call_count, 1)
 

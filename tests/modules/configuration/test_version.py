@@ -92,9 +92,9 @@ class TestVersionResolution(unittest.TestCase):
             patch.object(version, "_read_version_from_pyproject", return_value=None),
             patch.object(version, "_read_version_from_metadata", return_value=None),
         ):
-            self.assertEqual(version.get_app_version(), "1.2.4")
+            self.assertEqual(version.get_app_version(), "1.2.5")
 
     def test_module_dunder_version_matches_pyproject(self):
         """Verify __version__ is loaded and matches the pyproject.toml setting."""
         self.assertIsInstance(version.__version__, str)
-        self.assertEqual(version.__version__, "1.2.4")
+        self.assertEqual(version.__version__, "1.2.5")

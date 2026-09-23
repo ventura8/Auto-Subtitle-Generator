@@ -258,7 +258,7 @@ class TestUtils(unittest.TestCase):
             mock_popen.return_value.__enter__.return_value = mock_proc
 
             utils.run_ffmpeg_progress(["ffmpeg", "-ver"], "Processing", total_duration=4.0)
-            self.assertTrue(m_bar.call_count >= 2)
+            self.assertGreaterEqual(m_bar.call_count, 2)
 
     def test_extract_clean_audio(self):
         # Test extract_clean_audio success path

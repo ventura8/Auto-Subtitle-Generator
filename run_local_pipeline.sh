@@ -7,7 +7,7 @@ cd "$SCRIPT_DIR"
 
 VENV_PY="$SCRIPT_DIR/.venv/bin/python"
 
-if [ ! -f "$VENV_PY" ]; then
+if [[ ! -f "$VENV_PY" ]]; then
     echo "ERROR: Virtual environment not found at $VENV_PY." >&2
     echo "Please run ./install_dependencies.sh first." >&2
     exit 1
@@ -107,7 +107,7 @@ for cov_file in "auto_subtitle.py" "modules/configuration/config.py" "modules/co
 done
 
 echo "==> Step 25: Generate Badge and Summary"
-if [ -f "coverage.xml" ]; then
+if [[ -f "coverage.xml" ]]; then
     invoke_poetry run genbadge coverage -i coverage.xml -o assets/coverage.svg
     invoke_poetry run python tests/tools/transform_metrics.py coverage.xml
 fi

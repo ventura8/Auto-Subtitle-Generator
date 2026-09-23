@@ -100,8 +100,9 @@ class TestCoverageConfig(unittest.TestCase):
             self.assertIsNone(config._get_yaml_module())
 
     def test_load_optional_mapping_section_invalid_raises(self):
+        section, logger = MagicMock(), MagicMock()
         with self.assertRaises(ValueError):
-            config._load_optional_mapping_section(["bad"], MagicMock(), MagicMock(), "whisper")
+            config._load_optional_mapping_section(["bad"], section, logger, "whisper")
 
     def test_load_translation_engine_ignores_missing_engine(self):
         logger = MagicMock()
@@ -123,8 +124,9 @@ class TestCoverageConfig(unittest.TestCase):
         logger.assert_called()
 
     def test_apply_performance_tuning_invalid_raises(self):
+        optimizer, logger = MagicMock(), MagicMock()
         with self.assertRaises(ValueError):
-            config._apply_performance_tuning(["bad"], MagicMock(), MagicMock())
+            config._apply_performance_tuning(["bad"], optimizer, logger)
 
     def test_load_config_not_found(self):
         optimizer = MagicMock()

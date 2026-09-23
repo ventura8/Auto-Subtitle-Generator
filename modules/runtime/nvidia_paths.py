@@ -115,7 +115,7 @@ def _preload_runtime_libraries(path):
         for filename in sorted(os.listdir(path)):
             if _is_allowlisted_runtime_library(filename):
                 _preload_shared_library(os.path.join(path, filename))
-    except (OSError, PermissionError):
+    except OSError:
         return
 
 

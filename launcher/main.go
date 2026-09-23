@@ -44,6 +44,28 @@ func findVenvPython(baseDir string) string {
 	return ""
 }
 
+// powerShellPath returns the interpreter's absolute location under the Windows
+// system directory. Resolving "powershell.exe" through PATH would let any
+// writable PATH entry decide which binary runs.
+func powerShellPath() string {
+	systemRoot := os.Getenv("SystemRoot")
+	if systemRoot == "" {
+		systemRoot = `C:\Windows`
+	}
+	return filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+}
+
+// bashPath returns a fixed, root-owned bash location instead of resolving
+// "bash" through PATH.
+func bashPath() string {
+	for _, candidate := range []string{"/bin/bash", "/usr/bin/bash"} {
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+	return "/bin/bash"
+}
+
 func runAutoInstall(baseDir string) error {
 	fmt.Println("==================================================================")
 	fmt.Println("Auto-Subtitle-Generator: Virtual environment not found.")
@@ -57,13 +79,13 @@ func runAutoInstall(baseDir string) error {
 		if !fileExists(psScript) {
 			return fmt.Errorf("installer script not found: %s", psScript)
 		}
-		cmd = exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", psScript)
+		cmd = exec.Command(powerShellPath(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", psScript)
 	} else {
 		shScript := filepath.Join(baseDir, "install_dependencies.sh")
 		if !fileExists(shScript) {
 			return fmt.Errorf("installer script not found: %s", shScript)
 		}
-		cmd = exec.Command("bash", shScript)
+		cmd = exec.Command(bashPath(), shScript)
 	}
 
 	cmd.Dir = baseDir

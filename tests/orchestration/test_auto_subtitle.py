@@ -40,7 +40,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
         # process_video binds the input to an open descriptor; these tests use paths that
         # do not exist on disk, so stub the binding (input_binding has its own tests).
-        bind_patcher = patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext(MagicMock(name="bound")))
+        bind_patcher = patch("auto_subtitle.bind_input", return_value=contextlib.nullcontext(MagicMock(name="bound")))
         bind_patcher.start()
         self.addCleanup(bind_patcher.stop)
 
@@ -318,7 +318,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
                     # proper command called
                     cmd_args = m_popen.call_args[0][0]
-                    self.assertIn("--batch", cmd_args)
+                    self.assertIn("--batch-stdin", cmd_args)
 
                     # Sidecars must go through the symlink-safe writer
                     m_open.assert_called()
@@ -459,7 +459,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
         self.assertEqual(lang, "en")
         self.assertEqual(prompt, "hello")
-        self.assertTrue("vid.mp4" in files[0])
+        self.assertIn("vid.mp4", files[0])
 
         # Scenario 2: No arg, prompt user
         mock_args.return_value = argparse.Namespace(input_path=None, lang=None, prompt=None, cpu=True)
@@ -546,7 +546,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                 nvidia_paths.load_nvidia_paths(m_torch)
 
                 # Check that paths were added
-                self.assertTrue(len(os.environ["PATH"]) > 0)
+                self.assertGreater(len(os.environ["PATH"]), 0)
                 # Should have found bin/lib for cudnn/cublas
                 # Logic: /site-packages/nvidia/cudnn/bin, lib...
                 # We expect multiple add_dll_directory calls

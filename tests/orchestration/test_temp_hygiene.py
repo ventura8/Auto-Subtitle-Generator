@@ -94,8 +94,9 @@ class TestFinishTempHygiene(_WorkDirCase):
             patch("auto_subtitle._process_video_pipeline", side_effect=KeyboardInterrupt),
             patch("auto_subtitle.log"),
         ):
+            optimizer = MagicMock()
             with self.assertRaises(KeyboardInterrupt):
-                auto_subtitle.process_video(self.video, MagicMock())
+                auto_subtitle.process_video(self.video, optimizer)
         self.assertEqual(self._entries(), ["movie.asg-temp"])
 
 
@@ -106,8 +107,9 @@ class TestWorkDirBoundToInput(_WorkDirCase):
             patch("auto_subtitle._process_video_pipeline", side_effect=KeyboardInterrupt),
             patch("auto_subtitle.log"),
         ):
+            optimizer = MagicMock()
             with self.assertRaises(KeyboardInterrupt):
-                auto_subtitle.process_video(self.video, MagicMock())
+                auto_subtitle.process_video(self.video, optimizer)
 
     def test_unchanged_input_keeps_resume_state(self):
         self._run_pipeline_to_interrupt()  # first run creates the stamp
@@ -305,7 +307,8 @@ class TestTranslationWorkDir(_WorkDirCase):
     def test_failed_worker_keeps_temp_files(self):
         workdir.ensure_work_dir(self.folder, "movie")
         pivot = self._write(os.path.join(self.work_dir, "movie.pivot_pivoted.json"), "[]")
-        context = {**self._context(), "manifest_path": "m.json", "temp_files": [pivot]}
+        manifest_path = self._write(os.path.join(self.work_dir, "movie.manifest.json"), '{"jobs": []}')
+        context = {**self._context(), "manifest_path": manifest_path, "temp_files": [pivot]}
         proc = MagicMock()
         proc.returncode = 1
         proc.poll.return_value = 1
@@ -322,7 +325,8 @@ class TestTranslationWorkDir(_WorkDirCase):
     def test_successful_worker_removes_temp_files(self):
         workdir.ensure_work_dir(self.folder, "movie")
         pivot = self._write(os.path.join(self.work_dir, "movie.pivot_pivoted.json"), "[]")
-        context = {**self._context(), "manifest_path": "m.json", "temp_files": [pivot]}
+        manifest_path = self._write(os.path.join(self.work_dir, "movie.manifest.json"), '{"jobs": []}')
+        context = {**self._context(), "manifest_path": manifest_path, "temp_files": [pivot]}
         proc = MagicMock()
         proc.returncode = 0
         proc.poll.return_value = 0

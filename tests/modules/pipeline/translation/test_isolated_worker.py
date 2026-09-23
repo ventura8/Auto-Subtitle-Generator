@@ -1,4 +1,9 @@
 import importlib
+import io
+import json
+import os
+import shutil
+import tempfile
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -159,11 +164,8 @@ class TestCoverageIsolated(unittest.TestCase):
             mock_replace.assert_not_called()
 
     def test_run_batch_translation_worker_no_jobs(self):
-        with (
-            patch("modules.pipeline.isolated_translator.open", mock_open(read_data='{"jobs": []}')),
-            patch("modules.pipeline.isolated_translator.log") as mock_log,
-        ):
-            isolated_translator.run_batch_translation_worker("manifest.json")
+        with patch("modules.pipeline.isolated_translator.log") as mock_log:
+            isolated_translator.run_batch_translation_worker({"jobs": []})
             mock_log.assert_any_call("[Isolation] No jobs in manifest. Exiting.")
 
     def test_main_usage(self):
@@ -179,14 +181,17 @@ class TestCoverageIsolated(unittest.TestCase):
             mock_print.assert_called()
 
     def test_main_batch_mode(self):
+        parsed = {"jobs": []}
         with (
-            patch("sys.argv", ["script.py", "--batch", "manifest.json"]),
+            patch("sys.argv", ["script.py", "--batch-stdin", "/work/movie.asg-temp"]),
+            patch("modules.pipeline.isolated_translator._load_contained_manifest", return_value=parsed) as mock_load,
             patch("modules.pipeline.isolated_translator.run_batch_translation_worker") as mock_run,
             patch("sys.exit", side_effect=SystemExit) as mock_exit,
         ):
             with self.assertRaises(SystemExit):
                 isolated_translator.main()
-            mock_run.assert_called_with("manifest.json")
+            self.assertEqual(mock_load.call_args[0][1], "/work/movie.asg-temp")
+            mock_run.assert_called_with(parsed)
             mock_exit.assert_called_with(0)
 
     def test_main_step_args(self):
@@ -230,15 +235,17 @@ class TestCoverageIsolated(unittest.TestCase):
             patch("modules.pipeline.isolated_translator._load_segments", side_effect=ValueError("bad json")),
             patch("modules.pipeline.isolated_translator.log") as mock_log,
         ):
+            translator = MagicMock()
             with self.assertRaises(ValueError):
-                isolated_translator._process_single_job(job, 0, 1, MagicMock())
+                isolated_translator._process_single_job(job, 0, 1, translator)
             mock_log.assert_any_call("[Isolation] Job fr failed: bad json", "ERROR")
 
     def test_process_single_job_handles_missing_required_field(self):
         job = {"lang": "fr", "input": "in.json", "output": "out.json"}
         with patch("modules.pipeline.isolated_translator.log") as mock_log:
+            translator = MagicMock()
             with self.assertRaises(KeyError):
-                isolated_translator._process_single_job(job, 0, 1, MagicMock())
+                isolated_translator._process_single_job(job, 0, 1, translator)
             self.assertTrue(any("Job fr failed" in str(call.args[0]) for call in mock_log.call_args_list if call.args))
 
     def test_run_pivot_phase_writes_segment_dicts(self):
@@ -299,13 +306,17 @@ class TestCoverageIsolated(unittest.TestCase):
         mock_log.assert_any_call("[Isolation] Reusing existing pivot output. Skipping pivot pass.")
 
     def test_run_batch_translation_worker_skips_jobs_when_pivot_fails(self):
+        work = "/work/movie.asg-temp"
         manifest = {
-            "jobs": [{"lang": "es", "tgt_code": "spa_Latn", "input": "in.json", "output": "out.json"}],
-            "pivot": {"input": "pivot_input.json", "output": "pivot_output.json", "src_code": "ron_Latn", "tgt_code": "eng_Latn"},
+            "jobs": [{"lang": "es", "tgt_code": "spa_Latn", "input": f"{work}/in.json", "output": f"{work}/out.json"}],
+            "pivot": {
+                "input": f"{work}/pivot_input.json",
+                "output": f"{work}/pivot_output.json",
+                "src_code": "ron_Latn",
+                "tgt_code": "eng_Latn",
+            },
         }
         with (
-            patch("modules.pipeline.isolated_translator.open", mock_open(read_data="{}")),
-            patch("modules.pipeline.isolated_translator.json.load", return_value=manifest),
             patch("modules.pipeline.isolated_translator.ModelManager") as mock_mm,
             patch("modules.pipeline.isolated_translator._load_segments", side_effect=RuntimeError("pivot boom")),
             patch("modules.pipeline.isolated_translator._process_single_job") as mock_process_job,
@@ -313,7 +324,7 @@ class TestCoverageIsolated(unittest.TestCase):
         ):
             mock_mm.return_value.get_nllb.return_value = MagicMock()
             with self.assertRaises(RuntimeError):
-                isolated_translator.run_batch_translation_worker("manifest.json")
+                isolated_translator.run_batch_translation_worker(manifest)
             mock_process_job.assert_not_called()
 
     def test_run_pivot_phase_logs_failure_and_raises(self):
@@ -327,8 +338,9 @@ class TestCoverageIsolated(unittest.TestCase):
             patch("modules.pipeline.isolated_translator._load_segments", side_effect=RuntimeError("pivot fail")),
             patch("modules.pipeline.isolated_translator.log") as mock_log,
         ):
+            translator = MagicMock()
             with self.assertRaises(RuntimeError):
-                isolated_translator._run_pivot_phase(pivot_job, MagicMock())
+                isolated_translator._run_pivot_phase(pivot_job, translator)
             self.assertTrue(any("Pivot phase failed" in str(call.args[0]) for call in mock_log.call_args_list if call.args))
 
     def test_save_worker_output_error_cleanup(self):
@@ -402,3 +414,66 @@ class TestCoverageIsolated(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestManifestPathContainment(unittest.TestCase):
+    """The worker must refuse manifest paths that point outside the work directory."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.work_dir = os.path.join(self.root, "movie.asg-temp")
+        os.mkdir(self.work_dir)
+
+    def _load(self, payload, work_dir=None):
+        return isolated_translator._load_contained_manifest(io.StringIO(json.dumps(payload)), work_dir or self.work_dir)
+
+    def test_paths_inside_work_directory_are_resolved_and_kept(self):
+        job_input = os.path.join(self.work_dir, "movie.common_input.json")
+        job_output = os.path.join(self.work_dir, ".temp_output.movie.fr.json")
+
+        manifest = self._load({"jobs": [{"input": job_input, "output": job_output}], "pivot": None})
+
+        self.assertEqual(manifest["jobs"][0]["input"], os.path.realpath(job_input))
+        self.assertEqual(manifest["jobs"][0]["output"], os.path.realpath(job_output))
+
+    def test_job_output_escaping_the_work_directory_is_refused(self):
+        escaping = os.path.join(self.work_dir, "..", "..", "etc", "passwd")
+
+        payload = {"jobs": [{"input": os.path.join(self.work_dir, "in.json"), "output": escaping}]}
+        with self.assertRaises(isolated_translator.ManifestPathError):
+            self._load(payload)
+
+    def test_pivot_en_output_escaping_the_work_directory_is_refused(self):
+        payload = {
+            "jobs": [],
+            "pivot": {
+                "input": os.path.join(self.work_dir, "in.json"),
+                "output": os.path.join(self.work_dir, "pivot.json"),
+                "en_output": os.path.join(self.work_dir, "..", "stolen.json"),
+            },
+        }
+
+        with self.assertRaises(isolated_translator.ManifestPathError):
+            self._load(payload)
+
+    def test_absent_optional_paths_are_left_alone(self):
+        manifest = self._load({"jobs": [], "pivot": {"input": os.path.join(self.work_dir, "in.json")}})
+
+        self.assertNotIn("en_output", manifest["pivot"])
+
+    def test_manifest_is_decoded_as_utf8_from_a_binary_stream(self):
+        """The parent writes UTF-8; a non-ASCII path must survive the round trip."""
+        unicode_name = "ünïcødé fïlm.common_input.json"
+        job_input = os.path.join(self.work_dir, unicode_name)
+        payload = {"jobs": [{"input": job_input, "output": job_input}], "pivot": None}
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        manifest = isolated_translator._load_contained_manifest(io.BytesIO(raw), self.work_dir)
+
+        self.assertEqual(manifest["jobs"][0]["input"], os.path.realpath(job_input))
+        self.assertIn(unicode_name, manifest["jobs"][0]["input"])
+
+    def test_work_directory_without_the_suffix_is_refused(self):
+        with self.assertRaises(isolated_translator.ManifestPathError):
+            self._load({"jobs": []}, work_dir=self.root)

@@ -305,8 +305,9 @@ class TestCoverageUtils(unittest.TestCase):
                 patch("modules.safe_io.promote_temp_path", side_effect=OSError("Replace fail")),
                 patch("modules.safe_io.discard_temp_path") as mock_discard,
             ):
+                srt_path = os.path.join(folder, "test.srt")
                 with self.assertRaises(OSError):
-                    utils.save_srt([], os.path.join(folder, "test.srt"))
+                    utils.save_srt([], srt_path)
                 mock_discard.assert_called_once()
 
     def test_check_srt_corruption(self):

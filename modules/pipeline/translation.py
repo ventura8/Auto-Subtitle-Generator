@@ -326,19 +326,33 @@ def _cleanup_temp_files(temp_files):
                 pass
 
 
+def _send_manifest_to_worker(proc, manifest_path):
+    """Write the manifest to the worker's stdin and close it."""
+    try:
+        with open(manifest_path, "rb") as handle:
+            proc.stdin.write(handle.read())
+    finally:
+        proc.stdin.close()
+
+
 def _run_worker_process(worker_context):
     """Spawns and manages the isolated translation worker process."""
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "isolated_translator.py")
-    cmd = [sys.executable, worker_path, "--batch", worker_context["manifest_path"]]
+    manifest_path = worker_context["manifest_path"]
+    work_dir = os.path.dirname(manifest_path)
+    # The manifest travels on the worker's stdin rather than as a path on its
+    # command line, so the worker never opens a filename it was handed.
+    cmd = [sys.executable, worker_path, "--batch-stdin", work_dir]
 
     env = os.environ.copy()
     env["IS_SUBPROCESS"] = "1"
     env["PYTHONPATH"] = _build_worker_pythonpath(env, project_root)
     completed = False
     try:
-        with subprocess.Popen(cmd, env=env) as proc:
+        with subprocess.Popen(cmd, env=env, stdin=subprocess.PIPE) as proc:
             utils.register_subprocess(proc)
+            _send_manifest_to_worker(proc, manifest_path)
             _run_worker_and_collect_results(proc, worker_context)
         completed = True
         _cleanup_post_worker_memory()

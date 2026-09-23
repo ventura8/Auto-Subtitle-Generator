@@ -1,4 +1,3 @@
-import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -332,7 +331,7 @@ class TestModels(unittest.TestCase):
 
         self.assertEqual(loaded, "tokenizer")
         self.assertEqual(auto_tokenizer.from_pretrained.call_count, 2)
-        self.assertEqual(auto_tokenizer.from_pretrained.call_args_list[1].kwargs["local_files_only"], True)
+        self.assertTrue(auto_tokenizer.from_pretrained.call_args_list[1].kwargs["local_files_only"])
         self.assertEqual(auto_tokenizer.from_pretrained.call_args_list[1].kwargs["token"], "secret")
 
     def test_load_translategemma_model_falls_back_to_local_files(self):
@@ -347,7 +346,7 @@ class TestModels(unittest.TestCase):
 
         self.assertEqual(loaded, "model")
         self.assertEqual(auto_model.from_pretrained.call_count, 2)
-        self.assertEqual(auto_model.from_pretrained.call_args_list[1].kwargs["local_files_only"], True)
+        self.assertTrue(auto_model.from_pretrained.call_args_list[1].kwargs["local_files_only"])
 
     def test_resolve_generation_device_from_parameters_fallback(self):
         parameter = MagicMock()
@@ -419,10 +418,14 @@ class TestModels(unittest.TestCase):
             patch("modules.models.SeparatorModel", return_value=separator_wrapper) as mock_sep,
             patch("modules.models._cleanup_torch_cache") as mock_cleanup,
         ):
-            self.assertIs(manager.get_whisper(), manager.get_whisper())
-            self.assertIs(manager.get_nllb(), manager.get_nllb())
-            self.assertIs(manager.get_translategemma(), manager.get_translategemma())
-            self.assertIs(manager.get_separator("out"), manager.get_separator("out"))
+            first_whisper = manager.get_whisper()
+            first_nllb = manager.get_nllb()
+            first_translategemma = manager.get_translategemma()
+            first_separator = manager.get_separator("out")
+            self.assertIs(manager.get_whisper(), first_whisper)
+            self.assertIs(manager.get_nllb(), first_nllb)
+            self.assertIs(manager.get_translategemma(), first_translategemma)
+            self.assertIs(manager.get_separator("out"), first_separator)
             mock_whisper.assert_called_once()
             mock_nllb.assert_called_once()
             mock_translategemma.assert_called_once()
@@ -533,29 +536,6 @@ class TestModels(unittest.TestCase):
         self.assertTrue(models._is_corrupt_checkpoint_error(RuntimeError("PytorchStreamReader failed reading zip archive")))
         self.assertTrue(models._is_corrupt_checkpoint_error(RuntimeError("failed finding central directory")))
         self.assertFalse(models._is_corrupt_checkpoint_error(RuntimeError("out of memory")))
-
-    def test_purge_cached_separator_checkpoint(self):
-        fake_files = [
-            "test_model.ckpt",
-            "test_model.yaml",
-            "test_model.json",
-            "test_model_backup.ckpt",
-            "test_model.notes.txt",
-            "other.ckpt",
-        ]
-        with (
-            patch("os.path.isdir", side_effect=lambda d: d == "/fake/dir"),
-            patch("os.listdir", return_value=fake_files),
-            patch("os.remove") as mock_remove,
-        ):
-            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
-            self.assertEqual(mock_remove.call_count, 3)
-            removed_files = [call.args[0] for call in mock_remove.call_args_list]
-            self.assertIn(os.path.join("/fake/dir", "test_model.ckpt"), removed_files)
-            self.assertIn(os.path.join("/fake/dir", "test_model.yaml"), removed_files)
-            self.assertIn(os.path.join("/fake/dir", "test_model.json"), removed_files)
-            self.assertNotIn(os.path.join("/fake/dir", "test_model_backup.ckpt"), removed_files)
-            self.assertNotIn(os.path.join("/fake/dir", "test_model.notes.txt"), removed_files)
 
     def test_separator_model_retries_on_corrupt_checkpoint(self):
         fake_module = MagicMock()

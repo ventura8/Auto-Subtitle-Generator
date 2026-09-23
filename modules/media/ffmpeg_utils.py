@@ -15,6 +15,8 @@ from ..subtitles.timestamp_utils import parse_timestamp
 from ..workdir import ensure_work_dir
 from .input_binding import media_source, rewind_inputs
 
+_VENV_DIR_NAME = ".venv"
+
 
 def _resolve_ffmpeg_pair(bin_dir, ext):
     """Return (ffmpeg, ffprobe) paths from a candidate directory, or None."""
@@ -35,9 +37,9 @@ def _iter_ffmpeg_candidates():
     base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     extensions = [".exe"] if sys.platform == "win32" else [""]
     bin_dirs = [
-        os.path.join(base, ".venv", "ffmpeg", "bin"),
-        os.path.join(base, ".venv", "Scripts"),
-        os.path.join(base, ".venv", "bin"),
+        os.path.join(base, _VENV_DIR_NAME, "ffmpeg", "bin"),
+        os.path.join(base, _VENV_DIR_NAME, "Scripts"),
+        os.path.join(base, _VENV_DIR_NAME, "bin"),
         # The active environment may differ from the repository-root .venv.
         os.path.join(sys.prefix, "ffmpeg", "bin"),
         os.path.join(sys.prefix, "Scripts"),

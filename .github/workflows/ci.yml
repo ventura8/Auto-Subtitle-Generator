@@ -120,6 +120,29 @@ jobs:
         run: |
           poetry run pyright auto_subtitle.py modules tests
 
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Verify Go launcher (format, vet, test, cross-compile)
+        run: |
+          # The launcher is built from a bare main.go with no go.mod (see
+          # release.yml), so tests run against an explicit file list.
+          test -z "$(gofmt -l launcher)" || { echo "gofmt reported unformatted Go files:" >&2; gofmt -l launcher >&2; exit 1; }
+          go vet launcher/main.go
+          go test launcher/main.go launcher/main_test.go
+
+          # The interpreter lookup differs per OS, so every release target must
+          # at least compile and vet cleanly.
+          for target in "windows amd64" "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
+            set -- $target
+            GOOS=$1 GOARCH=$2 go vet launcher/main.go
+            GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -ldflags="-s -w" -o "/tmp/asg-launcher-$1-$2" launcher/main.go
+            echo "built $1/$2"
+          done
+
       - name: Run Bandit Security Scan (high severity/high confidence)
         run: |
           poetry run bandit -c pyproject.toml -q -r auto_subtitle.py modules -lll -iii
@@ -290,6 +313,39 @@ jobs:
         run: |
           poetry run python tests/tools/transform_metrics.py coverage.xml assets/coverage.svg
           cat coverage_summary.md >> $GITHUB_STEP_SUMMARY
+
+  sonarqube:
+    name: "🛰️ SonarQube Cloud Analysis"
+    needs: [static_analysis, technical_validation]
+    runs-on: ubuntu-latest
+    # Secrets are not exposed to pull requests opened from forks, which would
+    # make the scan fail on an unauthenticated request. Skip it there instead.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          # Sonar needs full history to attribute issues to their commit and to
+          # resolve the "new code" period; a shallow clone degrades both.
+          fetch-depth: 0
+
+      - name: Download Coverage Artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: coverage-artifacts
+
+      - name: SonarQube Cloud Scan
+        uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: "https://sonarcloud.io"
+
+      - name: Enforce SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@7a5fffe8e523c40e0c740b6bc2712ab503e52efa # v1.2.1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: "https://sonarcloud.io"
 
   e2e_real_dependencies:
     name: "🚀 Real Dependencies E2E (${{ matrix.os }})"
