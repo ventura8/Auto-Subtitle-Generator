@@ -351,6 +351,20 @@ The quality gate installs `main + dev` dependencies while excluding the heavy
 
 Coverage is enforced at **at least 90%** (`--cov-fail-under=90`).
 
+### **📦 Dependency Notes**
+
+The `ml` group deliberately does **not** pin `nvidia-cublas`, `nvidia-cuda-nvrtc`
+or `nvidia-nvjitlink`. `torch` pulls `cuda-toolkit`, and the two `torch` entries
+resolve to different `cuda-toolkit` versions (13.2.1 for the `+cu132` build,
+13.0.3 for the plain PyPI build macOS selects), which require different
+`nvidia-*` versions. Pinning for one branch makes the lock unsolvable for the
+other. `nvidia-cudnn-cu13` stays pinned only because both builds agree on it.
+
+Dependency markers carry only `platform_system`. `requires-python` already pins
+3.12, so repeating `python_version` / `implementation_name` on every entry only
+enlarges the marker space Poetry must intersect. With them present,
+`poetry lock` does not terminate.
+
 ### **🛰️ SonarQube Cloud**
 
 Static analysis is additionally reported to
