@@ -107,21 +107,46 @@ def _is_own_real_directory(directory: str) -> bool:
     return geteuid is None or entry_stat.st_uid == geteuid()
 
 
+def _listdir_by_pathname(directory: str) -> list[str]:
+    """List ``directory`` by pathname, returning an empty list when unreadable."""
+    with contextlib.suppress(OSError):
+        return os.listdir(directory)
+    return []
+
+
+def _is_regular_file(path: str) -> bool:
+    """Return True when ``path`` is a real file reached without following a link."""
+    try:
+        entry_stat = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(entry_stat.st_mode)
+
+
 def _purge_by_pathname(directory: str, model_filename: str, base_prefix: str) -> None:
     """Purge by pathname on platforms with no descriptor-relative calls at all.
 
-    Only reached on Windows, where ``os.supports_dir_fd`` is empty. Binding is
-    impossible there, so refusing outright would leave corrupt-checkpoint
-    recovery permanently broken on the project's primary target OS.
+    Reached only where ``os.supports_dir_fd`` is empty, which in practice means
+    Windows. Binding is impossible there, and refusing outright would leave
+    corrupt-checkpoint recovery permanently broken on the project's primary
+    target OS, so this is an accepted platform boundary rather than an
+    equivalent of the bound path. Two properties narrow it: the candidate
+    directories are per-user on Windows (``%TEMP%`` and the profile cache), not
+    the world-writable shared ``/tmp`` that motivates the binding on POSIX; and
+    each entry is re-checked to be a real file, so a link planted in place of a
+    checkpoint is skipped rather than unlinked. A directory swapped between the
+    check and the unlink remains possible here, unlike on the bound path.
     """
     if not _is_own_real_directory(directory):
         return
-    with contextlib.suppress(OSError):
-        entries = os.listdir(directory)
-    for entry in entries:
-        if _is_entry_matching(entry, model_filename, base_prefix):
-            with contextlib.suppress(OSError):
-                os.unlink(os.path.join(directory, entry))
+    for entry in _listdir_by_pathname(directory):
+        if not _is_entry_matching(entry, model_filename, base_prefix):
+            continue
+        entry_path = os.path.join(directory, entry)
+        if not _is_regular_file(entry_path):
+            continue
+        with contextlib.suppress(OSError):
+            os.unlink(entry_path)
 
 
 def _purge_directory_checkpoint_files(directory: str | None, model_filename: str, base_prefix: str) -> None:

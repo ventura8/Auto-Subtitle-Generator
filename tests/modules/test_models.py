@@ -595,12 +595,47 @@ class TestModels(unittest.TestCase):
         with (
             patch("modules.runtime.model_cache.DIR_FD_SUPPORTED", False),
             patch("modules.runtime.model_cache.open_dir_handle", return_value=None),
-            patch("os.lstat", side_effect=lambda d: _fake_dir_stat() if d == "/fake/dir" else _raise_missing()),
+            patch(
+                "os.lstat",
+                side_effect=lambda d: _fake_dir_stat() if d == "/fake/dir" else _fake_dir_stat(mode=stat.S_IFREG | 0o644),
+            ),
             patch("os.listdir", return_value=["test_model.ckpt", "keep.txt"]),
             patch("os.unlink") as mock_unlink,
         ):
             models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
             mock_unlink.assert_called_once_with(os.path.join("/fake/dir", "test_model.ckpt"))
+
+    def test_pathname_fallback_survives_an_unreadable_directory(self):
+        """listdir failing must not leave the entry list unbound."""
+        with (
+            patch("modules.runtime.model_cache.DIR_FD_SUPPORTED", False),
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=None),
+            patch("os.lstat", side_effect=lambda d: _fake_dir_stat() if d == "/fake/dir" else _raise_missing()),
+            patch("os.listdir", side_effect=PermissionError("denied")),
+            patch("os.unlink") as mock_unlink,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_unlink.assert_not_called()
+
+    def test_pathname_fallback_never_unlinks_through_a_link(self):
+        """A link planted where a checkpoint belongs is skipped, not unlinked."""
+
+        def fake_lstat(path):
+            if path == "/fake/dir":
+                return _fake_dir_stat()
+            if path == os.path.join("/fake/dir", "test_model.ckpt"):
+                return _fake_dir_stat(mode=stat.S_IFLNK | 0o777)
+            return _raise_missing()
+
+        with (
+            patch("modules.runtime.model_cache.DIR_FD_SUPPORTED", False),
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=None),
+            patch("os.lstat", side_effect=fake_lstat),
+            patch("os.listdir", return_value=["test_model.ckpt"]),
+            patch("os.unlink") as mock_unlink,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_unlink.assert_not_called()
 
     def test_pathname_fallback_refuses_a_symlinked_directory(self):
         with (
