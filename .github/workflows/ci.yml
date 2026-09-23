@@ -120,6 +120,29 @@ jobs:
         run: |
           poetry run pyright auto_subtitle.py modules tests
 
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Verify Go launcher (format, vet, test, cross-compile)
+        run: |
+          # The launcher is built from a bare main.go with no go.mod (see
+          # release.yml), so tests run against an explicit file list.
+          test -z "$(gofmt -l launcher)" || { echo "gofmt reported unformatted Go files:" >&2; gofmt -l launcher >&2; exit 1; }
+          go vet launcher/main.go
+          go test launcher/main.go launcher/main_test.go
+
+          # The interpreter lookup differs per OS, so every release target must
+          # at least compile and vet cleanly.
+          for target in "windows amd64" "linux amd64" "linux arm64" "darwin amd64" "darwin arm64"; do
+            set -- $target
+            GOOS=$1 GOARCH=$2 go vet launcher/main.go
+            GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -ldflags="-s -w" -o "/tmp/asg-launcher-$1-$2" launcher/main.go
+            echo "built $1/$2"
+          done
+
       - name: Run Bandit Security Scan (high severity/high confidence)
         run: |
           poetry run bandit -c pyproject.toml -q -r auto_subtitle.py modules -lll -iii
