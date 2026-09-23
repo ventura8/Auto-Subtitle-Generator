@@ -62,19 +62,27 @@ class TestSafeIO(unittest.TestCase):
 
     def test_atomic_text_writer_refuses_symlink_destination(self):
         link = self._plant_symlink("movie.common_input.json")
-        with self.assertRaises(safe_io.SymlinkRefusedError):
-            with safe_io.atomic_text_writer(link) as fh:
+
+        def _write_through(path):
+            with safe_io.atomic_text_writer(path) as fh:
                 fh.write("pwned")
+
+        with self.assertRaises(safe_io.SymlinkRefusedError):
+            _write_through(link)
         self._assert_victim_untouched()
         self.assertTrue(os.path.islink(link))
         self.assertEqual(self._folder_entries(), ["movie.common_input.json"])
 
     def test_atomic_text_writer_discards_scratch_on_error(self):
         path = os.path.join(self.folder, "movie.manifest.json")
-        with self.assertRaises(RuntimeError):
+
+        def _fail_mid_write():
             with safe_io.atomic_text_writer(path) as fh:
                 fh.write("partial")
                 raise RuntimeError("boom")
+
+        with self.assertRaises(RuntimeError):
+            _fail_mid_write()
         self.assertFalse(os.path.exists(path))
         self.assertEqual(self._folder_entries(), [])
 
@@ -86,10 +94,14 @@ class TestSafeIO(unittest.TestCase):
         if os.name == "nt":
             self.skipTest("Windows prevents renaming a directory while a child file handle is held open")
         path = os.path.join(self.folder, "movie.en.srt")
-        with self.assertRaises(safe_io.SymlinkRefusedError):
+
+        def _swap_scratch_mid_write():
             with safe_io.atomic_text_writer(path) as fh:
                 fh.write("pwned")
                 self._swap_scratch_dir_for_symlink()
+
+        with self.assertRaises(safe_io.SymlinkRefusedError):
+            _swap_scratch_mid_write()
         self._assert_victim_untouched()
         self.assertFalse(os.path.exists(path))
 
@@ -230,8 +242,9 @@ class TestSafeIO(unittest.TestCase):
             os.rename(reservation.path, moved)
             with open(reservation.path, "w", encoding="utf-8") as fh:
                 fh.write("replacement")
+            final_path = os.path.join(self.folder, "movie_temp.wav")
             with self.assertRaises(safe_io.SymlinkRefusedError):
-                safe_io.promote_temp_path(reservation, os.path.join(self.folder, "movie_temp.wav"))
+                safe_io.promote_temp_path(reservation, final_path)
             safe_io.discard_temp_path(reservation)  # refuses to delete the replacement, leaves it
             self.assertTrue(os.path.isfile(reservation.path))
             os.remove(reservation.path)
@@ -241,19 +254,21 @@ class TestSafeIO(unittest.TestCase):
 
     def test_reserve_cleans_up_when_file_creation_fails(self):
         with patch("modules.safe_io._create_exclusive", side_effect=OSError("disk full")):
+            target = os.path.join(self.folder, "movie_temp.wav")
             with self.assertRaises(OSError):
-                safe_io.reserve_temp_path(os.path.join(self.folder, "movie_temp.wav"))
+                safe_io.reserve_temp_path(target)
         self.assertEqual(self._folder_entries(), [])
 
     def test_name_reservation_retries_then_gives_up(self):
         with patch("modules.safe_io.secrets.token_hex", return_value="fixed"):
             first = safe_io.reserve_temp_path(os.path.join(self.folder, "movie_temp.wav"))
             self.addCleanup(safe_io.discard_temp_path, first)
+            target = os.path.join(self.folder, "movie_temp.wav")
             with self.assertRaises(FileExistsError):
-                safe_io.reserve_temp_path(os.path.join(self.folder, "movie_temp.wav"))
+                safe_io.reserve_temp_path(target)
             with patch("modules.safe_io._create_private_dir", return_value=first.dir_path):
                 with self.assertRaises(FileExistsError):
-                    safe_io.reserve_temp_path(os.path.join(self.folder, "movie_temp.wav"))
+                    safe_io.reserve_temp_path(target)
 
     # --- cleanup_temp_files --------------------------------------------------
 

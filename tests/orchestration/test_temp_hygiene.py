@@ -94,8 +94,9 @@ class TestFinishTempHygiene(_WorkDirCase):
             patch("auto_subtitle._process_video_pipeline", side_effect=KeyboardInterrupt),
             patch("auto_subtitle.log"),
         ):
+            optimizer = MagicMock()
             with self.assertRaises(KeyboardInterrupt):
-                auto_subtitle.process_video(self.video, MagicMock())
+                auto_subtitle.process_video(self.video, optimizer)
         self.assertEqual(self._entries(), ["movie.asg-temp"])
 
 
@@ -106,8 +107,9 @@ class TestWorkDirBoundToInput(_WorkDirCase):
             patch("auto_subtitle._process_video_pipeline", side_effect=KeyboardInterrupt),
             patch("auto_subtitle.log"),
         ):
+            optimizer = MagicMock()
             with self.assertRaises(KeyboardInterrupt):
-                auto_subtitle.process_video(self.video, MagicMock())
+                auto_subtitle.process_video(self.video, optimizer)
 
     def test_unchanged_input_keeps_resume_state(self):
         self._run_pipeline_to_interrupt()  # first run creates the stamp

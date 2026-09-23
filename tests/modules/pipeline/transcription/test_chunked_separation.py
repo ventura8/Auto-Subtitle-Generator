@@ -177,16 +177,18 @@ class TestChunkedSeparation(_ChunkCase):
     def test_failed_trim_discards_reservation_and_raw_stem(self):
         raw = self._write(os.path.join(self.scratch_dir, "raw_(Vocals).wav"))
         with patch("modules.pipeline.transcription.ffmpeg_utils.write_audio_window", side_effect=RuntimeError("ffmpeg died")):
+            stem_path = os.path.join(self.work_dir, "movie_sepchunk_000.wav")
             with self.assertRaises(RuntimeError):
-                transcription._write_chunk_stem(raw, os.path.join(self.work_dir, "movie_sepchunk_000.wav"), 2.0, 60.0, self.work_dir)
+                transcription._write_chunk_stem(raw, stem_path, 2.0, 60.0, self.work_dir)
         self.assertFalse(os.path.exists(raw))
         self.assertEqual(self._work_entries(), ["movie_temp.wav"])
 
     def test_failed_join_discards_reservation_and_list(self):
         stems = [self._write(os.path.join(self.work_dir, f"movie_sepchunk_00{i}.wav")) for i in range(2)]
         with patch("modules.pipeline.transcription.ffmpeg_utils.concat_audio_files", side_effect=RuntimeError("concat died")):
+            joined_path = os.path.join(self.work_dir, "final.wav")
             with self.assertRaises(RuntimeError):
-                transcription._join_chunk_stems(stems, os.path.join(self.work_dir, "final.wav"), self.job)
+                transcription._join_chunk_stems(stems, joined_path, self.job)
         self.assertFalse(os.path.exists(os.path.join(self.work_dir, "final.wav")))
         self.assertFalse(os.path.exists(os.path.join(self.scratch_dir, "stems.list")))
         self.assertEqual([e for e in self._work_entries() if e.startswith(safe_io.SCRATCH_PREFIX)], [], "no leaked reservation")

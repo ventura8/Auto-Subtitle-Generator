@@ -235,15 +235,17 @@ class TestCoverageIsolated(unittest.TestCase):
             patch("modules.pipeline.isolated_translator._load_segments", side_effect=ValueError("bad json")),
             patch("modules.pipeline.isolated_translator.log") as mock_log,
         ):
+            translator = MagicMock()
             with self.assertRaises(ValueError):
-                isolated_translator._process_single_job(job, 0, 1, MagicMock())
+                isolated_translator._process_single_job(job, 0, 1, translator)
             mock_log.assert_any_call("[Isolation] Job fr failed: bad json", "ERROR")
 
     def test_process_single_job_handles_missing_required_field(self):
         job = {"lang": "fr", "input": "in.json", "output": "out.json"}
         with patch("modules.pipeline.isolated_translator.log") as mock_log:
+            translator = MagicMock()
             with self.assertRaises(KeyError):
-                isolated_translator._process_single_job(job, 0, 1, MagicMock())
+                isolated_translator._process_single_job(job, 0, 1, translator)
             self.assertTrue(any("Job fr failed" in str(call.args[0]) for call in mock_log.call_args_list if call.args))
 
     def test_run_pivot_phase_writes_segment_dicts(self):
@@ -336,8 +338,9 @@ class TestCoverageIsolated(unittest.TestCase):
             patch("modules.pipeline.isolated_translator._load_segments", side_effect=RuntimeError("pivot fail")),
             patch("modules.pipeline.isolated_translator.log") as mock_log,
         ):
+            translator = MagicMock()
             with self.assertRaises(RuntimeError):
-                isolated_translator._run_pivot_phase(pivot_job, MagicMock())
+                isolated_translator._run_pivot_phase(pivot_job, translator)
             self.assertTrue(any("Pivot phase failed" in str(call.args[0]) for call in mock_log.call_args_list if call.args))
 
     def test_save_worker_output_error_cleanup(self):
@@ -437,8 +440,9 @@ class TestManifestPathContainment(unittest.TestCase):
     def test_job_output_escaping_the_work_directory_is_refused(self):
         escaping = os.path.join(self.work_dir, "..", "..", "etc", "passwd")
 
+        payload = {"jobs": [{"input": os.path.join(self.work_dir, "in.json"), "output": escaping}]}
         with self.assertRaises(isolated_translator.ManifestPathError):
-            self._load({"jobs": [{"input": os.path.join(self.work_dir, "in.json"), "output": escaping}]})
+            self._load(payload)
 
     def test_pivot_en_output_escaping_the_work_directory_is_refused(self):
         payload = {

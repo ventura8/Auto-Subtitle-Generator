@@ -64,12 +64,15 @@ class InputBindingTests(unittest.TestCase):
             input_binding._open_regular_fallback(link)
 
     def test_missing_and_non_regular_inputs_are_refused(self):
-        with self.assertRaises(InputRefusedError):
-            with bind_input(os.path.join(self.folder, "ghost.mp4")):
+        def _bind(path):
+            with bind_input(path):
                 pass
+
+        missing = os.path.join(self.folder, "ghost.mp4")
         with self.assertRaises(InputRefusedError):
-            with bind_input(self.folder):
-                pass
+            _bind(missing)
+        with self.assertRaises(InputRefusedError):
+            _bind(self.folder)
 
     def test_non_strict_bind_yields_none_and_leaves_no_binding(self):
         missing = os.path.join(self.folder, "ghost.mp4")
@@ -100,9 +103,12 @@ class InputBindingTests(unittest.TestCase):
                 input_binding._open_regular_fallback(self.video)
 
     def test_binding_is_released_on_error_inside_block(self):
-        with self.assertRaises(RuntimeError):
+        def _raise_inside_binding():
             with bind_input(self.video):
                 raise RuntimeError("boom")
+
+        with self.assertRaises(RuntimeError):
+            _raise_inside_binding()
         self.assertEqual(media_source(self.video), (self.video, ()))
 
     def test_stat_input_uses_the_bound_descriptor(self):
