@@ -140,8 +140,8 @@ ______________________________________________________________________
      directory, raising `ManifestPathError` otherwise. The manifest path
      itself is argv-supplied and equally untrusted, so
      `_validated_manifest_path` also requires it to be a `.manifest.json`
-     file inside a `WORK_DIR_SUFFIX` directory before it is opened. Every path the worker
-     touches belongs to the per-video work directory, so a manipulated
+     file inside a `WORK_DIR_SUFFIX` directory before it is opened. Every
+     path the worker touches belongs to the work directory, so a manipulated
      manifest can never redirect a read or a write elsewhere on disk.
      **Never** open a path taken from the manifest without passing it
      through that containment first.
