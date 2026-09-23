@@ -18,8 +18,8 @@ performance on any system.
 
 ## **📝 Release Notes**
 
-- v1.2.4: [docs/releases/v1.2.4.md](docs/releases/v1.2.4.md)
-- GitHub release body (copy-ready): [docs/releases/v1.2.4_github_description.md](docs/releases/v1.2.4_github_description.md)
+- v1.2.5: [docs/releases/v1.2.5.md](docs/releases/v1.2.5.md)
+- GitHub release body (copy-ready): [docs/releases/v1.2.5_github_description.md](docs/releases/v1.2.5_github_description.md)
 - Earlier releases: [docs/releases/](docs/releases/)
 
 ## **🌟 Key Features**
