@@ -137,7 +137,10 @@ ______________________________________________________________________
    - The worker's manifest is untrusted input. `_load_contained_manifest`
      resolves the manifest, takes its own directory as the work root, and
      confines every `input`, `output` and `en_output` it carries to that
-     directory, raising `ManifestPathError` otherwise. Every path the worker
+     directory, raising `ManifestPathError` otherwise. The manifest path
+     itself is argv-supplied and equally untrusted, so
+     `_validated_manifest_path` also requires it to be a `.manifest.json`
+     file inside a `WORK_DIR_SUFFIX` directory before it is opened. Every path the worker
      touches belongs to the per-video work directory, so a manipulated
      manifest can never redirect a read or a write elsewhere on disk.
      **Never** open a path taken from the manifest without passing it

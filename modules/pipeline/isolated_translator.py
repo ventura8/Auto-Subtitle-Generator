@@ -9,7 +9,7 @@ import time
 import traceback
 from typing import Any
 
-from modules import utils
+from modules import utils, workdir
 from modules.configuration import config
 from modules.models import OPTIMIZER, ModelManager, apply_dynamic_translation_batch
 from modules.runtime.optional_imports import load_optional_torch
@@ -517,6 +517,7 @@ class ManifestPathError(ValueError):
 
 
 _MANIFEST_PATH_KEYS = ("input", "output", "en_output")
+_MANIFEST_SUFFIX = ".manifest.json"
 
 
 def _contained_path(work_root, candidate):
@@ -535,6 +536,25 @@ def _contain_job_paths(job, work_root):
             job[key] = _contained_path(work_root, value)
 
 
+def _validated_manifest_path(manifest_path):
+    """Return the resolved manifest path, refusing one outside a work directory.
+
+    The parent always writes the manifest as ``<base>.manifest.json`` inside
+    ``<base>`` + ``WORK_DIR_SUFFIX``. Requiring exactly that shape means a path
+    handed to the worker on the command line cannot aim the batch run at an
+    arbitrary file elsewhere on disk.
+    """
+    resolved = os.path.realpath(manifest_path)
+    if not os.path.basename(resolved).endswith(_MANIFEST_SUFFIX):
+        raise ManifestPathError(f"Manifest must be a {_MANIFEST_SUFFIX} file: {manifest_path}")
+
+    work_root = os.path.dirname(resolved)
+    if not os.path.basename(work_root).endswith(workdir.WORK_DIR_SUFFIX):
+        raise ManifestPathError(f"Manifest must live in a {workdir.WORK_DIR_SUFFIX} directory: {manifest_path}")
+
+    return resolved
+
+
 def _load_contained_manifest(manifest_path):
     """Load the manifest, confining every path it carries to the manifest's own directory.
 
@@ -543,7 +563,7 @@ def _load_contained_manifest(manifest_path):
     anything outside that directory stops a manipulated manifest from redirecting
     a read or a write elsewhere on disk.
     """
-    resolved_manifest = os.path.realpath(manifest_path)
+    resolved_manifest = _validated_manifest_path(manifest_path)
     work_root = os.path.dirname(resolved_manifest)
 
     with open(resolved_manifest, "r", encoding="utf-8") as file_handle:

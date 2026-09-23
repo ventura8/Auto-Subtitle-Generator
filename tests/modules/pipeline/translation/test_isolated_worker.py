@@ -167,7 +167,7 @@ class TestCoverageIsolated(unittest.TestCase):
             patch("modules.pipeline.isolated_translator.open", mock_open(read_data='{"jobs": []}')),
             patch("modules.pipeline.isolated_translator.log") as mock_log,
         ):
-            isolated_translator.run_batch_translation_worker("manifest.json")
+            isolated_translator.run_batch_translation_worker("/work/movie.asg-temp/movie.manifest.json")
             mock_log.assert_any_call("[Isolation] No jobs in manifest. Exiting.")
 
     def test_main_usage(self):
@@ -303,9 +303,15 @@ class TestCoverageIsolated(unittest.TestCase):
         mock_log.assert_any_call("[Isolation] Reusing existing pivot output. Skipping pivot pass.")
 
     def test_run_batch_translation_worker_skips_jobs_when_pivot_fails(self):
+        work = "/work/movie.asg-temp"
         manifest = {
-            "jobs": [{"lang": "es", "tgt_code": "spa_Latn", "input": "in.json", "output": "out.json"}],
-            "pivot": {"input": "pivot_input.json", "output": "pivot_output.json", "src_code": "ron_Latn", "tgt_code": "eng_Latn"},
+            "jobs": [{"lang": "es", "tgt_code": "spa_Latn", "input": f"{work}/in.json", "output": f"{work}/out.json"}],
+            "pivot": {
+                "input": f"{work}/pivot_input.json",
+                "output": f"{work}/pivot_output.json",
+                "src_code": "ron_Latn",
+                "tgt_code": "eng_Latn",
+            },
         }
         with (
             patch("modules.pipeline.isolated_translator.open", mock_open(read_data="{}")),
@@ -317,7 +323,7 @@ class TestCoverageIsolated(unittest.TestCase):
         ):
             mock_mm.return_value.get_nllb.return_value = MagicMock()
             with self.assertRaises(RuntimeError):
-                isolated_translator.run_batch_translation_worker("manifest.json")
+                isolated_translator.run_batch_translation_worker("/work/movie.asg-temp/movie.manifest.json")
             mock_process_job.assert_not_called()
 
     def test_run_pivot_phase_logs_failure_and_raises(self):
@@ -412,8 +418,10 @@ class TestManifestPathContainment(unittest.TestCase):
     """The worker must refuse manifest paths that point outside the work directory."""
 
     def setUp(self):
-        self.work_dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.work_dir, True)
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.work_dir = os.path.join(self.root, "movie.asg-temp")
+        os.mkdir(self.work_dir)
         self.manifest_path = os.path.join(self.work_dir, "movie.manifest.json")
 
     def _write_manifest(self, payload):
@@ -459,3 +467,19 @@ class TestManifestPathContainment(unittest.TestCase):
         manifest = isolated_translator._load_contained_manifest(self.manifest_path)
 
         self.assertNotIn("en_output", manifest["pivot"])
+
+    def test_manifest_outside_a_work_directory_is_refused(self):
+        stray = os.path.join(self.root, "movie.manifest.json")
+        with open(stray, "w", encoding="utf-8") as handle:
+            json.dump({"jobs": []}, handle)
+
+        with self.assertRaises(isolated_translator.ManifestPathError):
+            isolated_translator._load_contained_manifest(stray)
+
+    def test_manifest_with_an_unexpected_name_is_refused(self):
+        stray = os.path.join(self.work_dir, "passwd")
+        with open(stray, "w", encoding="utf-8") as handle:
+            json.dump({"jobs": []}, handle)
+
+        with self.assertRaises(isolated_translator.ManifestPathError):
+            isolated_translator._load_contained_manifest(stray)

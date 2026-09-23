@@ -52,7 +52,7 @@ class TestIsolatedTranslator(unittest.TestCase):
     def test_run_batch_translation_worker(self, mock_open, mock_opt, mock_load, mock_mm, mock_proc):
         from modules.pipeline import isolated_translator
 
-        isolated_translator.run_batch_translation_worker("manifest.json")
+        isolated_translator.run_batch_translation_worker("/work/movie.asg-temp/movie.manifest.json")
         mock_proc.assert_called()
         self.assertEqual(mock_proc.call_count, 1)
 
