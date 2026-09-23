@@ -8,6 +8,11 @@ from modules.translators import nllb as nllb_backend
 from modules.translators import translategemma as translategemma_backend
 
 
+def _raise_missing():
+    """Stand in for lstat() on a path that does not exist."""
+    raise FileNotFoundError("no such directory")
+
+
 def _fake_dir_stat(mode=stat.S_IFDIR | 0o755, uid=None):
     """Build an os.stat_result standing in for a real fstat() of a bound directory."""
     if uid is None:
@@ -574,17 +579,39 @@ class TestModels(unittest.TestCase):
             self.assertNotIn("test_model_backup.ckpt", removed)
             self.assertNotIn("test_model.notes.txt", removed)
 
-    def test_purge_cached_separator_checkpoint_abandons_when_descriptor_unavailable(self):
-        """Without a bound descriptor the purge stops; it never falls back to pathnames."""
+    def test_purge_abandons_when_binding_fails_on_a_platform_that_supports_it(self):
+        """A failed bind where descriptors work can mean a link or a swap: purge nothing."""
         with (
+            patch("modules.runtime.model_cache.DIR_FD_SUPPORTED", True),
             patch("modules.runtime.model_cache.open_dir_handle", return_value=None),
             patch("os.listdir", return_value=["test_model.ckpt"]),
             patch("os.unlink") as mock_unlink,
-            patch("os.remove") as mock_remove,
         ):
             models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
             mock_unlink.assert_not_called()
-            mock_remove.assert_not_called()
+
+    def test_purge_falls_back_to_pathnames_where_descriptors_are_unsupported(self):
+        """Windows has no dir_fd support at all; recovery must still purge there."""
+        with (
+            patch("modules.runtime.model_cache.DIR_FD_SUPPORTED", False),
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=None),
+            patch("os.lstat", side_effect=lambda d: _fake_dir_stat() if d == "/fake/dir" else _raise_missing()),
+            patch("os.listdir", return_value=["test_model.ckpt", "keep.txt"]),
+            patch("os.unlink") as mock_unlink,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_unlink.assert_called_once_with(os.path.join("/fake/dir", "test_model.ckpt"))
+
+    def test_pathname_fallback_refuses_a_symlinked_directory(self):
+        with (
+            patch("modules.runtime.model_cache.DIR_FD_SUPPORTED", False),
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=None),
+            patch("os.lstat", return_value=_fake_dir_stat(mode=stat.S_IFLNK | 0o777)),
+            patch("os.listdir", return_value=["test_model.ckpt"]),
+            patch("os.unlink") as mock_unlink,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_unlink.assert_not_called()
 
     def test_purge_cached_separator_checkpoint_skips_non_directory_descriptor(self):
         with (

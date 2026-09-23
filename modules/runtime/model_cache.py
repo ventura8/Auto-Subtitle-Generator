@@ -6,7 +6,7 @@ import shutil
 import stat
 import tempfile
 
-from ..workdir import open_dir_handle
+from ..workdir import DIR_FD_SUPPORTED, open_dir_handle
 from .optional_imports import resolve_hf_hub_cache
 
 KNOWN_CORRUPT_TOKENS = (
@@ -95,18 +95,51 @@ def _unlink_matching_entries(dir_fd: int, model_filename: str, base_prefix: str)
             _remove_matching_file(dir_fd, entry)
 
 
-def _purge_directory_checkpoint_files(directory: str | None, model_filename: str, base_prefix: str) -> None:
-    """Purge matching checkpoint files from a single directory, bound to a descriptor.
+def _is_own_real_directory(directory: str) -> bool:
+    """Return True when ``directory`` is a real directory this user owns, by pathname."""
+    try:
+        entry_stat = os.lstat(directory)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(entry_stat.st_mode) or stat.S_ISLNK(entry_stat.st_mode):
+        return False
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is None or entry_stat.st_uid == geteuid()
 
-    Every listing and unlink runs relative to a descriptor opened with
-    ``O_NOFOLLOW``, so the directory validated is the directory operated on. If
-    the platform cannot bind a descriptor, the purge is abandoned rather than
-    falling back to pathname access.
+
+def _purge_by_pathname(directory: str, model_filename: str, base_prefix: str) -> None:
+    """Purge by pathname on platforms with no descriptor-relative calls at all.
+
+    Only reached on Windows, where ``os.supports_dir_fd`` is empty. Binding is
+    impossible there, so refusing outright would leave corrupt-checkpoint
+    recovery permanently broken on the project's primary target OS.
+    """
+    if not _is_own_real_directory(directory):
+        return
+    with contextlib.suppress(OSError):
+        entries = os.listdir(directory)
+    for entry in entries:
+        if _is_entry_matching(entry, model_filename, base_prefix):
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(directory, entry))
+
+
+def _purge_directory_checkpoint_files(directory: str | None, model_filename: str, base_prefix: str) -> None:
+    """Purge matching checkpoint files from a single directory.
+
+    Where the platform supports descriptor-relative calls, every listing and
+    unlink runs relative to a descriptor opened with ``O_NOFOLLOW``, so the
+    directory validated is the directory operated on; a failure to bind there
+    can mean a link or a swapped directory, so the purge is abandoned. Only a
+    platform with no descriptor support at all falls back to pathnames, which
+    mirrors the rule ``workdir._binding_is_valid`` already applies.
     """
     if not directory:
         return
     dir_fd = open_dir_handle(directory)
     if dir_fd is None:
+        if not DIR_FD_SUPPORTED:
+            _purge_by_pathname(directory, model_filename, base_prefix)
         return
     try:
         if _is_own_directory(dir_fd):

@@ -68,7 +68,8 @@ def _probe_dir_fd_support():
     return {os.open, os.stat, os.unlink, os.rmdir} <= os.supports_dir_fd and os.listdir in os.supports_fd
 
 
-_DIR_FD_SUPPORTED = _probe_dir_fd_support()
+DIR_FD_SUPPORTED = _probe_dir_fd_support()
+_DIR_FD_SUPPORTED = DIR_FD_SUPPORTED
 
 
 def work_dir_path(folder, base_name):

@@ -149,6 +149,11 @@ ______________________________________________________________________
      raising `ManifestPathError` otherwise, and `_work_root_from_argument`
      refuses a work directory that does not end in `WORK_DIR_SUFFIX`. The work
      directory is only ever compared against job paths, never opened.
+   - That containment is **load-time validation**, not a binding: each path is
+     resolved once and opened by name later. Job inputs and outputs are not yet
+     descriptor-bound the way `modules/safe_io.py` and `modules/workdir.py`
+     bind theirs, so a work directory replaced between validation and use is
+     still a gap. Do not describe it as a guarantee.
    - **Never** open a path taken from the manifest without passing it through
      that containment first.
 
