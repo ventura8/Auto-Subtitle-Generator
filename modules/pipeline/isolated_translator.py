@@ -512,10 +512,56 @@ def _save_optional_pivot_english_output(pivot_job, translations, data):
     _save_job_translations(en_output, translations, data)
 
 
+class ManifestPathError(ValueError):
+    """Raised when a manifest carries a path outside the work directory holding it."""
+
+
+_MANIFEST_PATH_KEYS = ("input", "output", "en_output")
+
+
+def _contained_path(work_root, candidate):
+    """Return ``candidate`` resolved, or raise when it escapes ``work_root``."""
+    resolved = os.path.realpath(candidate)
+    if resolved != work_root and not resolved.startswith(work_root + os.sep):
+        raise ManifestPathError(f"Manifest path escapes the work directory: {candidate}")
+    return resolved
+
+
+def _contain_job_paths(job, work_root):
+    """Rewrite a job's path entries to validated paths inside the work directory."""
+    for key in _MANIFEST_PATH_KEYS:
+        value = job.get(key)
+        if value:
+            job[key] = _contained_path(work_root, value)
+
+
+def _load_contained_manifest(manifest_path):
+    """Load the manifest, confining every path it carries to the manifest's own directory.
+
+    The worker is spawned with a manifest inside the per-video work directory and
+    every file it reads or writes belongs there. Resolving each path and refusing
+    anything outside that directory stops a manipulated manifest from redirecting
+    a read or a write elsewhere on disk.
+    """
+    resolved_manifest = os.path.realpath(manifest_path)
+    work_root = os.path.dirname(resolved_manifest)
+
+    with open(resolved_manifest, "r", encoding="utf-8") as file_handle:
+        manifest = json.load(file_handle)
+
+    for job in manifest.get("jobs", []):
+        _contain_job_paths(job, work_root)
+
+    pivot_job = manifest.get("pivot")
+    if pivot_job:
+        _contain_job_paths(pivot_job, work_root)
+
+    return manifest
+
+
 def run_batch_translation_worker(manifest_path):
     """Executes multiple translation jobs with a single model load."""
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
+    manifest = _load_contained_manifest(manifest_path)
 
     jobs = manifest.get("jobs", [])
     pivot_job = manifest.get("pivot")

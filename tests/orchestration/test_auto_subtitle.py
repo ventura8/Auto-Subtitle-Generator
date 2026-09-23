@@ -40,7 +40,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
         # process_video binds the input to an open descriptor; these tests use paths that
         # do not exist on disk, so stub the binding (input_binding has its own tests).
-        bind_patcher = patch("auto_subtitle.bind_input", lambda path, strict=True: contextlib.nullcontext(MagicMock(name="bound")))
+        bind_patcher = patch("auto_subtitle.bind_input", return_value=contextlib.nullcontext(MagicMock(name="bound")))
         bind_patcher.start()
         self.addCleanup(bind_patcher.stop)
 

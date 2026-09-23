@@ -134,6 +134,14 @@ ______________________________________________________________________
 1. **Subprocess Process Isolation**:
    - Translation runs in `modules/pipeline/isolated_translator.py` to prevent
      CUDA memory fragmentation and guarantee full VRAM reclamation.
+   - The worker's manifest is untrusted input. `_load_contained_manifest`
+     resolves the manifest, takes its own directory as the work root, and
+     confines every `input`, `output` and `en_output` it carries to that
+     directory, raising `ManifestPathError` otherwise. Every path the worker
+     touches belongs to the per-video work directory, so a manipulated
+     manifest can never redirect a read or a write elsewhere on disk.
+     **Never** open a path taken from the manifest without passing it
+     through that containment first.
 1. **Per-Video Work Directory & Temp Hygiene** (`modules/workdir.py`):
    - Every temporary artifact for one input video lives in
      `<folder>/<base_name>.asg-temp/`: `*_temp.wav`, the isolated
