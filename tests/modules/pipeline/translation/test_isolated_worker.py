@@ -1,4 +1,5 @@
 import importlib
+import io
 import json
 import os
 import shutil
@@ -163,11 +164,8 @@ class TestCoverageIsolated(unittest.TestCase):
             mock_replace.assert_not_called()
 
     def test_run_batch_translation_worker_no_jobs(self):
-        with (
-            patch("modules.pipeline.isolated_translator.open", mock_open(read_data='{"jobs": []}')),
-            patch("modules.pipeline.isolated_translator.log") as mock_log,
-        ):
-            isolated_translator.run_batch_translation_worker("/work/movie.asg-temp/movie.manifest.json")
+        with patch("modules.pipeline.isolated_translator.log") as mock_log:
+            isolated_translator.run_batch_translation_worker({"jobs": []})
             mock_log.assert_any_call("[Isolation] No jobs in manifest. Exiting.")
 
     def test_main_usage(self):
@@ -183,14 +181,17 @@ class TestCoverageIsolated(unittest.TestCase):
             mock_print.assert_called()
 
     def test_main_batch_mode(self):
+        parsed = {"jobs": []}
         with (
-            patch("sys.argv", ["script.py", "--batch", "manifest.json"]),
+            patch("sys.argv", ["script.py", "--batch-stdin", "/work/movie.asg-temp"]),
+            patch("modules.pipeline.isolated_translator._load_contained_manifest", return_value=parsed) as mock_load,
             patch("modules.pipeline.isolated_translator.run_batch_translation_worker") as mock_run,
             patch("sys.exit", side_effect=SystemExit) as mock_exit,
         ):
             with self.assertRaises(SystemExit):
                 isolated_translator.main()
-            mock_run.assert_called_with("manifest.json")
+            self.assertEqual(mock_load.call_args[0][1], "/work/movie.asg-temp")
+            mock_run.assert_called_with(parsed)
             mock_exit.assert_called_with(0)
 
     def test_main_step_args(self):
@@ -314,8 +315,6 @@ class TestCoverageIsolated(unittest.TestCase):
             },
         }
         with (
-            patch("modules.pipeline.isolated_translator.open", mock_open(read_data="{}")),
-            patch("modules.pipeline.isolated_translator.json.load", return_value=manifest),
             patch("modules.pipeline.isolated_translator.ModelManager") as mock_mm,
             patch("modules.pipeline.isolated_translator._load_segments", side_effect=RuntimeError("pivot boom")),
             patch("modules.pipeline.isolated_translator._process_single_job") as mock_process_job,
@@ -323,7 +322,7 @@ class TestCoverageIsolated(unittest.TestCase):
         ):
             mock_mm.return_value.get_nllb.return_value = MagicMock()
             with self.assertRaises(RuntimeError):
-                isolated_translator.run_batch_translation_worker("/work/movie.asg-temp/movie.manifest.json")
+                isolated_translator.run_batch_translation_worker(manifest)
             mock_process_job.assert_not_called()
 
     def test_run_pivot_phase_logs_failure_and_raises(self):
@@ -422,64 +421,43 @@ class TestManifestPathContainment(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, True)
         self.work_dir = os.path.join(self.root, "movie.asg-temp")
         os.mkdir(self.work_dir)
-        self.manifest_path = os.path.join(self.work_dir, "movie.manifest.json")
 
-    def _write_manifest(self, payload):
-        with open(self.manifest_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle)
+    def _load(self, payload, work_dir=None):
+        return isolated_translator._load_contained_manifest(io.StringIO(json.dumps(payload)), work_dir or self.work_dir)
 
     def test_paths_inside_work_directory_are_resolved_and_kept(self):
         job_input = os.path.join(self.work_dir, "movie.common_input.json")
         job_output = os.path.join(self.work_dir, ".temp_output.movie.fr.json")
-        self._write_manifest({"jobs": [{"input": job_input, "output": job_output}], "pivot": None})
 
-        manifest = isolated_translator._load_contained_manifest(self.manifest_path)
+        manifest = self._load({"jobs": [{"input": job_input, "output": job_output}], "pivot": None})
 
         self.assertEqual(manifest["jobs"][0]["input"], os.path.realpath(job_input))
         self.assertEqual(manifest["jobs"][0]["output"], os.path.realpath(job_output))
 
     def test_job_output_escaping_the_work_directory_is_refused(self):
         escaping = os.path.join(self.work_dir, "..", "..", "etc", "passwd")
-        self._write_manifest({"jobs": [{"input": os.path.join(self.work_dir, "in.json"), "output": escaping}]})
 
         with self.assertRaises(isolated_translator.ManifestPathError):
-            isolated_translator._load_contained_manifest(self.manifest_path)
+            self._load({"jobs": [{"input": os.path.join(self.work_dir, "in.json"), "output": escaping}]})
 
     def test_pivot_en_output_escaping_the_work_directory_is_refused(self):
-        inside = os.path.join(self.work_dir, "in.json")
-        self._write_manifest(
-            {
-                "jobs": [],
-                "pivot": {
-                    "input": inside,
-                    "output": os.path.join(self.work_dir, "pivot.json"),
-                    "en_output": os.path.join(self.work_dir, "..", "stolen.json"),
-                },
-            }
-        )
+        payload = {
+            "jobs": [],
+            "pivot": {
+                "input": os.path.join(self.work_dir, "in.json"),
+                "output": os.path.join(self.work_dir, "pivot.json"),
+                "en_output": os.path.join(self.work_dir, "..", "stolen.json"),
+            },
+        }
 
         with self.assertRaises(isolated_translator.ManifestPathError):
-            isolated_translator._load_contained_manifest(self.manifest_path)
+            self._load(payload)
 
     def test_absent_optional_paths_are_left_alone(self):
-        self._write_manifest({"jobs": [], "pivot": {"input": os.path.join(self.work_dir, "in.json")}})
-
-        manifest = isolated_translator._load_contained_manifest(self.manifest_path)
+        manifest = self._load({"jobs": [], "pivot": {"input": os.path.join(self.work_dir, "in.json")}})
 
         self.assertNotIn("en_output", manifest["pivot"])
 
-    def test_manifest_outside_a_work_directory_is_refused(self):
-        stray = os.path.join(self.root, "movie.manifest.json")
-        with open(stray, "w", encoding="utf-8") as handle:
-            json.dump({"jobs": []}, handle)
-
+    def test_work_directory_without_the_suffix_is_refused(self):
         with self.assertRaises(isolated_translator.ManifestPathError):
-            isolated_translator._load_contained_manifest(stray)
-
-    def test_manifest_with_an_unexpected_name_is_refused(self):
-        stray = os.path.join(self.work_dir, "passwd")
-        with open(stray, "w", encoding="utf-8") as handle:
-            json.dump({"jobs": []}, handle)
-
-        with self.assertRaises(isolated_translator.ManifestPathError):
-            isolated_translator._load_contained_manifest(stray)
+            self._load({"jobs": []}, work_dir=self.root)

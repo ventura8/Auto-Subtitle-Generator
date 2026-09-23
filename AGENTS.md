@@ -103,10 +103,13 @@ ______________________________________________________________________
 ## Architectural Contracts
 
 1. **Orchestration vs Modules**:
+
    - `auto_subtitle.py` handles CLI parsing, batch loops, high-level staging,
      summary logging, and exit codes.
    - Reusable business logic lives under `modules/`.
+
 1. **GPU Memory & Optimizer Profiles**:
+
    - **Never** use `device_map="auto"`. Use explicit CUDA device indices and
      compute types.
    - Memory profiles (`ULTRA` >= 24 GB, `HIGH` >= 12, `MID` >= 6, `LOW`,
@@ -131,21 +134,26 @@ ______________________________________________________________________
      via `bootstrap.force_cpu_only_env()` (an empty string is not honoured),
      and `nvidia_paths.is_cuda_explicitly_disabled()` must keep recognising
      that value so bundled cuBLAS is never injected into a CPU-only run.
+
 1. **Subprocess Process Isolation**:
+
    - Translation runs in `modules/pipeline/isolated_translator.py` to prevent
      CUDA memory fragmentation and guarantee full VRAM reclamation.
-   - The worker's manifest is untrusted input. `_load_contained_manifest`
-     resolves the manifest, takes its own directory as the work root, and
-     confines every `input`, `output` and `en_output` it carries to that
-     directory, raising `ManifestPathError` otherwise. The manifest path
-     itself is argv-supplied and equally untrusted, so
-     `_validated_manifest_path` also requires it to be a `.manifest.json`
-     file inside a `WORK_DIR_SUFFIX` directory before it is opened. Every
-     path the worker touches belongs to the work directory, so a manipulated
-     manifest can never redirect a read or a write elsewhere on disk.
-     **Never** open a path taken from the manifest without passing it
-     through that containment first.
+   - The worker never opens a path it was handed. The parent writes the
+     manifest to the worker's **stdin** (an inherited descriptor) and passes
+     only the work directory on the command line:
+     `isolated_translator.py --batch-stdin <work_dir>`. There is no
+     `--batch <manifest path>` mode; do not reintroduce one.
+   - `_load_contained_manifest(stream, work_dir)` then confines every `input`,
+     `output` and `en_output` the manifest carries to that work directory,
+     raising `ManifestPathError` otherwise, and `_work_root_from_argument`
+     refuses a work directory that does not end in `WORK_DIR_SUFFIX`. The work
+     directory is only ever compared against job paths, never opened.
+   - **Never** open a path taken from the manifest without passing it through
+     that containment first.
+
 1. **Per-Video Work Directory & Temp Hygiene** (`modules/workdir.py`):
+
    - Every temporary artifact for one input video lives in
      `<folder>/<base_name>.asg-temp/`: `*_temp.wav`, the isolated
      `*_(Vocals)_*.wav` stem, the per-chunk `*_sepchunk_NNN.wav` stems of a
@@ -172,7 +180,9 @@ ______________________________________________________________________
      the work directory, empty `.asg-tmp-*` scratch directories one level
      down, then `rmdir`. Unknown sub-directories are left and reported.
      A symlink or junction at the work-directory name is refused.
+
 1. **Atomic, Symlink-Safe Output & Resumability**:
+
    - Every pipeline write (SRTs, JSON manifests, `*.source_lang.txt`,
      `*_temp.wav`, the `_multilang` container) goes through
      `modules/safe_io.py` as a `ScratchReservation`: private `0700`
@@ -193,7 +203,9 @@ ______________________________________________________________________
      A resumed vocal stem must probe to the same duration as `*_temp.wav`;
      a truncated stem is discarded. A resumed `*.pivot_pivoted.json` must
      match the current segment timings; a stale one is discarded.
+
 1. **Descriptor-Bound Input Reads**:
+
    - The input folder is untrusted for *reads* as well as writes.
      `collect_video_files` (`modules/media/file_utils.py`) skips a top-level
      symlink or junction (`input_binding.is_link`), never descends into a
@@ -219,7 +231,9 @@ ______________________________________________________________________
      binding and `source_stamp` reads through `stat_input`, recording device,
      inode, size and mtime. An input whose binding was refused is never
      probed, not even for the batch summary (`build_file_summary(probe=False)`).
+
 1. **Long Inputs Are Chunked Where Memory Demands It**:
+
    - Audio-Separator loads the whole input into RAM at 44.1 kHz stereo
      float32 and writes a stem of the same shape, so inputs longer than
      `config.SEPARATION_CHUNK_MINUTES` (default 30; 0 disables) are
@@ -236,7 +250,9 @@ ______________________________________________________________________
      muxing is a stream copy, so those stages need no chunking. **Never**
      add a stage that materialises a whole multi-hour input in RAM without
      a chunked path.
+
 1. **Model Download Integrity & Auto-Recovery**:
+
    - Every downloaded AI model and tokenizer checkpoint (`audio-separator`,
      `faster-whisper`, `nllb`, `translategemma`) incorporates auto-detection of
      corrupted/truncated downloads (`is_corrupt_model_error`), automated cache

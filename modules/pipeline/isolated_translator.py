@@ -517,7 +517,6 @@ class ManifestPathError(ValueError):
 
 
 _MANIFEST_PATH_KEYS = ("input", "output", "en_output")
-_MANIFEST_SUFFIX = ".manifest.json"
 
 
 def _contained_path(work_root, candidate):
@@ -536,38 +535,27 @@ def _contain_job_paths(job, work_root):
             job[key] = _contained_path(work_root, value)
 
 
-def _validated_manifest_path(manifest_path):
-    """Return the resolved manifest path, refusing one outside a work directory.
+def _work_root_from_argument(work_dir):
+    """Resolve the work directory the parent named, refusing anything else.
 
-    The parent always writes the manifest as ``<base>.manifest.json`` inside
-    ``<base>`` + ``WORK_DIR_SUFFIX``. Requiring exactly that shape means a path
-    handed to the worker on the command line cannot aim the batch run at an
-    arbitrary file elsewhere on disk.
+    The value is only ever compared against job paths; it is never opened.
     """
-    resolved = os.path.realpath(manifest_path)
-    if not os.path.basename(resolved).endswith(_MANIFEST_SUFFIX):
-        raise ManifestPathError(f"Manifest must be a {_MANIFEST_SUFFIX} file: {manifest_path}")
-
-    work_root = os.path.dirname(resolved)
-    if not os.path.basename(work_root).endswith(workdir.WORK_DIR_SUFFIX):
-        raise ManifestPathError(f"Manifest must live in a {workdir.WORK_DIR_SUFFIX} directory: {manifest_path}")
-
+    resolved = os.path.realpath(work_dir)
+    if not os.path.basename(resolved).endswith(workdir.WORK_DIR_SUFFIX):
+        raise ManifestPathError(f"Worker work directory must end in {workdir.WORK_DIR_SUFFIX}: {work_dir}")
     return resolved
 
 
-def _load_contained_manifest(manifest_path):
-    """Load the manifest, confining every path it carries to the manifest's own directory.
+def _load_contained_manifest(stream, work_dir):
+    """Read the manifest from ``stream`` and confine its paths to ``work_dir``.
 
-    The worker is spawned with a manifest inside the per-video work directory and
-    every file it reads or writes belongs there. Resolving each path and refusing
-    anything outside that directory stops a manipulated manifest from redirecting
-    a read or a write elsewhere on disk.
+    The manifest arrives on an inherited descriptor the parent writes to, so the
+    worker never opens a path handed to it on the command line. Every path the
+    manifest carries is then resolved and refused unless it sits inside the work
+    directory, which is where all of the worker's inputs and outputs belong.
     """
-    resolved_manifest = _validated_manifest_path(manifest_path)
-    work_root = os.path.dirname(resolved_manifest)
-
-    with open(resolved_manifest, "r", encoding="utf-8") as file_handle:
-        manifest = json.load(file_handle)
+    work_root = _work_root_from_argument(work_dir)
+    manifest = json.load(stream)
 
     for job in manifest.get("jobs", []):
         _contain_job_paths(job, work_root)
@@ -579,10 +567,8 @@ def _load_contained_manifest(manifest_path):
     return manifest
 
 
-def run_batch_translation_worker(manifest_path):
+def run_batch_translation_worker(manifest):
     """Executes multiple translation jobs with a single model load."""
-    manifest = _load_contained_manifest(manifest_path)
-
     jobs = manifest.get("jobs", [])
     pivot_job = manifest.get("pivot")
     if not jobs and not pivot_job:
@@ -628,7 +614,7 @@ def _run_legacy_mode():
     if len(sys.argv) < 7:
         print(
             "Usage:\n"
-            "  python isolated_translator.py --batch manifest.json\n"
+            "  python isolated_translator.py --batch-stdin WORKDIR  (manifest on stdin)\n"
             "  python isolated_translator.py input.json output.json src tgt "
             "batch_size label [step_current step_total]"
         )
@@ -658,10 +644,11 @@ def main():
         utils.init_console()
         utils.setup_signal_handlers()
 
-        # Mode 1: Batch Mode (Manifest)
-        if len(sys.argv) == 3 and sys.argv[1] == "--batch":
-            manifest_path = sys.argv[2]
-            run_batch_translation_worker(manifest_path)
+        # Mode 1: Batch Mode. The manifest arrives on stdin, an inherited
+        # descriptor the parent writes to, so no path is taken from argv.
+        if len(sys.argv) == 3 and sys.argv[1] == "--batch-stdin":
+            manifest = _load_contained_manifest(sys.stdin, sys.argv[2])
+            run_batch_translation_worker(manifest)
             sys.exit(0)
 
         # Mode 2: Legacy Single Mode

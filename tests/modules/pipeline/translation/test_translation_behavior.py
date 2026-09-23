@@ -267,6 +267,7 @@ class TestCoverageTranslation(unittest.TestCase):
         with patch("os.path.exists", return_value=True), patch("os.remove", side_effect=OSError("locked")):
             translation._safe_remove("temp.json")
 
+    @patch("modules.pipeline.translation._send_manifest_to_worker")
     @patch("modules.pipeline.translation.subprocess.Popen")
     @patch("modules.utils.register_subprocess")
     @patch("modules.pipeline.translation._poll_translation_results")
@@ -279,6 +280,7 @@ class TestCoverageTranslation(unittest.TestCase):
         mock_poll,
         mock_register,
         mock_popen,
+        mock_send_manifest,
     ):
         mock_proc = MagicMock()
         mock_proc.returncode = 2
@@ -308,6 +310,7 @@ class TestCoverageTranslation(unittest.TestCase):
             "WARNING",
         )
 
+    @patch("modules.pipeline.translation._send_manifest_to_worker")
     @patch("modules.pipeline.translation.subprocess.Popen")
     @patch("modules.utils.register_subprocess")
     @patch("modules.pipeline.translation._run_worker_and_collect_results")
@@ -318,6 +321,7 @@ class TestCoverageTranslation(unittest.TestCase):
         mock_run_worker,
         mock_register,
         mock_popen,
+        mock_send_manifest,
     ):
         mock_proc = MagicMock()
         mock_popen.return_value.__enter__.return_value = mock_proc
@@ -369,6 +373,7 @@ class TestCoverageTranslation(unittest.TestCase):
         self.assertEqual(result, {})
         mock_exec.assert_called_once()
 
+    @patch("modules.pipeline.translation._send_manifest_to_worker")
     @patch("modules.pipeline.translation.atomic_text_writer", new_callable=mock_open)
     @patch("subprocess.Popen")
     @patch("modules.utils.register_subprocess")
@@ -378,7 +383,7 @@ class TestCoverageTranslation(unittest.TestCase):
     @patch("os.path.exists", return_value=True)
     @patch("os.remove")
     def test_execute_translation_workers_orphaned(
-        self, mock_remove, mock_exists, mock_log, mock_poll, mock_unreg, mock_reg, mock_popen, mock_file
+        self, mock_remove, mock_exists, mock_log, mock_poll, mock_unreg, mock_reg, mock_popen, mock_file, mock_send_manifest
     ):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None  # Still running

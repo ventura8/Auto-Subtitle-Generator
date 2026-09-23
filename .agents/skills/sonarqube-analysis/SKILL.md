@@ -45,6 +45,14 @@ changing anything; several rules misfire on this codebase's idioms:
   calling the same accessor twice to assert caching is valid. Name the two calls so
   the intent is explicit rather than deleting the assertion.
 
+Taint rules (the `pythonsecurity:` prefix) track data flow from a source to a
+sink and do not recognise validation helpers as sanitizers. `S8707` kept firing
+on the translation worker through two rounds of correct path validation; it only
+cleared once the manifest stopped arriving as a path on the command line and
+came in over stdin instead, removing the sink. If a taint finding survives
+validation you believe is sound, the answer is to remove the source or the sink,
+not to add more checks.
+
 Never silence a finding to clear the gate. If a rule is genuinely wrong for this
 repository, leave the code correct and explain why in the review, rather than adding
 `# NOSONAR` or an exclusion.

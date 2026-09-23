@@ -318,7 +318,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
                     # proper command called
                     cmd_args = m_popen.call_args[0][0]
-                    self.assertIn("--batch", cmd_args)
+                    self.assertIn("--batch-stdin", cmd_args)
 
                     # Sidecars must go through the symlink-safe writer
                     m_open.assert_called()

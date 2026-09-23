@@ -305,7 +305,8 @@ class TestTranslationWorkDir(_WorkDirCase):
     def test_failed_worker_keeps_temp_files(self):
         workdir.ensure_work_dir(self.folder, "movie")
         pivot = self._write(os.path.join(self.work_dir, "movie.pivot_pivoted.json"), "[]")
-        context = {**self._context(), "manifest_path": "m.json", "temp_files": [pivot]}
+        manifest_path = self._write(os.path.join(self.work_dir, "movie.manifest.json"), '{"jobs": []}')
+        context = {**self._context(), "manifest_path": manifest_path, "temp_files": [pivot]}
         proc = MagicMock()
         proc.returncode = 1
         proc.poll.return_value = 1
@@ -322,7 +323,8 @@ class TestTranslationWorkDir(_WorkDirCase):
     def test_successful_worker_removes_temp_files(self):
         workdir.ensure_work_dir(self.folder, "movie")
         pivot = self._write(os.path.join(self.work_dir, "movie.pivot_pivoted.json"), "[]")
-        context = {**self._context(), "manifest_path": "m.json", "temp_files": [pivot]}
+        manifest_path = self._write(os.path.join(self.work_dir, "movie.manifest.json"), '{"jobs": []}')
+        context = {**self._context(), "manifest_path": manifest_path, "temp_files": [pivot]}
         proc = MagicMock()
         proc.returncode = 0
         proc.poll.return_value = 0
