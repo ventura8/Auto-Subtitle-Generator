@@ -647,7 +647,10 @@ def main():
         # Mode 1: Batch Mode. The manifest arrives on stdin, an inherited
         # descriptor the parent writes to, so no path is taken from argv.
         if len(sys.argv) == 3 and sys.argv[1] == "--batch-stdin":
-            manifest = _load_contained_manifest(sys.stdin, sys.argv[2])
+            # Read the binary stream: the parent writes UTF-8, while a redirected
+            # text stdin on Windows may decode as the ANSI code page and corrupt a
+            # non-ASCII path.
+            manifest = _load_contained_manifest(sys.stdin.buffer, sys.argv[2])
             run_batch_translation_worker(manifest)
             sys.exit(0)
 

@@ -462,6 +462,18 @@ class TestManifestPathContainment(unittest.TestCase):
 
         self.assertNotIn("en_output", manifest["pivot"])
 
+    def test_manifest_is_decoded_as_utf8_from_a_binary_stream(self):
+        """The parent writes UTF-8; a non-ASCII path must survive the round trip."""
+        unicode_name = "ünïcødé fïlm.common_input.json"
+        job_input = os.path.join(self.work_dir, unicode_name)
+        payload = {"jobs": [{"input": job_input, "output": job_input}], "pivot": None}
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        manifest = isolated_translator._load_contained_manifest(io.BytesIO(raw), self.work_dir)
+
+        self.assertEqual(manifest["jobs"][0]["input"], os.path.realpath(job_input))
+        self.assertIn(unicode_name, manifest["jobs"][0]["input"])
+
     def test_work_directory_without_the_suffix_is_refused(self):
         with self.assertRaises(isolated_translator.ManifestPathError):
             self._load({"jobs": []}, work_dir=self.root)

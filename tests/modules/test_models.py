@@ -1,24 +1,9 @@
-import os
-import stat
 import unittest
 from unittest.mock import MagicMock, patch
 
 from modules import models
 from modules.translators import nllb as nllb_backend
 from modules.translators import translategemma as translategemma_backend
-
-
-def _raise_missing():
-    """Stand in for lstat() on a path that does not exist."""
-    raise FileNotFoundError("no such directory")
-
-
-def _fake_dir_stat(mode=stat.S_IFDIR | 0o755, uid=None):
-    """Build an os.stat_result standing in for a real fstat() of a bound directory."""
-    if uid is None:
-        geteuid = getattr(os, "geteuid", None)
-        uid = geteuid() if geteuid is not None else 0
-    return os.stat_result((mode, 0, 0, 1, uid, 0, 0, 0, 0, 0))
 
 
 class TestModels(unittest.TestCase):

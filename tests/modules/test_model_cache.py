@@ -112,6 +112,19 @@ class TestSeparatorCheckpointPurge(unittest.TestCase):
             models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
             mock_unlink.assert_not_called()
 
+    def test_pathname_fallback_refuses_a_windows_junction(self):
+        """lstat reports S_IFDIR for a junction, so it must be rejected explicitly."""
+        with (
+            patch("modules.runtime.model_cache.DIR_FD_SUPPORTED", False),
+            patch("modules.runtime.model_cache.open_dir_handle", return_value=None),
+            patch("os.path.isjunction", side_effect=lambda d: d == "/fake/dir"),
+            patch("os.lstat", return_value=_fake_dir_stat()),
+            patch("os.listdir", return_value=["test_model.ckpt"]),
+            patch("os.unlink") as mock_unlink,
+        ):
+            models._purge_cached_separator_checkpoint("test_model.ckpt", "/fake/dir")
+            mock_unlink.assert_not_called()
+
     def test_pathname_fallback_refuses_a_symlinked_directory(self):
         with (
             patch("modules.runtime.model_cache.DIR_FD_SUPPORTED", False),

@@ -71,6 +71,21 @@ def _safe_listdir(dir_fd: int) -> list[str]:
     return []
 
 
+def _is_owned_by_current_user(entry_stat: os.stat_result) -> bool:
+    """Return True when ``entry_stat`` belongs to this user.
+
+    Platforms without uids (Windows) have no owner to compare, so the check
+    cannot contribute there and passes.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is None or entry_stat.st_uid == geteuid()
+
+
+def _is_real_directory_mode(mode: int) -> bool:
+    """Return True for a directory reached without following a symbolic link."""
+    return stat.S_ISDIR(mode) and not stat.S_ISLNK(mode)
+
+
 def _is_own_directory(dir_fd: int) -> bool:
     """Return True when the bound descriptor is a directory owned by this user.
 
@@ -84,8 +99,7 @@ def _is_own_directory(dir_fd: int) -> bool:
         return False
     if not stat.S_ISDIR(entry_stat.st_mode):
         return False
-    geteuid = getattr(os, "geteuid", None)
-    return geteuid is None or entry_stat.st_uid == geteuid()
+    return _is_owned_by_current_user(entry_stat)
 
 
 def _unlink_matching_entries(dir_fd: int, model_filename: str, base_prefix: str) -> None:
@@ -96,15 +110,21 @@ def _unlink_matching_entries(dir_fd: int, model_filename: str, base_prefix: str)
 
 
 def _is_own_real_directory(directory: str) -> bool:
-    """Return True when ``directory`` is a real directory this user owns, by pathname."""
+    """Return True when ``directory`` is a real directory this user owns, by pathname.
+
+    A Windows junction reports ``S_IFDIR`` from ``lstat`` and only a symbolic
+    link reports ``S_IFLNK``, so the junction is rejected explicitly, the way
+    ``workdir._is_link`` already does.
+    """
+    if os.path.isjunction(directory):
+        return False
     try:
         entry_stat = os.lstat(directory)
     except OSError:
         return False
-    if not stat.S_ISDIR(entry_stat.st_mode) or stat.S_ISLNK(entry_stat.st_mode):
+    if not _is_real_directory_mode(entry_stat.st_mode):
         return False
-    geteuid = getattr(os, "geteuid", None)
-    return geteuid is None or entry_stat.st_uid == geteuid()
+    return _is_owned_by_current_user(entry_stat)
 
 
 def _listdir_by_pathname(directory: str) -> list[str]:
