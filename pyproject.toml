@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "auto-subtitle-generator"
-version = "1.2.5"
+version = "1.2.6"
 description = "Auto-Subtitle Generator using Faster Whisper and optional Translation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

@@ -1,5 +1,6 @@
 """VRAM-aware model selection and batch sizing, plus its wiring into the optimizer and worker."""
 
+import contextlib
 import logging
 import unittest
 from unittest.mock import MagicMock, patch
@@ -116,36 +117,32 @@ class TestProfileAndCaps(unittest.TestCase):
         self.assertEqual(opt.effective_vram_gb(), 32)
 
 
-class TestResolveNllbModelId(unittest.TestCase):
-    def setUp(self):
-        self.addCleanup(setattr, config, "NLLB_MODEL_ID", config.NLLB_MODEL_ID)
-        self.addCleanup(setattr, models.OPTIMIZER, "vram_gb", models.OPTIMIZER.vram_gb)
+def _patch_nllb_setting(model_id, vram_gb):
+    """Temporarily set the configured NLLB model and the detected VRAM."""
+    stack = contextlib.ExitStack()
+    stack.enter_context(patch.object(config, "NLLB_MODEL_ID", model_id))
+    stack.enter_context(patch.object(models.OPTIMIZER, "vram_gb", vram_gb))
+    return stack
 
+
+class TestResolveNllbModelId(unittest.TestCase):
     def test_auto_logs_choice_at_info(self):
-        config.NLLB_MODEL_ID = "auto"
-        models.OPTIMIZER.vram_gb = 7
-        with patch.object(models.LOGGER, "log") as mock_log:
+        with _patch_nllb_setting("auto", 7), patch.object(models.LOGGER, "log") as mock_log:
             self.assertEqual(models.resolve_nllb_model_id(), D13)
         self.assertEqual(mock_log.call_args[0][0], logging.INFO)
 
     def test_explicit_oversized_model_logs_warning(self):
-        config.NLLB_MODEL_ID = B33
-        models.OPTIMIZER.vram_gb = 7
-        with patch.object(models.LOGGER, "log") as mock_log:
+        with _patch_nllb_setting(B33, 7), patch.object(models.LOGGER, "log") as mock_log:
             self.assertEqual(models.resolve_nllb_model_id(), B33)
         self.assertEqual(mock_log.call_args[0][0], logging.WARNING)
 
     def test_explicit_fitting_model_logs_nothing(self):
-        config.NLLB_MODEL_ID = B33
-        models.OPTIMIZER.vram_gb = 32
-        with patch.object(models.LOGGER, "log") as mock_log:
+        with _patch_nllb_setting(B33, 32), patch.object(models.LOGGER, "log") as mock_log:
             self.assertEqual(models.resolve_nllb_model_id(), B33)
         mock_log.assert_not_called()
 
     def test_vram_cap_changes_auto_choice(self):
-        config.NLLB_MODEL_ID = "auto"
-        models.OPTIMIZER.vram_gb = 32
-        with patch.dict(models.OPTIMIZER.config, {"max_vram_usage_gb": 8}):
+        with _patch_nllb_setting("auto", 32), patch.dict(models.OPTIMIZER.config, {"max_vram_usage_gb": 8}):
             self.assertEqual(models.resolve_nllb_model_id(), D13)
 
 

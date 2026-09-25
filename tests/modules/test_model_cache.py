@@ -18,11 +18,16 @@ def _raise_missing():
     raise FileNotFoundError("no such directory")
 
 
+def _current_uid():
+    """Return this process's effective uid, or None where there are no uids (Windows)."""
+    geteuid = vars(os).get("geteuid")
+    return geteuid() if geteuid is not None else None
+
+
 def _fake_dir_stat(mode=stat.S_IFDIR | 0o755, uid=None):
     """Build an os.stat_result standing in for a real fstat() of a bound directory."""
     if uid is None:
-        geteuid = getattr(os, "geteuid", None)
-        uid = geteuid() if geteuid is not None else 0
+        uid = _current_uid() or 0
     return os.stat_result((mode, 0, 0, 1, uid, 0, 0, 0, 0, 0))
 
 
@@ -148,11 +153,12 @@ class TestSeparatorCheckpointPurge(unittest.TestCase):
             mock_unlink.assert_not_called()
 
     def test_purge_cached_separator_checkpoint_skips_foreign_owned_directory(self):
-        if not hasattr(os, "geteuid"):
+        uid = _current_uid()
+        if uid is None:
             self.skipTest("ownership checks require POSIX uids")
         with (
             patch("modules.runtime.model_cache.open_dir_handle", return_value=9),
-            patch("os.fstat", return_value=_fake_dir_stat(uid=os.geteuid() + 1)),
+            patch("os.fstat", return_value=_fake_dir_stat(uid=uid + 1)),
             patch("os.listdir", return_value=["test_model.ckpt"]),
             patch("os.close"),
             patch("os.unlink") as mock_unlink,

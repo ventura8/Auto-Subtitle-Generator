@@ -11,6 +11,8 @@ permissions:
 
 env:
   POETRY_VERSION: "2.4.3"
+  # Install wheels only, so no dependency's setup script runs on the runner.
+  POETRY_INSTALLER_ONLY_BINARY: ":all:"
 
 jobs:
   static_analysis:
@@ -393,6 +395,9 @@ jobs:
         run: poetry install -v --with ml,dev --no-root
         env:
           POETRY_REQUESTS_TIMEOUT: "300"
+          # diffq (pulled in by audio-separator on Linux) publishes no wheel;
+          # it is the one package allowed to build from its pinned sdist.
+          POETRY_INSTALLER_NO_BINARY: "diffq"
 
       - name: Install E2E Test Dependencies (macOS/Windows)
         if: runner.os != 'Linux'

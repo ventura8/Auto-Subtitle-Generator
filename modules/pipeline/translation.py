@@ -123,7 +123,7 @@ def _wait_worker_tick(proc):
 
 def _scan_pending_outputs(pending, folder, base_name, segments):
     """Process currently available worker outputs and return remaining pending languages."""
-    for lang in list(pending):
+    for lang in pending.copy():
         output_file = _temp_output_path(folder, base_name, lang)
 
         if not os.path.exists(output_file):
@@ -156,7 +156,7 @@ def _poll_translation_results(proc, missing_langs, folder, base_name, segments):
 
 def _flush_pending_outputs_after_exit(pending, folder, base_name, segments):
     """Process remaining worker outputs once after worker exit."""
-    for lang in list(pending):
+    for lang in pending.copy():
         if _flush_single_pending_language(lang, folder, base_name, segments):
             pending.discard(lang)
 
