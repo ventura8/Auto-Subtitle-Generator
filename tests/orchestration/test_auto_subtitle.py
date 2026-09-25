@@ -68,7 +68,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         self.assertIsInstance(transformers, MagicMock)
         self.assertIsInstance(faster_whisper, MagicMock)
         self.assertIsInstance(audio_separator, MagicMock)
-        self.assertIsInstance(auto_subtitle.torch, MagicMock)
+        self.assertIsInstance(auto_subtitle._get_torch_module(), MagicMock)
 
         # Check if anything big is loaded
         big_mods = [m for m in sys.modules if "torch" in m or "transformers" in m or "whisper" in m]
@@ -204,8 +204,9 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                     m_embed.assert_called_once()
 
     def test_failure_keeps_work_dir_for_resume(self):
-        with patch.dict(sys.modules, {"audio_separator": MagicMock(), "audio_separator.separator": MagicMock()}):
-            sys.modules["audio_separator.separator"].Separator.return_value.separate.return_value = []
+        separator_module = MagicMock()
+        separator_module.Separator.return_value.separate.return_value = []
+        with patch.dict(sys.modules, {"audio_separator": MagicMock(), "audio_separator.separator": separator_module}):
             with patch("modules.utils.extract_clean_audio", return_value="temp.wav"):
                 with patch("modules.models.WhisperModel") as m_whisper:
                     m_whisper.return_value.transcribe.side_effect = RuntimeError("Whisper Crash")

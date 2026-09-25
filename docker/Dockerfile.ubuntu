@@ -18,7 +18,12 @@ ENV UV_PYTHON_INSTALL_DIR="/opt/uv/python"
 RUN uv python install 3.12.14
 
 WORKDIR /app
-COPY . /app
+# Copy only what the installer and the E2E suite need; never the whole build
+# context, so local secrets, caches or media can't leak into the image.
+COPY pyproject.toml poetry.lock poetry.toml pytest.ini pyrightconfig.json config.yaml      auto_subtitle.py install_dependencies.sh start.sh run_local_pipeline.sh /app/
+COPY modules /app/modules
+COPY tests /app/tests
+COPY typings /app/typings
 
 RUN chmod +x install_dependencies.sh start.sh run_local_pipeline.sh
 RUN ./install_dependencies.sh ml,dev

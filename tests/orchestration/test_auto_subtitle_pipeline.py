@@ -73,8 +73,7 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             mock_log.assert_called()
 
     def test_init_ai_engine_already_init(self):
-        auto_subtitle.torch = MagicMock()
-        with patch("builtins.print") as mock_print:
+        with patch.object(auto_subtitle, "torch", MagicMock(), create=True), patch("builtins.print") as mock_print:
             auto_subtitle.init_ai_engine()
             mock_print.assert_not_called()
 
