@@ -19,4 +19,7 @@ ______________________________________________________________________
 ## Maintainability
 
 - Decompose complex shell logic into focused script functions with clear error handling.
+- `.github/scripts/Invoke-PowerShellLint.ps1` fails any function over cyclomatic
+  complexity 9 or nesting depth 4, on top of PSScriptAnalyzer warnings.
+  SonarQube Cloud also caps cognitive complexity at 15 per function.
 - Keep terminal output informative with structured progress indicators (`==> Step Name`).
