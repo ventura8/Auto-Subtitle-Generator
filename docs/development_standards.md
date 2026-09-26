@@ -59,6 +59,16 @@ are extracted into the `modules/` package:
      rather than invoking the PowerShell script.
    - **CI Security Defaults**: Workflow permissions default to read-only
      repository contents and checkout steps disable persisted credentials.
+     Poetry installs wheels only (`POETRY_INSTALLER_ONLY_BINARY=":all:"`), so
+     no dependency's setup script runs on a runner, with one exception: `diffq`,
+     which publishes no wheel, builds from its pinned sdist
+     (`POETRY_INSTALLER_NO_BINARY`) in the Linux ML job, and its build code
+     does run there. Add a package to that exception only when it has no wheel
+     for the runner.
+   - **Docker Build Context**: `docker/Dockerfile.ubuntu` copies an explicit
+     list of files and directories, never `COPY . /app`, so local secrets,
+     caches and media can't leak into the image. Extend the list when the
+     installer or the E2E suite needs a new top-level path.
    - **AI Workspace**: Agents should follow `.github/skills/fix-file/SKILL.md`
      when applying targeted file fixes.
 1. **Documentation Synchronization**:

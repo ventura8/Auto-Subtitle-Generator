@@ -23,16 +23,16 @@ class TestTranslation(unittest.TestCase):
     @patch("modules.pipeline.translation.utils.validate_srt", return_value=False)
     @patch("os.path.exists", return_value=True)
     def test_identify_missing_targets_invalid_srt(self, mock_exists, mock_validate):
-        config.TARGET_LANGUAGES = {"es": {"code": "spa", "label": "Esp"}}
-        missing, skipped = translation._identify_missing_targets("en", "folder", "base")
+        with patch.object(config, "TARGET_LANGUAGES", {"es": {"code": "spa", "label": "Esp"}}):
+            missing, skipped = translation._identify_missing_targets("en", "folder", "base")
         self.assertEqual(len(missing), 1)
         self.assertEqual(skipped, 0)
 
     @patch("modules.pipeline.translation.utils.validate_srt", return_value=True)
     @patch("os.path.exists", return_value=True)
     def test_identify_missing_targets_skipped(self, mock_exists, mock_validate):
-        config.TARGET_LANGUAGES = {"es": {"code": "spa", "label": "Esp"}}
-        missing, skipped = translation._identify_missing_targets("en", "folder", "base")
+        with patch.object(config, "TARGET_LANGUAGES", {"es": {"code": "spa", "label": "Esp"}}):
+            missing, skipped = translation._identify_missing_targets("en", "folder", "base")
         self.assertEqual(len(missing), 0)
         self.assertEqual(skipped, 1)
 
@@ -40,8 +40,9 @@ class TestTranslation(unittest.TestCase):
     @patch("os.path.exists", return_value=True)
     def test_identify_missing_targets_redoes_everything_when_outputs_are_untrusted(self, mock_exists, mock_validate):
         # The SRT files beside the video were made for a different input of the same name.
-        config.TARGET_LANGUAGES = {"es": {"code": "spa", "label": "Esp"}, "fr": {"code": "fra", "label": "Fr"}}
-        missing, skipped = translation._identify_missing_targets("en", "folder", "base", reuse_outputs=False)
+        languages = {"es": {"code": "spa", "label": "Esp"}, "fr": {"code": "fra", "label": "Fr"}}
+        with patch.object(config, "TARGET_LANGUAGES", languages):
+            missing, skipped = translation._identify_missing_targets("en", "folder", "base", reuse_outputs=False)
         self.assertEqual(missing, ["es", "fr"])
         self.assertEqual(skipped, 0)
         mock_validate.assert_not_called()

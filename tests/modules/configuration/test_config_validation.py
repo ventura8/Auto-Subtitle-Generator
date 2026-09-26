@@ -110,11 +110,11 @@ class TestCoverageConfig(unittest.TestCase):
         config._load_translation_engine({}, logger)
         self.assertEqual(config.TRANSLATOR_ENGINE, original_engine)
 
-    def test_load_target_languages_none_is_noop(self):
+    def test_load_target_languages_none_clears_existing_languages(self):
         logger = MagicMock()
-        config.TARGET_LANGUAGES = {"de": {"code": "deu_Latn", "label": "German"}}
-        config._load_target_languages(None, logger)
-        self.assertEqual(config.TARGET_LANGUAGES, {})
+        with patch.object(config, "TARGET_LANGUAGES", {"de": {"code": "deu_Latn", "label": "German"}}):
+            config._load_target_languages(None, logger)
+            self.assertEqual(config.TARGET_LANGUAGES, {})
         logger.assert_not_called()
 
     def test_normalize_target_languages_missing_code_skips_entry(self):
@@ -158,8 +158,8 @@ class TestCoverageConfig(unittest.TestCase):
             self.assertFalse(res)
 
     def test_nllb_to_iso(self):
-        config.TARGET_LANGUAGES = {"custom": {"code": "custom_code"}}
-        self.assertEqual(config.nllb_to_iso("custom_code"), "custom")
+        with patch.object(config, "TARGET_LANGUAGES", {"custom": {"code": "custom_code"}}):
+            self.assertEqual(config.nllb_to_iso("custom_code"), "custom")
         self.assertEqual(config.nllb_to_iso("ron_Latn"), "ro")
         self.assertEqual(config.nllb_to_iso("eng_Latn"), "en")
         self.assertEqual(config.nllb_to_iso("spa_Latn"), "es")
@@ -345,6 +345,6 @@ class TestSeparationChunkingConfig(unittest.TestCase):
         logger.assert_any_call("[Config] Invalid separation_chunk_minutes; keeping default.", "WARNING")
 
     def test_missing_key_leaves_value_untouched(self):
-        config.SEPARATION_CHUNK_MINUTES = 12
-        config._load_whisper_config({}, MagicMock())
-        self.assertEqual(config.SEPARATION_CHUNK_MINUTES, 12)
+        with patch.object(config, "SEPARATION_CHUNK_MINUTES", 12):
+            config._load_whisper_config({}, MagicMock())
+            self.assertEqual(config.SEPARATION_CHUNK_MINUTES, 12)

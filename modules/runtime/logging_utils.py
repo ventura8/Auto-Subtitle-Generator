@@ -17,6 +17,21 @@ from ..media.hardware_utils import get_cpu_name
 
 # Track active subprocesses for cleanup
 active_subprocesses: list[subprocess.Popen[Any]] = []
+
+# Win32 console output modes enabled so ANSI escapes render.
+_ENABLE_PROCESSED_OUTPUT = 0x1
+_ENABLE_WRAP_AT_EOL_OUTPUT = 0x2
+_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x4
+_ANSI_CONSOLE_MODE = _ENABLE_PROCESSED_OUTPUT | _ENABLE_WRAP_AT_EOL_OUTPUT | _ENABLE_VIRTUAL_TERMINAL_PROCESSING
+_STD_OUTPUT_HANDLE = -11
+
+# Win32 console control events that terminate the process.
+_CTRL_C_EVENT = 0
+_CTRL_BREAK_EVENT = 1
+_CTRL_CLOSE_EVENT = 2
+_CTRL_LOGOFF_EVENT = 5
+_CTRL_SHUTDOWN_EVENT = 6
+_TERMINATING_CTRL_EVENTS = frozenset({_CTRL_C_EVENT, _CTRL_BREAK_EVENT, _CTRL_CLOSE_EVENT, _CTRL_LOGOFF_EVENT, _CTRL_SHUTDOWN_EVENT})
 _WIN32_CTRL_HANDLER = None
 
 
@@ -106,7 +121,7 @@ def _cleanup_subprocess(proc):
 
 def _cleanup_active_subprocesses():
     """Best-effort cleanup for all active subprocesses."""
-    for proc in list(active_subprocesses):
+    for proc in active_subprocesses.copy():
         if proc.poll() is None:
             try:
                 _cleanup_subprocess(proc)
@@ -144,12 +159,10 @@ def init_console():
     if os.name == "nt":
         try:
             kernel32 = ctypes.windll.kernel32
-            # ENABLE_VIRTUAL_TERMINAL_PROCESSING (4) | ENABLE_PROCESSED_OUTPUT (1) | ENABLE_WRAP_AT_EOL_OUTPUT (2) = 7
-            k32_stdout = -11
-            handle = kernel32.GetStdHandle(k32_stdout)
+            handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
             mode = ctypes.c_uint32(0)
             if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                kernel32.SetConsoleMode(handle, mode.value | 7)
+                kernel32.SetConsoleMode(handle, mode.value | _ANSI_CONSOLE_MODE)
         except (AttributeError, OSError):
             pass
 
@@ -168,12 +181,7 @@ def setup_signal_handlers():
             handler_routine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
 
             def ctrl_handler(ctrl_type):
-                # 0: CTRL_C_EVENT
-                # 1: CTRL_BREAK_EVENT
-                # 2: CTRL_CLOSE_EVENT
-                # 5: CTRL_LOGOFF_EVENT
-                # 6: CTRL_SHUTDOWN_EVENT
-                if ctrl_type in (0, 1, 2, 5, 6):
+                if ctrl_type in _TERMINATING_CTRL_EVENTS:
                     print("\n\n[!] Termination detected. Stopping all processes...")
                     _cleanup_active_subprocesses()
                     os._exit(1)

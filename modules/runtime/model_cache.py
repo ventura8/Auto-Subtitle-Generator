@@ -77,7 +77,9 @@ def _is_owned_by_current_user(entry_stat: os.stat_result) -> bool:
     Platforms without uids (Windows) have no owner to compare, so the check
     cannot contribute there and passes.
     """
-    geteuid = getattr(os, "geteuid", None)
+    # Looked up through the module dict: pylint on Windows infers a
+    # getattr(..., None) fallback as always-None and rejects the call.
+    geteuid = vars(os).get("geteuid")
     return geteuid is None or entry_stat.st_uid == geteuid()
 
 
