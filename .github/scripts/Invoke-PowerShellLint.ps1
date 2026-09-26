@@ -22,6 +22,58 @@ if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
     Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -Repository PSGallery
 }
 
+# Statements that nest a block: each one adds a decision path and a nesting level.
+$script:NestingAstTypes = @(
+    [System.Management.Automation.Language.IfStatementAst],
+    [System.Management.Automation.Language.ForEachStatementAst],
+    [System.Management.Automation.Language.ForStatementAst],
+    [System.Management.Automation.Language.WhileStatementAst],
+    [System.Management.Automation.Language.DoWhileStatementAst],
+    [System.Management.Automation.Language.DoUntilStatementAst],
+    [System.Management.Automation.Language.SwitchStatementAst],
+    [System.Management.Automation.Language.CatchClauseAst],
+    [System.Management.Automation.Language.TrapStatementAst]
+)
+
+# Nodes inspected for cyclomatic complexity: the nesting statements plus
+# binary expressions, which count only for logical operators.
+$script:DecisionAstTypes = $script:NestingAstTypes + @(
+    [System.Management.Automation.Language.BinaryExpressionAst]
+)
+
+function Test-AstIsAnyType {
+    param(
+        [System.Management.Automation.Language.Ast]$AstNode,
+        [type[]]$Types
+    )
+
+    foreach ($type in $Types) {
+        if ($AstNode -is $type) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-DecisionNodeWeight {
+    param([System.Management.Automation.Language.Ast]$Node)
+
+    if ($Node -is [System.Management.Automation.Language.IfStatementAst]) {
+        # Each if/elseif branch introduces an additional decision path.
+        return $Node.Clauses.Count
+    }
+
+    if ($Node -is [System.Management.Automation.Language.SwitchStatementAst]) {
+        return [Math]::Max($Node.Clauses.Count, 1)
+    }
+
+    if ($Node -is [System.Management.Automation.Language.BinaryExpressionAst]) {
+        return [int]($Node.Operator.ToString() -in @("And", "Or", "Xor"))
+    }
+
+    return 1
+}
+
 function Get-FunctionCyclomaticComplexity {
     param([System.Management.Automation.Language.FunctionDefinitionAst]$FunctionAst)
 
@@ -31,100 +83,123 @@ function Get-FunctionCyclomaticComplexity {
         return $complexity
     }
 
+    $decisionTypes = $script:DecisionAstTypes
     $nestedAsts = $functionBody.FindAll(
         {
             param($AstNode)
-            $AstNode -is [System.Management.Automation.Language.IfStatementAst] -or
-            $AstNode -is [System.Management.Automation.Language.ForEachStatementAst] -or
-            $AstNode -is [System.Management.Automation.Language.ForStatementAst] -or
-            $AstNode -is [System.Management.Automation.Language.WhileStatementAst] -or
-            $AstNode -is [System.Management.Automation.Language.DoWhileStatementAst] -or
-            $AstNode -is [System.Management.Automation.Language.DoUntilStatementAst] -or
-            $AstNode -is [System.Management.Automation.Language.CatchClauseAst] -or
-            $AstNode -is [System.Management.Automation.Language.SwitchStatementAst] -or
-            $AstNode -is [System.Management.Automation.Language.TrapStatementAst] -or
-            $AstNode -is [System.Management.Automation.Language.BinaryExpressionAst]
+            Test-AstIsAnyType -AstNode $AstNode -Types $decisionTypes
         },
         $false
     )
 
     foreach ($node in $nestedAsts) {
-        if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
-            # Each if/elseif branch introduces an additional decision path.
-            $complexity += $node.Clauses.Count
-            continue
-        }
-
-        if ($node -is [System.Management.Automation.Language.SwitchStatementAst]) {
-            if ($node.Clauses.Count -gt 0) {
-                $complexity += $node.Clauses.Count
-            }
-            else {
-                $complexity += 1
-            }
-            continue
-        }
-
-        if ($node -is [System.Management.Automation.Language.BinaryExpressionAst]) {
-            $op = $node.Operator.ToString()
-            if ($op -in @("And", "Or", "Xor")) {
-                $complexity += 1
-            }
-            continue
-        }
-
-        $complexity += 1
+        $complexity += Get-DecisionNodeWeight -Node $node
     }
 
     return $complexity
 }
 
+function Get-StatementNestingDepth {
+    param(
+        [System.Management.Automation.Language.Ast]$Statement,
+        [System.Management.Automation.Language.FunctionDefinitionAst]$FunctionAst
+    )
+
+    # A nesting statement is itself one level, so an empty innermost block counts.
+    $depth = [int](Test-AstIsAnyType -AstNode $Statement -Types $script:NestingAstTypes)
+    $parent = $Statement.Parent
+    while ($null -ne $parent -and $parent -ne $FunctionAst) {
+        if (Test-AstIsAnyType -AstNode $parent -Types $script:NestingAstTypes) {
+            $depth += 1
+        }
+        $parent = $parent.Parent
+    }
+    return $depth
+}
+
 function Get-MaximumFunctionNestingDepth {
     param([System.Management.Automation.Language.FunctionDefinitionAst]$FunctionAst)
 
-    $maxDepth = 0
-
-    $null = $FunctionAst.Body.FindAll(
-        {
-            param($AstNode)
-            if (-not ($AstNode -is [System.Management.Automation.Language.StatementAst])) {
-                return $false
-            }
-
-            $depth = 0
-            $parent = $AstNode.Parent
-            while ($null -ne $parent) {
-                if ($parent -eq $FunctionAst) {
-                    break
-                }
-
-                if (
-                    $parent -is [System.Management.Automation.Language.IfStatementAst] -or
-                    $parent -is [System.Management.Automation.Language.ForEachStatementAst] -or
-                    $parent -is [System.Management.Automation.Language.ForStatementAst] -or
-                    $parent -is [System.Management.Automation.Language.WhileStatementAst] -or
-                    $parent -is [System.Management.Automation.Language.DoWhileStatementAst] -or
-                    $parent -is [System.Management.Automation.Language.DoUntilStatementAst] -or
-                    $parent -is [System.Management.Automation.Language.SwitchStatementAst] -or
-                    $parent -is [System.Management.Automation.Language.CatchClauseAst] -or
-                    $parent -is [System.Management.Automation.Language.TrapStatementAst]
-                ) {
-                    $depth += 1
-                }
-
-                $parent = $parent.Parent
-            }
-
-            if ($depth -gt $maxDepth) {
-                $maxDepth = $depth
-            }
-
-            return $false
-        },
+    $statements = $FunctionAst.Body.FindAll(
+        { param($AstNode) $AstNode -is [System.Management.Automation.Language.StatementAst] },
         $false
     )
 
+    $maxDepth = 0
+    foreach ($statement in $statements) {
+        $depth = Get-StatementNestingDepth -Statement $statement -FunctionAst $FunctionAst
+        $maxDepth = [Math]::Max($maxDepth, $depth)
+    }
     return $maxDepth
+}
+
+function ConvertTo-LintViolation {
+    param(
+        [string]$ScriptName,
+        [int]$Line,
+        [string]$RuleName,
+        [string]$Message
+    )
+
+    return [pscustomobject]@{
+        ScriptName = $ScriptName
+        Line = $Line
+        Severity = "Error"
+        RuleName = $RuleName
+        Message = $Message
+    }
+}
+
+function Get-FunctionViolation {
+    param(
+        [string]$Path,
+        [System.Management.Automation.Language.FunctionDefinitionAst]$FunctionAst,
+        [int]$ComplexityLimit,
+        [int]$NestingLimit
+    )
+
+    $line = $FunctionAst.Extent.StartLineNumber
+    $name = $FunctionAst.Name
+
+    $cyclomatic = Get-FunctionCyclomaticComplexity -FunctionAst $FunctionAst
+    if ($cyclomatic -gt $ComplexityLimit) {
+        ConvertTo-LintViolation -ScriptName $Path -Line $line -RuleName "PSCyclomaticComplexity" `
+            -Message "Function '$name' has cyclomatic complexity $cyclomatic (limit: $ComplexityLimit)."
+    }
+
+    $maxDepth = Get-MaximumFunctionNestingDepth -FunctionAst $FunctionAst
+    if ($maxDepth -gt $NestingLimit) {
+        ConvertTo-LintViolation -ScriptName $Path -Line $line -RuleName "PSMaximumNestingDepth" `
+            -Message "Function '$name' has maximum nesting depth $maxDepth (limit: $NestingLimit)."
+    }
+}
+
+function Get-ScriptViolation {
+    param(
+        [string]$Path,
+        [int]$ComplexityLimit,
+        [int]$NestingLimit
+    )
+
+    if (-not (Test-Path $Path)) {
+        return ConvertTo-LintViolation -ScriptName $Path -Line 0 -RuleName "PSFileNotFound" `
+            -Message "PowerShell script path was not found."
+    }
+
+    $parseErrors = $null
+    $tokens = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+
+    if ($parseErrors -and $parseErrors.Count -gt 0) {
+        return $parseErrors | ForEach-Object {
+            ConvertTo-LintViolation -ScriptName $Path -Line $_.Extent.StartLineNumber -RuleName "PSParserError" -Message $_.Message
+        }
+    }
+
+    $functions = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+    foreach ($functionAst in $functions) {
+        Get-FunctionViolation -Path $Path -FunctionAst $functionAst -ComplexityLimit $ComplexityLimit -NestingLimit $NestingLimit
+    }
 }
 
 function Test-PowerShellComplexity {
@@ -134,64 +209,10 @@ function Test-PowerShellComplexity {
         [int]$NestingLimit
     )
 
-    $violations = @()
-
-    foreach ($path in $Paths) {
-        if (-not (Test-Path $path)) {
-            $violations += [pscustomobject]@{
-                ScriptName = $path
-                Line = 0
-                Severity = "Error"
-                RuleName = "PSFileNotFound"
-                Message = "PowerShell script path was not found."
-            }
-            continue
-        }
-
-        $parseErrors = $null
-        $tokens = $null
-        $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors)
-
-        if ($parseErrors -and $parseErrors.Count -gt 0) {
-            foreach ($parseError in $parseErrors) {
-                $violations += [pscustomobject]@{
-                    ScriptName = $path
-                    Line = $parseError.Extent.StartLineNumber
-                    Severity = "Error"
-                    RuleName = "PSParserError"
-                    Message = $parseError.Message
-                }
-            }
-            continue
-        }
-
-        $functions = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
-        foreach ($functionAst in $functions) {
-            $cyclomatic = Get-FunctionCyclomaticComplexity -FunctionAst $functionAst
-            if ($cyclomatic -gt $ComplexityLimit) {
-                $violations += [pscustomobject]@{
-                    ScriptName = $path
-                    Line = $functionAst.Extent.StartLineNumber
-                    Severity = "Error"
-                    RuleName = "PSCyclomaticComplexity"
-                    Message = "Function '$($functionAst.Name)' has cyclomatic complexity $cyclomatic (limit: $ComplexityLimit)."
-                }
-            }
-
-            $maxDepth = Get-MaximumFunctionNestingDepth -FunctionAst $functionAst
-            if ($maxDepth -gt $NestingLimit) {
-                $violations += [pscustomobject]@{
-                    ScriptName = $path
-                    Line = $functionAst.Extent.StartLineNumber
-                    Severity = "Error"
-                    RuleName = "PSMaximumNestingDepth"
-                    Message = "Function '$($functionAst.Name)' has maximum nesting depth $maxDepth (limit: $NestingLimit)."
-                }
-            }
-        }
+    $violations = foreach ($path in $Paths) {
+        Get-ScriptViolation -Path $path -ComplexityLimit $ComplexityLimit -NestingLimit $NestingLimit
     }
-
-    return $violations
+    return @($violations)
 }
 
 # Run analysis on all script paths

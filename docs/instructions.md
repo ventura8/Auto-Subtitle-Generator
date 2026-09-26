@@ -86,5 +86,5 @@ ______________________________________________________________________
 - [Development & Standards](development_standards.md) (Detailed
   Linting/Testing rules)
 - [Configuration](configuration.md)
-- [Release Notes](releases/v1.2.6.md)
+- [Release Notes](releases/v1.2.7.md)
 - [Release Prep Skill](../.github/skills/release-prep/SKILL.md)
