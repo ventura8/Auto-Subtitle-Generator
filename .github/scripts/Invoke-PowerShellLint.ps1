@@ -105,7 +105,8 @@ function Get-StatementNestingDepth {
         [System.Management.Automation.Language.FunctionDefinitionAst]$FunctionAst
     )
 
-    $depth = 0
+    # A nesting statement is itself one level, so an empty innermost block counts.
+    $depth = [int](Test-AstIsAnyType -AstNode $Statement -Types $script:NestingAstTypes)
     $parent = $Statement.Parent
     while ($null -ne $parent -and $parent -ne $FunctionAst) {
         if (Test-AstIsAnyType -AstNode $parent -Types $script:NestingAstTypes) {
