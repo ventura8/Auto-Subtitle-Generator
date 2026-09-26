@@ -11,7 +11,8 @@ permissions:
 
 env:
   POETRY_VERSION: "2.4.3"
-  # Install wheels only, so no dependency's setup script runs on the runner.
+  # Install wheels only, so no dependency's setup script runs on the runner,
+  # except diffq, which the Linux ML job builds from source (NO_BINARY below).
   POETRY_INSTALLER_ONLY_BINARY: ":all:"
 
 jobs:

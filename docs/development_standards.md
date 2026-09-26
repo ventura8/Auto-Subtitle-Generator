@@ -60,10 +60,11 @@ are extracted into the `modules/` package:
    - **CI Security Defaults**: Workflow permissions default to read-only
      repository contents and checkout steps disable persisted credentials.
      Poetry installs wheels only (`POETRY_INSTALLER_ONLY_BINARY=":all:"`), so
-     no dependency's setup script runs on a runner; `diffq`, which publishes
-     no wheel, is the single package allowed to build from source
-     (`POETRY_INSTALLER_NO_BINARY`) in the Linux ML job. Add a package to that
-     exception only when it has no wheel for the runner.
+     no dependency's setup script runs on a runner, with one exception: `diffq`,
+     which publishes no wheel, builds from its pinned sdist
+     (`POETRY_INSTALLER_NO_BINARY`) in the Linux ML job, and its build code
+     does run there. Add a package to that exception only when it has no wheel
+     for the runner.
    - **Docker Build Context**: `docker/Dockerfile.ubuntu` copies an explicit
      list of files and directories, never `COPY . /app`, so local secrets,
      caches and media can't leak into the image. Extend the list when the

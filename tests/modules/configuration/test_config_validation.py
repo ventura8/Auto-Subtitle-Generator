@@ -110,7 +110,7 @@ class TestCoverageConfig(unittest.TestCase):
         config._load_translation_engine({}, logger)
         self.assertEqual(config.TRANSLATOR_ENGINE, original_engine)
 
-    def test_load_target_languages_none_is_noop(self):
+    def test_load_target_languages_none_clears_existing_languages(self):
         logger = MagicMock()
         with patch.object(config, "TARGET_LANGUAGES", {"de": {"code": "deu_Latn", "label": "German"}}):
             config._load_target_languages(None, logger)
