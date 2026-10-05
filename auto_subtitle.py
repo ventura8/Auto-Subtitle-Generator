@@ -14,6 +14,7 @@ Prerequisites:
 """
 
 import argparse
+import contextlib
 import gc
 import importlib
 import logging
@@ -26,7 +27,7 @@ from modules import models, utils, workdir
 from modules.configuration import config
 from modules.configuration.version import __version__
 from modules.media.ffmpeg_utils import build_primary_media_metadata_args
-from modules.media.input_binding import bind_input, media_source, set_input_root
+from modules.media.input_binding import bind_input, is_link, media_source, set_input_root
 from modules.models import OPTIMIZER, ModelManager
 from modules.pipeline.transcription import transcribe_video_audio
 from modules.pipeline.translation import translate_segments
@@ -280,10 +281,11 @@ def _mux_and_promote(temp_output, mux_args, output_path):
     video_path, srt_files, normalized_ext, src_lang = mux_args
     promoted = False
     try:
-        source, pass_fds = media_source(video_path)
-        cmd = _build_embed_command(source, srt_files, normalized_ext, temp_output.path, src_lang)
-        total_dur = utils.get_audio_duration(video_path)
-        utils.run_ffmpeg_progress(cmd, "  [Finalizing] Muxing Video", total_dur, pass_fds=pass_fds)
+        with contextlib.ExitStack() as bindings:
+            source, bound_tracks, pass_fds = _bind_mux_inputs(bindings, video_path, srt_files)
+            cmd = _build_embed_command(source, bound_tracks, normalized_ext, temp_output.path, src_lang)
+            total_dur = utils.get_audio_duration(video_path)
+            utils.run_ffmpeg_progress(cmd, "  [Finalizing] Muxing Video", total_dur, pass_fds=pass_fds)
         promote_temp_path(temp_output, output_path)
         promoted = True
         return output_path
@@ -295,16 +297,38 @@ def _mux_and_promote(temp_output, mux_args, output_path):
             discard_temp_path(temp_output)
 
 
+def _bind_mux_inputs(bindings, video_path, srt_files):
+    """Bind the video and every subtitle sidecar to no-follow descriptors for the mux.
+
+    The sidecars sit in the untrusted input folder, so FFmpeg must never open
+    them by name: a sidecar swapped for a link would otherwise be muxed in.
+    """
+    source, pass_fds = media_source(video_path)
+    pass_fds = list(pass_fds)
+    bound_tracks = []
+    for track in srt_files:
+        bindings.enter_context(bind_input(track[0]))
+        srt_source, srt_fds = media_source(track[0])
+        # Validate the bound bytes, not the name: a regular file swapped in after
+        # _is_muxable_srt must not reach FFmpeg unchecked.
+        if not utils.validate_srt(srt_source):
+            raise ValueError(f"Subtitle changed before muxing and is no longer valid SRT: {track[0]}")
+        pass_fds.extend(srt_fds)
+        bound_tracks.append((srt_source, *track[1:]))
+    return source, bound_tracks, tuple(pass_fds)
+
+
 def _build_embed_command(video_path, srt_files, normalized_ext, output_path, src_lang=None):
     """Build FFmpeg command for multi-language subtitle muxing."""
     cmd = [utils.FFMPEG_CMD, "-y", "-i", video_path]
     for track in srt_files:
         srt_path = track[0]
-        cmd.extend(["-sub_charenc", "UTF-8", "-i", srt_path])
+        # Force the SRT demuxer: a sidecar that is really a media file fails instead of being muxed.
+        cmd.extend(["-f", "srt", "-sub_charenc", "UTF-8", "-i", srt_path])
 
     cmd.extend(["-map", "0:v", "-map", "0:a"])
     for index in range(len(srt_files)):
-        cmd.extend(["-map", f"{index + 1}"])
+        cmd.extend(["-map", f"{index + 1}:s"])
 
     subtitle_codec = "mov_text" if normalized_ext in [".mp4", ".m4v", ".mov"] else "srt"
     cmd.extend(["-c:v", "copy", "-c:a", "copy", "-c:s", subtitle_codec])
@@ -364,7 +388,7 @@ def _finalize_video_processing(video_path, folder, base_name, src_lang, src_srt_
 def _collect_generated_srt_tracks(folder, base_name, src_lang, src_srt_path):
     """Collect source and translated SRT tracks for final muxing."""
     generated_srts = []
-    if os.path.exists(src_srt_path):
+    if _is_muxable_srt(src_srt_path, "source"):
         src_label = config.TARGET_LANGUAGES.get(src_lang, {}).get("label", src_lang.upper())
         generated_srts.append((src_srt_path, src_lang, src_label, config.to_mux_language_code(src_lang)))
 
@@ -376,16 +400,26 @@ def _collect_generated_srt_tracks(folder, base_name, src_lang, src_srt_path):
     return generated_srts
 
 
+def _is_muxable_srt(srt_path, kind):
+    """Return True for an existing, valid SRT sidecar that is not a link."""
+    if not os.path.lexists(srt_path):
+        return False
+    if is_link(srt_path):
+        log(f"  [Mux] Refusing linked {kind} SRT: {srt_path}", "WARNING")
+        return False
+    if not utils.validate_srt(srt_path):
+        log(f"  [Mux] Skipping invalid {kind} SRT: {srt_path}", "WARNING")
+        return False
+    return True
+
+
 def _build_translation_srt_track(folder, base_name, src_lang, lang, info):
     """Build one translated SRT track tuple or return None when unavailable."""
     if lang == src_lang:
         return None
 
     lang_srt = os.path.join(folder, f"{base_name}.{lang}.srt")
-    if not os.path.exists(lang_srt):
-        return None
-    if not utils.validate_srt(lang_srt):
-        log(f"  [Mux] Skipping invalid translated SRT: {lang_srt}", "WARNING")
+    if not _is_muxable_srt(lang_srt, "translated"):
         return None
 
     label = info.get("label", lang.upper()) if isinstance(info, dict) else lang.upper()

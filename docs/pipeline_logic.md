@@ -138,6 +138,12 @@
   fd to inherit, and `get_audio_duration`, `extract_clean_audio` and the
   final mux pass it through `pass_fds`, calling `rewind_inputs` right before
   each spawn because `/dev/fd` can share the file offset (macOS).
+- **Mux subtitle inputs**: every SRT sidecar (source and translated) is
+  refused when it is a link and re-validated with `validate_srt` right before
+  the mux, then bound with `bind_input` like the video, validated again through
+  the bound descriptor, and passed to FFmpeg as
+  `-f srt -i /dev/fd/N` with `-map N:s`. A sidecar swapped for a media file
+  therefore fails the SRT demuxer and contributes no video or audio streams.
 - **Windows fallback**: no `O_NOFOLLOW` and no fd passing; a held handle pins
   the file but not the directory chain FFmpeg walks by pathname. Components
   are checked with `is_link`, the file is opened after an `lstat` check with

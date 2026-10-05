@@ -236,6 +236,12 @@ ______________________________________________________________________
      binding and `source_stamp` reads through `stat_input`, recording device,
      inode, size and mtime. An input whose binding was refused is never
      probed, not even for the batch summary (`build_file_summary(probe=False)`).
+   - Subtitle sidecars are mux inputs read from the same untrusted folder:
+     `_collect_generated_srt_tracks` refuses a linked or invalid source *or*
+     translated SRT, and `_bind_mux_inputs` binds each one with `bind_input`
+     and re-runs `validate_srt` on the bound source before FFmpeg sees it.
+     FFmpeg gets them as `-f srt -i <bound source>` mapped with `-map N:s`
+     only; never map a whole sidecar input (`-map N`).
 
 1. **Long Inputs Are Chunked Where Memory Demands It**:
 

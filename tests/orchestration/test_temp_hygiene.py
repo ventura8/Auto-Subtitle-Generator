@@ -205,6 +205,13 @@ class TestSourceSrtScratch(_WorkDirCase):
 
 
 class TestEmbedScratch(_WorkDirCase):
+    def setUp(self):
+        super().setUp()
+        self.srt = self._write(os.path.join(self.folder, "movie.en.srt"), "1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+
+    def _entries(self):
+        return [entry for entry in super()._entries() if entry != "movie.en.srt"]
+
     def _run_embed(self, run_side_effect):
         with (
             patch("auto_subtitle.utils.run_ffmpeg_progress", side_effect=run_side_effect),
@@ -233,6 +240,67 @@ class TestEmbedScratch(_WorkDirCase):
     def test_failed_mux_discards_scratch(self):
         self.assertIsNone(self._run_embed(RuntimeError("ffmpeg died")))
         self.assertEqual(sorted(os.listdir(self.work_dir)), [])
+
+    def test_subtitle_inputs_are_descriptor_bound_srt_streams(self):
+        seen = {}
+
+        def fake_ffmpeg(cmd, _desc, _dur, pass_fds=()):
+            seen["cmd"], seen["fds"] = cmd, pass_fds
+            with open(cmd[-1], "wb") as handle:
+                handle.write(b"muxed")
+
+        self.assertIsNotNone(self._run_embed(fake_ffmpeg))
+        cmd = seen["cmd"]
+        srt_input = cmd[cmd.index("-sub_charenc") + 3]
+        self.assertNotIn(self.srt, cmd)
+        self.assertEqual(cmd[cmd.index("-sub_charenc") - 2 : cmd.index("-sub_charenc")], ["-f", "srt"])
+        self.assertIn("1:s", cmd)
+        self.assertNotIn("1", cmd)
+        if os.name != "nt":
+            self.assertEqual(srt_input, f"/dev/fd/{seen['fds'][-1]}")
+
+    def test_subtitle_swapped_for_link_is_refused(self):
+        secret = self._write(os.path.join(self.folder, "secret.bin"), "confidential")
+        os.remove(self.srt)
+        try:
+            os.symlink(secret, self.srt)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest(f"symlinks unavailable: {e}")
+        ran = []
+        self.assertIsNone(self._run_embed(lambda *args, **kwargs: ran.append(args)))
+        self.assertEqual(ran, [])
+        self.assertEqual(sorted(os.listdir(self.work_dir)), [])
+
+    def test_subtitle_swapped_for_invalid_regular_file_is_refused(self):
+        real_bind = auto_subtitle.bind_input
+
+        def swap_then_bind(path, *args, **kwargs):
+            if path == self.srt:
+                os.remove(self.srt)
+                self._write(self.srt, "\x00" * 64)
+            return real_bind(path, *args, **kwargs)
+
+        ran = []
+        with patch("auto_subtitle.bind_input", side_effect=swap_then_bind):
+            self.assertIsNone(self._run_embed(lambda *args, **kwargs: ran.append(args)))
+        self.assertEqual(ran, [])
+        self.assertEqual(sorted(os.listdir(self.work_dir)), [])
+
+    def test_collect_refuses_linked_or_invalid_source_srt(self):
+        secret = self._write(os.path.join(self.folder, "secret.bin"), "confidential")
+        os.remove(self.srt)
+        try:
+            os.symlink(secret, self.srt)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest(f"symlinks unavailable: {e}")
+        with patch("auto_subtitle.log") as mock_log, patch.dict("auto_subtitle.config.TARGET_LANGUAGES", {}, clear=True):
+            self.assertEqual(auto_subtitle._collect_generated_srt_tracks(self.folder, "movie", "en", self.srt), [])
+        self.assertIn("Refusing linked source SRT", mock_log.call_args[0][0])
+        os.remove(self.srt)
+        self._write(self.srt, "not a subtitle file at all")
+        with patch("auto_subtitle.log") as mock_log, patch.dict("auto_subtitle.config.TARGET_LANGUAGES", {}, clear=True):
+            self.assertEqual(auto_subtitle._collect_generated_srt_tracks(self.folder, "movie", "en", self.srt), [])
+        self.assertIn("Skipping invalid source SRT", mock_log.call_args[0][0])
 
 
 class TestExtractCleanAudioWorkDir(_WorkDirCase):
