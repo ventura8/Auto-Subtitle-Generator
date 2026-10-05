@@ -359,9 +359,10 @@ class TestCoverageAutoSubtitle(unittest.TestCase):
             self.assertIsNone(prompt)
 
     @patch("auto_subtitle.embed_subtitles")
-    @patch("os.path.exists", return_value=True)
+    @patch("auto_subtitle.utils.validate_srt", return_value=True)
+    @patch("os.path.lexists", return_value=True)
     @patch.dict("auto_subtitle.config.TARGET_LANGUAGES", {"en": {}, "ro": {"label": "Romanian"}}, clear=True)
-    def test_finalize_video_processing_uses_fallback_src_label(self, _exists, mock_embed):
+    def test_finalize_video_processing_uses_fallback_src_label(self, _exists, _valid, mock_embed):
         auto_subtitle._finalize_video_processing("video.mp4", ".", "base", "en", "base.en.srt")
         embedded = mock_embed.call_args[0][1]
         self.assertTrue(any(item[2] == "EN" for item in embedded))
