@@ -271,6 +271,21 @@ class TestEmbedScratch(_WorkDirCase):
         self.assertEqual(ran, [])
         self.assertEqual(sorted(os.listdir(self.work_dir)), [])
 
+    def test_subtitle_swapped_for_invalid_regular_file_is_refused(self):
+        real_bind = auto_subtitle.bind_input
+
+        def swap_then_bind(path, *args, **kwargs):
+            if path == self.srt:
+                os.remove(self.srt)
+                self._write(self.srt, "\x00" * 64)
+            return real_bind(path, *args, **kwargs)
+
+        ran = []
+        with patch("auto_subtitle.bind_input", side_effect=swap_then_bind):
+            self.assertIsNone(self._run_embed(lambda *args, **kwargs: ran.append(args)))
+        self.assertEqual(ran, [])
+        self.assertEqual(sorted(os.listdir(self.work_dir)), [])
+
     def test_collect_refuses_linked_or_invalid_source_srt(self):
         secret = self._write(os.path.join(self.folder, "secret.bin"), "confidential")
         os.remove(self.srt)

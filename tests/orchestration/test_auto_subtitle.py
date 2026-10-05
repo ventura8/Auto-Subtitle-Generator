@@ -481,6 +481,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
             patch("auto_subtitle.utils.get_audio_duration", return_value=100),
             patch("auto_subtitle.reserve_temp_path", return_value=scratch),
             patch("auto_subtitle.promote_temp_path") as m_promote,
+            patch("auto_subtitle.utils.validate_srt", return_value=True),
             patch("os.path.exists", return_value=False),
         ):  # output doesn't exist
             srt_files = [("en.srt", "en", "English"), ("es.srt", "es", "Spanish")]

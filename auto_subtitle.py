@@ -309,6 +309,10 @@ def _bind_mux_inputs(bindings, video_path, srt_files):
     for track in srt_files:
         bindings.enter_context(bind_input(track[0]))
         srt_source, srt_fds = media_source(track[0])
+        # Validate the bound bytes, not the name: a regular file swapped in after
+        # _is_muxable_srt must not reach FFmpeg unchecked.
+        if not utils.validate_srt(srt_source):
+            raise ValueError(f"Subtitle changed before muxing and is no longer valid SRT: {track[0]}")
         pass_fds.extend(srt_fds)
         bound_tracks.append((srt_source, *track[1:]))
     return source, bound_tracks, tuple(pass_fds)

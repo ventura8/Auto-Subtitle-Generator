@@ -140,7 +140,8 @@
   each spawn because `/dev/fd` can share the file offset (macOS).
 - **Mux subtitle inputs**: every SRT sidecar (source and translated) is
   refused when it is a link and re-validated with `validate_srt` right before
-  the mux, then bound with `bind_input` like the video and passed to FFmpeg as
+  the mux, then bound with `bind_input` like the video, validated again through
+  the bound descriptor, and passed to FFmpeg as
   `-f srt -i /dev/fd/N` with `-map N:s`. A sidecar swapped for a media file
   therefore fails the SRT demuxer and contributes no video or audio streams.
 - **Windows fallback**: no `O_NOFOLLOW` and no fd passing; a held handle pins
