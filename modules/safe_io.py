@@ -119,14 +119,16 @@ def atomic_text_writer(path, encoding="utf-8", scratch_dir=None):
     """
     reject_symlink(path)
     reservation = _reserve(path, scratch_dir)
+    promoted = False
     try:
         with os.fdopen(reservation.fd, "w", encoding=encoding) as file_handle:
             reservation.fd = None
             yield file_handle
         promote_temp_path(reservation, path)
-    except BaseException:
-        discard_temp_path(reservation)
-        raise
+        promoted = True
+    finally:
+        if not promoted:
+            discard_temp_path(reservation)
 
 
 def _reserve(final_path, scratch_dir=None):
