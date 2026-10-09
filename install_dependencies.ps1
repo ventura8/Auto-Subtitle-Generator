@@ -95,6 +95,48 @@ function Install-PowerShellLintDependency {
     Install-Module PSScriptAnalyzer -Scope CurrentUser -RequiredVersion $requiredVersion -Force -Repository PSGallery
 }
 
+function Install-LocalFfmpeg {
+    param([string]$VenvRoot, [string]$FfmpegDir)
+
+    # Versioned gyan.dev release build from its GitHub mirror. Versioned tags are kept,
+    # unlike rolling autobuilds, which upstream prunes after about two weeks.
+    $ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-full_build.zip"
+    $expectedHash = "759D0A9831C436A0EB331AD36F236C06CB04AAA0005DA46571F0E9D3D9206F6B"
+    $ffmpegZip = "$PSScriptRoot\ffmpeg.zip"
+
+    Write-Information "No system FFmpeg found. Installing a local copy into the virtual environment."
+    try {
+        Write-Information "Downloading FFmpeg (pinned gyan.dev 9.0.2 full build)..."
+        Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip -UserAgent "NativeHost"
+
+        Write-Information "Verifying FFmpeg archive SHA256 integrity..."
+        $computedHash = (Get-FileHash -Path $ffmpegZip -Algorithm SHA256).Hash
+        if ($computedHash -ne $expectedHash) {
+            throw "FFmpeg archive integrity verification failed! Expected: $expectedHash, Found: $computedHash"
+        }
+        Write-Information "FFmpeg archive integrity verified successfully."
+
+        Write-Information "Extracting FFmpeg..."
+        # The archive holds one folder, 'ffmpeg-9.0.2-full_build', which becomes .venv\ffmpeg.
+        Expand-Archive -Path $ffmpegZip -DestinationPath $VenvRoot -Force
+        $extractedDir = Get-ChildItem -Path $VenvRoot -Directory -Filter "ffmpeg-*" | Select-Object -First 1
+        if (-not $extractedDir) {
+            throw "FFmpeg archive did not contain the expected ffmpeg-* folder."
+        }
+        # A folder left by a failed earlier run is replaced.
+        if (Test-Path $FfmpegDir) { Remove-Item $FfmpegDir -Recurse -Force }
+        Rename-Item -Path $extractedDir.FullName -NewName "ffmpeg"
+        Write-Information "FFmpeg installed locally in venv."
+    }
+    catch {
+        Write-Error "Failed to download or install FFmpeg: $_"
+        exit 1
+    }
+    finally {
+        if (Test-Path $ffmpegZip) { Remove-Item $ffmpegZip -Force }
+    }
+}
+
 function Install-Cuda12Compatibility {
     param([string]$PythonExecutable)
 
@@ -249,53 +291,22 @@ if ($venvVersion -ge $maxVersionExclusive) {
     throw ".venv Python version is incompatible. Required >= 3.12.0 and < 3.13.0, found $venvVersion at $VenvPy"
 }
 
-# 3. Check for FFmpeg (Local Install)
-Write-Information "`nStep 3: Setting up Local FFmpeg (Full Build)..."
+# 3. FFmpeg: an installed FFmpeg always wins (AGENTS.md rule 6, same order as
+# modules/media/ffmpeg_utils.get_ffmpeg_paths); the venv copy is only a fallback.
+Write-Information "`nStep 3: Checking FFmpeg..."
 $ffmpegDir = "$PSScriptRoot\.venv\ffmpeg"
 $ffmpegBin = "$ffmpegDir\bin\ffmpeg.exe"
+$systemFfmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
+$systemFfprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
 
-if (-not (Test-Path $ffmpegBin)) {
-    try {
-        # Pinned FFmpeg release and known-good SHA256 checksum (BtbN/FFmpeg-Builds)
-        $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-24-13-10/ffmpeg-n9.0.1-6-g9d4ca21220-win64-gpl-9.0.zip"
-        $expectedHash = "3729F8BB8E37ABB6077E78515DB3B29D178911FEB93D3EF6A1BE43FBEAB8AD6E"
-        $ffmpegZip = "$PSScriptRoot\ffmpeg.zip"
-        
-        Write-Information "Downloading FFmpeg (Pinned Build n9.0.1-6-g9d4ca21220 Win64 GPL ZIP)..."
-        Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip -UserAgent "NativeHost"
-        
-        Write-Information "Verifying FFmpeg archive SHA256 integrity..."
-        $computedHash = (Get-FileHash -Path $ffmpegZip -Algorithm SHA256).Hash
-        if ($computedHash -ne $expectedHash) {
-            throw "FFmpeg archive integrity verification failed! Expected: $expectedHash, Found: $computedHash"
-        }
-        Write-Information "FFmpeg archive integrity verified successfully."
-
-        Write-Information "Extracting FFmpeg..."
-        # Extract to venv root temporarily; it creates a subfolder like 'ffmpeg-N-119330-g3ba557fbf0-win64-gpl'
-        Expand-Archive -Path $ffmpegZip -DestinationPath "$PSScriptRoot\.venv" -Force
-        
-        # Rename the extracted folder to 'ffmpeg'
-        $extractedDir = Get-ChildItem -Path "$PSScriptRoot\.venv" -Directory -Filter "ffmpeg-*" | Select-Object -First 1
-        if ($extractedDir) {
-            # If 'ffmpeg' folder already exists (e.g. from failed run), remove it first
-            if (Test-Path $ffmpegDir) { Remove-Item $ffmpegDir -Recurse -Force }
-            Rename-Item -Path $extractedDir.FullName -NewName "ffmpeg"
-        }
-        
-        Write-Information "FFmpeg installed locally in venv."
-    }
-    catch {
-        Write-Error "Failed to download or install FFmpeg: $_"
-        exit
-    }
-    finally {
-        # Cleanup ZIP
-        if (Test-Path $ffmpegZip) { Remove-Item $ffmpegZip -Force }
-    }
+if ($systemFfmpeg -and $systemFfprobe) {
+    Write-Information "Found system FFmpeg: $($systemFfmpeg.Source)"
+}
+elseif (Test-Path $ffmpegBin) {
+    Write-Information "Local FFmpeg already exists."
 }
 else {
-    Write-Information "Local FFmpeg already exists."
+    Install-LocalFfmpeg -VenvRoot "$PSScriptRoot\.venv" -FfmpegDir $ffmpegDir
 }
 
 # 4. Install Dependencies

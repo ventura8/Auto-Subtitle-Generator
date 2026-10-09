@@ -93,8 +93,10 @@ ______________________________________________________________________
   1. Bundled or venv-local copies (built).
   1. A bare command name as a last-resort fallback.
 - Installer scripts and runtime discovery **must agree** on this order.
-  `install_dependencies.sh` probes the system FFmpeg before the venv copy, so
-  `modules/media/ffmpeg_utils.get_ffmpeg_paths()` must do the same.
+  `install_dependencies.sh` and `install_dependencies.ps1` both probe the system
+  FFmpeg before the venv copy, so `modules/media/ffmpeg_utils.get_ffmpeg_paths()`
+  must do the same. The Windows fallback is a versioned, SHA256-pinned gyan.dev
+  build; never pin a rolling autobuild that upstream prunes.
 - Do not add a build/vendor step for a dependency that can be installed via the
   platform package manager or an existing wheel.
 

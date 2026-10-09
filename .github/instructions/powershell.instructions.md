@@ -14,7 +14,12 @@ ______________________________________________________________________
 
 - Keep `install_dependencies.ps1` idempotent so multiple runs safely repair or verify the environment.
 - Preserve local `.venv` paths and launcher compatibility.
-- Ensure FFmpeg installation adheres to Windows official static builds.
+- Use an FFmpeg already on `PATH` (both `ffmpeg` and `ffprobe`) before downloading
+  one, in the same order as `modules/media/ffmpeg_utils.get_ffmpeg_paths()`.
+- The fallback download is pinned to a versioned gyan.dev release build
+  (`GyanD/codexffmpeg` release tag) and verified by SHA256. Never pin a rolling
+  autobuild: upstream prunes those after about two weeks, which breaks fresh
+  installs. A failed download or hash check exits non-zero.
 
 ## Maintainability
 

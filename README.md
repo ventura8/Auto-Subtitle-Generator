@@ -260,9 +260,13 @@ complete runtime, then executes the pipeline.
 ### **Manual Setup**
 
 1. **Clone the repository.**
-1. Install **FFmpeg** on your system (e.g., via `choco install ffmpeg` on Windows,
-   your Linux package manager, or Homebrew on macOS) as a prerequisite before running
-   `install_dependencies.ps1` or `install_dependencies.sh`.
+1. Install **FFmpeg** on your system (e.g., via `winget install ffmpeg` or
+   `choco install ffmpeg` on Windows, your Linux package manager, or Homebrew on
+   macOS). An installed FFmpeg is always preferred. On Windows only, when no
+   `ffmpeg`/`ffprobe` is on `PATH`, `install_dependencies.ps1` falls back to a
+   pinned, SHA256-verified gyan.dev 9.0.2 build in `.venv\ffmpeg`;
+   `install_dependencies.sh` stops unless FFmpeg is installed or present in
+   `.venv/bin`.
 1. Run the platform installer:
    - **Windows:** `./install_dependencies.ps1`
    - **Linux, macOS, or WSL2:** `./install_dependencies.sh`
