@@ -2,10 +2,17 @@ import importlib
 import unittest
 from unittest.mock import MagicMock, patch
 
+from modules.configuration import asr_settings
+
 transcription = importlib.import_module("modules.pipeline.transcription")
 
 
 class TestCoverageTranscription(unittest.TestCase):
+    def setUp(self):
+        # The legacy Whisper path is under test; the shipped default routes per language.
+        asr_settings.set_cli_override("whisper")
+        self.addCleanup(asr_settings.set_cli_override, None)
+
     def test_detect_and_separate_vocals_disabled(self):
         with patch("modules.configuration.config.USE_VOCAL_SEPARATION", False):
             self.assertEqual(transcription._detect_and_separate_vocals("vid.mp4", MagicMock()), "vid.mp4")

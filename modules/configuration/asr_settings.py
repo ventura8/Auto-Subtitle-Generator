@@ -24,7 +24,16 @@ MODEL_REVISIONS = {
     "nvidia/canary-1b-v2": "d455706339a6b32e1aa40f82c713a482a0c938e2",
     "nvidia/parakeet-tdt-0.6b-v3": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
 }
-DEFAULTS: dict[str, Any] = {"engine": "whisper", "routes": {"ro": "canary"}, "max_segment_seconds": 15.0, "force_detected_language": False}
+# Languages where Canary beat Whisper large-v3 on the full FLEURS test split by at least 10 %
+# relative with a 99 % paired CI (95 % for Romanian), VoxPopuli agreeing where it has the
+# language (RTX 5090, 2026-10-10; docs/hardware_optimization.md). Everything else stays on Whisper.
+CANARY_DEFAULT_LANGUAGES = ("bg", "et", "hr", "lt", "lv", "mt", "ro", "sk", "sl")
+DEFAULTS: dict[str, Any] = {
+    "engine": "auto",
+    "routes": {language: "canary" for language in CANARY_DEFAULT_LANGUAGES},
+    "max_segment_seconds": 15.0,
+    "force_detected_language": False,
+}
 MIN_SEGMENT_SECONDS = 5.0
 MAX_SEGMENT_SECONDS = 30.0
 

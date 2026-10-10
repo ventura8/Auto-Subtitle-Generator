@@ -15,6 +15,11 @@ def _fake_work_dir(folder, base_name):
 
 class TestAutoSubtitleUltimate(unittest.TestCase):
     def setUp(self):
+        # The legacy Whisper path is under test; the shipped default routes per language.
+        from modules.configuration import asr_settings as engine_settings
+
+        engine_settings.set_cli_override("whisper")
+        self.addCleanup(engine_settings.set_cli_override, None)
         # Lazy import to ensure coverage measurement
         global auto_subtitle, config, models, translation
         import auto_subtitle

@@ -60,18 +60,30 @@ whisper:
 asr:
   # Engine: Overridden per run by --asr.
   # Available Options:
-  # - "whisper"   (Faster-Whisper, the model above. 99 languages, own language detection. - Default)
+  # - "whisper"   (Faster-Whisper, the model above, for every language. 99 languages, own language detection.)
   # - "canary"    (NVIDIA Canary-1B-v2. Best measured Romanian accuracy; needs the language,
   #                which Whisper detects first. ~1.9 GB VRAM in bf16.)
   # - "parakeet"  (NVIDIA Parakeet-TDT-0.6B-v3. Much faster, less accurate. ~1.2 GB VRAM in bf16.)
   # - "auto"      (Detect the language with Whisper, then use the engine listed in routes below;
   #                unlisted languages stay on Whisper. Whisper is also used when the NVIDIA model
-  #                would not fit the free VRAM.)
-  engine: "whisper"
+  #                would not fit the free VRAM. - Default: on FLEURS-ro Canary measured 6.90 % WER
+  #                against Whisper's 8.91 %, diacritics counted; see docs/hardware_optimization.md.)
+  engine: "auto"
 
-  # Routes: language (ISO 639-1) -> engine, used by "auto". Replaces the default {ro: canary}.
+  # Routes: language (ISO 639-1) -> engine, used by "auto"; replaces the built-in table below.
+  # Shipped: the languages where Canary beat Whisper large-v3 on the full FLEURS test split by
+  # 10-73 % relative WER (99 % CI; docs/hardware_optimization.md). Whisper kept the rest,
+  # including en, de, fr, es, it, pt, nl, pl, ru, uk, sv, fi, da, hu, cs and el.
   routes:
+    bg: canary
+    et: canary
+    hr: canary
+    lt: canary
+    lv: canary
+    mt: canary
     ro: canary
+    sk: canary
+    sl: canary
 
   # Max Segment Seconds: Longest speech span handed to Canary/Parakeet in one piece (5-30).
   # Both models are trained on short utterances and degrade on windows longer than ~30 s.

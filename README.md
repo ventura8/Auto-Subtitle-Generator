@@ -18,8 +18,9 @@ performance on any system.
 
 ## **📝 Release Notes**
 
+- v1.3.0: [docs/releases/v1.3.0.md](docs/releases/v1.3.0.md)
 - v1.2.9: [docs/releases/v1.2.9.md](docs/releases/v1.2.9.md)
-- GitHub release body (copy-ready): [docs/releases/v1.2.9_github_description.md](docs/releases/v1.2.9_github_description.md)
+- GitHub release body (copy-ready): [docs/releases/v1.3.0_github_description.md](docs/releases/v1.3.0_github_description.md)
 - v1.2.8: [docs/releases/v1.2.8.md](docs/releases/v1.2.8.md)
 - v1.2.7: [docs/releases/v1.2.7.md](docs/releases/v1.2.7.md)
 - v1.2.6: [docs/releases/v1.2.6.md](docs/releases/v1.2.6.md)
@@ -111,16 +112,22 @@ remains backward compatible.
     Much faster than Whisper, less accurate.
   - `auto` — detect the language with Whisper (a vote over 8 windows spread
     across the whole file, so an English intro does not decide it), then use
-    the engine listed for that language in `asr.routes` (default:
-    Romanian → Canary). Every other language stays on Whisper.
+    the engine listed for that language in `asr.routes`. This is the
+    default. Out of the box Romanian, Bulgarian, Croatian, Estonian, Latvian,
+    Lithuanian, Maltese, Slovak and Slovenian go to Canary; every other
+    language stays on Whisper.
   - Both NVIDIA models cover 25 European languages and run through the
     `transformers` already installed (no NeMo). An unsupported language, a
     model that does not load or fit, or output that is mostly empty falls back
     to Whisper with a logged warning.
-  - **Whisper stays the default** until the benchmark in
-    [docs/hardware_optimization.md](docs/hardware_optimization.md#benchmark-results)
-    shows Canary measurably ahead on real audio; until then the NVIDIA engines
-    are opt-in.
+  - **Why those languages:** on the full FLEURS test splits Canary cut word
+    errors (diacritics counted) by 20-73 % against Whisper large-v3 in each of
+    them, e.g. Romanian 8.91 % → 6.90 %, and halved Romanian long-form errors
+    with three times tighter cue timing. Whisper stayed as good or better in
+    English, German, French, Spanish, Italian, Portuguese, Dutch, Polish,
+    Russian, Ukrainian and the Nordic languages. Parakeet is the fastest
+    engine but was never the most accurate. Tables:
+    [docs/hardware_optimization.md](docs/hardware_optimization.md#benchmark-results).
 - **Translation:** Configurable engine via `config.yaml`:
 - `nllb` (default, fast and stable; uses NLLB batch translation flow)
 - `translategemma` (higher quality, high VRAM requirement; does not use NLLB
@@ -244,8 +251,8 @@ graph TD
 
     subgraph Step3 ["Step 3 — AI Transcription"]
         VC --> ASR{"ASR Engine<br/>(--asr / asr.engine)"}
-        ASR -- "whisper (default)" --> W["Faster-Whisper<br/>(Large-v3 / CUDA)"]
-        ASR -- "canary / parakeet / auto" --> LID["Language Vote<br/>(Whisper)"]
+        ASR -- "whisper" --> W["Faster-Whisper<br/>(Large-v3 / CUDA)"]
+        ASR -- "auto (default) / canary / parakeet" --> LID["Language Vote<br/>(Whisper)"]
         LID -- "routed" --> NV["Canary / Parakeet<br/>(transformers)"]
         LID -- "unsupported / fallback" --> W
         W --> S1["Detected Lang SRT"]
@@ -465,9 +472,10 @@ whisper:
   custom_prompt: "This video contains medical terminology..."
 
 asr:
-  engine: "whisper"        # whisper | canary | parakeet | auto
-  routes:                  # used by "auto": language -> engine
+  engine: "auto"           # auto | whisper | canary | parakeet
+  routes:                  # used by "auto": language -> engine (others: Whisper)
     ro: canary
+    bg: canary
   max_segment_seconds: 15  # longest speech span per Canary/Parakeet call (5-30)
 
 models:

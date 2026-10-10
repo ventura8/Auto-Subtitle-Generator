@@ -66,8 +66,8 @@ class _DispatchCase(unittest.TestCase):
 
 
 class TestWhisperEngine(_DispatchCase):
-    def test_default_whisper_never_decodes_or_votes(self):
-        segments, language, path = self._run(None)
+    def test_whisper_never_decodes_or_votes(self):
+        segments, language, path = self._run("whisper")
         self.assertEqual((language, path), ("ro", AUDIO))
         self.assertEqual(len(segments), 1)
         self.open_source.assert_not_called()
@@ -87,7 +87,7 @@ class TestWhisperEngine(_DispatchCase):
             [Segment(0.0, 1.0, "Aşa"), Segment(1.0, 2.0, "da")],
             MagicMock(duration=2.0, language="ro", language_probability=0.9),
         )
-        segments, _language, _path = self._run(None)
+        segments, _language, _path = self._run("whisper")
         self.assertEqual([segment.text for segment in segments], ["Așa", "da"])
 
 

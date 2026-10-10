@@ -160,14 +160,16 @@ ______________________________________________________________________
 
 1. **ASR Engines** (`modules/asr/`, `modules/configuration/asr_settings.py`):
 
-   - Three engines: `whisper` (faster-whisper, the default), `canary`
+   - Three engines: `whisper` (faster-whisper), `canary`
      (`nvidia/canary-1b-v2`) and `parakeet` (`nvidia/parakeet-tdt-0.6b-v3`),
-     plus `auto`, which routes per language through `asr.routes` (default
-     `{ro: canary}`) and keeps Whisper for every unlisted language. `--asr`
-     overrides `asr.engine` through `asr_settings.set_cli_override()`, which
-     survives the per-video `load_config()` reset. The shipped default stays
-     `whisper` until the benchmark decision rule in
-     `docs/hardware_optimization.md` passes. `asr_settings.load` never raises:
+     plus `auto`, the default, which routes per language through
+     `asr.routes` (default: bg et hr lt lv mt ro sk sl → Canary,
+     `CANARY_DEFAULT_LANGUAGES`) and keeps Whisper for every unlisted
+     language. `--asr` overrides `asr.engine` through
+     `asr_settings.set_cli_override()`, which survives the per-video
+     `load_config()` reset. A language joins the default routes only by the
+     measured decision rule in `docs/hardware_optimization.md`; re-measure
+     before changing the table. `asr_settings.load` never raises:
      an invalid key logs a WARNING and keeps its default.
    - `transcribe_video_audio` keeps its signature and return contract.
      `engine == whisper` runs the original Whisper path untouched (no decode,

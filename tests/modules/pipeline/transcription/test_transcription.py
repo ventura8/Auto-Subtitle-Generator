@@ -1,11 +1,17 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from modules.configuration import asr_settings
+
 
 class TestTranscription(unittest.TestCase):
     def setUp(self):
         global transcription
         from modules.pipeline import transcription
+
+        # The legacy Whisper path is under test; the shipped default routes per language.
+        asr_settings.set_cli_override("whisper")
+        self.addCleanup(asr_settings.set_cli_override, None)
 
         original_vram_gb = transcription.OPTIMIZER.vram_gb
         original_cpu_cores = transcription.OPTIMIZER.cpu_cores

@@ -11,10 +11,12 @@ All run-time settings are managed in `config.yaml`.
    windows of 30 s spread across the file's speech and tells Whisper that
    language.
 1. **ASR Engine** (`asr:`): which model transcribes the audio.
-   - `engine`: `whisper` (default), `canary`, `parakeet` or `auto`. The
+   - `engine`: `auto` (default), `whisper`, `canary` or `parakeet`. The
      `--asr` command-line option overrides it for one run.
    - `routes`: language (ISO 639-1) → engine, used by `auto`; replaces the
-     default `{ro: canary}`. Unlisted languages stay on Whisper.
+     built-in table, which sends bg, et, hr, lt, lv, mt, ro, sk and sl to
+     Canary (the languages where it measurably beat Whisper). Unlisted
+     languages stay on Whisper.
    - `max_segment_seconds`: longest speech span handed to Canary/Parakeet in
      one call, clamped to 5-30 (default 15).
    - Canary and Parakeet cover 25 European languages (bg cs da de el en es et

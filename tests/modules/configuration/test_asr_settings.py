@@ -30,8 +30,8 @@ class AsrSettingsTestCase(unittest.TestCase):
 
 class TestAsrDefaults(AsrSettingsTestCase):
     def test_defaults_after_reset(self):
-        self.assertEqual(asr_settings.active_engine(), "whisper")
-        self.assertEqual(asr_settings.routes(), {"ro": "canary"})
+        self.assertEqual(asr_settings.active_engine(), asr_settings.DEFAULTS["engine"])
+        self.assertEqual(asr_settings.routes(), asr_settings.DEFAULTS["routes"])
         self.assertEqual(asr_settings.max_segment_seconds(), 15.0)
         self.assertFalse(asr_settings.force_detected_language())
 
@@ -43,23 +43,25 @@ class TestAsrDefaults(AsrSettingsTestCase):
 
     def test_routes_returns_a_copy(self):
         asr_settings.routes()["de"] = "parakeet"
-        self.assertEqual(asr_settings.routes(), {"ro": "canary"})
+        self.assertEqual(asr_settings.routes(), asr_settings.DEFAULTS["routes"])
 
     def test_reset_does_not_share_default_routes(self):
         self.load({"asr": {"routes": {"de": "parakeet"}}})
         asr_settings.reset()
-        self.assertEqual(asr_settings.DEFAULTS["routes"], {"ro": "canary"})
-        self.assertEqual(asr_settings.routes(), {"ro": "canary"})
+        self.assertEqual(
+            asr_settings.DEFAULTS["routes"], {lang: "canary" for lang in ("bg", "et", "hr", "lt", "lv", "mt", "ro", "sk", "sl")}
+        )
+        self.assertEqual(asr_settings.routes(), asr_settings.DEFAULTS["routes"])
 
     def test_missing_section_keeps_defaults_and_logs_summary(self):
         self.assertEqual(self.load({}), [])
-        self.assertEqual(asr_settings.active_engine(), "whisper")
+        self.assertEqual(asr_settings.active_engine(), asr_settings.DEFAULTS["engine"])
         self.log.assert_called_once()
-        self.assertIn("ASR Engine: whisper", self.log.call_args.args[0])
+        self.assertIn(f"ASR Engine: {asr_settings.DEFAULTS['engine']}", self.log.call_args.args[0])
 
     def test_null_section_keeps_defaults(self):
         self.assertEqual(self.load({"asr": None, "whisper": None}), [])
-        self.assertEqual(asr_settings.routes(), {"ro": "canary"})
+        self.assertEqual(asr_settings.routes(), asr_settings.DEFAULTS["routes"])
 
 
 class TestAsrEngineKey(AsrSettingsTestCase):
@@ -75,17 +77,17 @@ class TestAsrEngineKey(AsrSettingsTestCase):
         warnings = self.load({"asr": {"engine": "nemo"}})
         self.assertEqual(len(warnings), 1)
         self.assertIn("asr.engine", warnings[0])
-        self.assertEqual(asr_settings.active_engine(), "whisper")
+        self.assertEqual(asr_settings.active_engine(), asr_settings.DEFAULTS["engine"])
 
     def test_non_string_engine_warns(self):
         self.assertEqual(len(self.load({"asr": {"engine": 3}})), 1)
-        self.assertEqual(asr_settings.active_engine(), "whisper")
+        self.assertEqual(asr_settings.active_engine(), asr_settings.DEFAULTS["engine"])
 
     def test_non_mapping_section_warns_and_keeps_defaults(self):
         warnings = self.load({"asr": ["canary"]})
         self.assertEqual(len(warnings), 1)
         self.assertIn("asr section must be a mapping", warnings[0])
-        self.assertEqual(asr_settings.active_engine(), "whisper")
+        self.assertEqual(asr_settings.active_engine(), asr_settings.DEFAULTS["engine"])
 
 
 class TestAsrCliOverride(AsrSettingsTestCase):
@@ -128,7 +130,7 @@ class TestAsrRoutes(AsrSettingsTestCase):
     def test_non_mapping_routes_warn_and_keep_default(self):
         warnings = self.load({"asr": {"routes": ["ro"]}})
         self.assertEqual(len(warnings), 1)
-        self.assertEqual(asr_settings.routes(), {"ro": "canary"})
+        self.assertEqual(asr_settings.routes(), asr_settings.DEFAULTS["routes"])
 
     def test_unsupported_language_for_nvidia_engine_is_skipped(self):
         warnings = self.load({"asr": {"routes": {"ja": "canary", "de": "canary"}}})
@@ -239,13 +241,13 @@ class TestAsrThroughLoadConfig(AsrSettingsTestCase):
         data = {"asr": {"engine": "nemo", "max_segment_seconds": "x"}, "vad": {"min_silence_duration_ms": 321}}
         self.assertTrue(self.load_config(data))
         self.assertEqual(len(_warnings(self.log)), 2)
-        self.assertEqual(asr_settings.active_engine(), "whisper")
+        self.assertEqual(asr_settings.active_engine(), asr_settings.DEFAULTS["engine"])
         self.assertEqual(config.VAD_MIN_SILENCE_MS, 321)
 
     def test_each_load_resets_previous_asr_values(self):
         self.load_config({"asr": {"engine": "canary", "max_segment_seconds": 8}, "models": {"parakeet": "org/p"}})
         self.load_config({})
-        self.assertEqual(asr_settings.active_engine(), "whisper")
+        self.assertEqual(asr_settings.active_engine(), asr_settings.DEFAULTS["engine"])
         self.assertEqual(asr_settings.max_segment_seconds(), 15.0)
         self.assertEqual(asr_settings.model_id("parakeet"), "nvidia/parakeet-tdt-0.6b-v3")
 
