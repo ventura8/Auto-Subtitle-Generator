@@ -266,8 +266,9 @@ class TestTranscodeOnce(_AudioDirTestCase):
         write.assert_called_once()
 
     def test_failed_transcode_leaves_nothing_behind(self):
+        failure = RuntimeError("ffmpeg failed")
         with self.assertRaises(RuntimeError):
-            self._open(writer=RuntimeError("ffmpeg failed"))
+            self._open(writer=failure)
         self.assertEqual(os.listdir(self.dir), ["stem.wav"])
 
     def test_symlinked_transcode_is_refused(self):

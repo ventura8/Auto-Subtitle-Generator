@@ -151,8 +151,9 @@ class TestBatchesAndGuard(unittest.TestCase):
         pipeline.check_decoded_speech(pipeline.AsrResult([], 100.0, 20.0, {}))
 
     def test_guard_raises_when_little_speech_decoded(self):
+        result = pipeline.AsrResult([], 100.0, 19.0, {})
         with self.assertRaisesRegex(pipeline.AsrEngineFailed, "only 19 s of 100 s"):
-            pipeline.check_decoded_speech(pipeline.AsrResult([], 100.0, 19.0, {}))
+            pipeline.check_decoded_speech(result)
 
     def test_too_fast_needs_a_positive_duration(self):
         self.assertFalse(pipeline._too_fast("abc", 0.0))

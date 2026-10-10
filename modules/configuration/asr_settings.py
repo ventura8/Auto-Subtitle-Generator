@@ -30,7 +30,7 @@ MODEL_REVISIONS = {
 CANARY_DEFAULT_LANGUAGES = ("bg", "et", "hr", "lt", "lv", "mt", "ro", "sk", "sl")
 DEFAULTS: dict[str, Any] = {
     "engine": "auto",
-    "routes": {language: "canary" for language in CANARY_DEFAULT_LANGUAGES},
+    "routes": dict.fromkeys(CANARY_DEFAULT_LANGUAGES, "canary"),
     "max_segment_seconds": 15.0,
     "force_detected_language": False,
 }
@@ -147,7 +147,7 @@ def _parse_routes(value: Any, logger_func: Logger) -> dict[str, str] | None:
 def _valid_routes(value: Mapping[Any, Any], logger_func: Logger) -> dict[str, str]:
     """Return the route entries that pass validation."""
     parsed = (_parse_route(language, engine, logger_func) for language, engine in value.items())
-    return dict(entry for entry in parsed if entry)
+    return {entry[0]: entry[1] for entry in parsed if entry}
 
 
 def _parse_route(raw_language: Any, raw_engine: Any, logger_func: Logger) -> tuple[str, str] | None:

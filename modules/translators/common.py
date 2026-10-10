@@ -18,12 +18,12 @@ __all__ = [
 torch: Any | None = load_optional_torch()
 
 
-def _safetensor_errors() -> tuple[type[BaseException], ...]:
-    """Return ``safetensors.SafetensorError`` when installed; a corrupt header raises it unwrapped."""
+def _safetensor_errors() -> list[type[BaseException]]:
+    """Return ``[safetensors.SafetensorError]`` when installed; a corrupt header raises it unwrapped."""
     try:
-        return (getattr(importlib.import_module("safetensors"), "SafetensorError"),)
+        return [getattr(importlib.import_module("safetensors"), "SafetensorError")]
     except (ImportError, AttributeError):
-        return ()
+        return []
 
 
 _LOAD_ERRORS = (RuntimeError, OSError, ValueError, *_safetensor_errors())

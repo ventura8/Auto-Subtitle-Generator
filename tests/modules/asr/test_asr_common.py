@@ -79,14 +79,16 @@ class TestLoadPretrained(unittest.TestCase):
 
     def test_oom_while_already_on_cpu_reraises(self):
         self.recovery.side_effect = OOM
+        fake = _fake_torch(cuda=False)
         with self.assertRaises(RuntimeError):
-            self._load(_fake_torch(cuda=False))
+            self._load(fake)
         self.recovery.assert_called_once()
 
     def test_other_runtime_error_on_cuda_reraises(self):
         self.recovery.side_effect = RuntimeError("size mismatch for weight")
+        fake = _fake_torch()
         with self.assertRaisesRegex(RuntimeError, "size mismatch"):
-            self._load(_fake_torch())
+            self._load(fake)
         self.log.assert_not_called()
 
     def test_cache_corruption_warning_reaches_pipeline_log(self):

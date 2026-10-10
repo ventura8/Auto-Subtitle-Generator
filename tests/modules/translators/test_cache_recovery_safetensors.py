@@ -26,15 +26,15 @@ class TestSafetensorErrorResolution(unittest.TestCase):
     def test_resolves_the_library_error_type(self):
         module = SimpleNamespace(SafetensorError=FakeSafetensorError)
         with patch("modules.translators.common.importlib.import_module", return_value=module):
-            self.assertEqual(common._safetensor_errors(), (FakeSafetensorError,))
+            self.assertEqual(common._safetensor_errors(), [FakeSafetensorError])
 
     def test_missing_library_adds_nothing(self):
         with patch("modules.translators.common.importlib.import_module", side_effect=ImportError("safetensors")):
-            self.assertEqual(common._safetensor_errors(), ())
+            self.assertEqual(common._safetensor_errors(), [])
 
     def test_library_without_the_error_type_adds_nothing(self):
         with patch("modules.translators.common.importlib.import_module", return_value=SimpleNamespace()):
-            self.assertEqual(common._safetensor_errors(), ())
+            self.assertEqual(common._safetensor_errors(), [])
 
     def test_base_load_errors_are_kept(self):
         self.assertEqual(common._LOAD_ERRORS[:3], (RuntimeError, OSError, ValueError))

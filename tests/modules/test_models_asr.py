@@ -112,8 +112,9 @@ class TestAsrSlot(unittest.TestCase):
         self.assertIsNone(manager._asr_engine)
 
     def test_unknown_engine_raises_value_error(self):
+        manager = models.ModelManager()
         with self.assertRaisesRegex(ValueError, "Unknown NVIDIA ASR engine 'whisper'"):
-            models.ModelManager().get_asr("whisper")
+            manager.get_asr("whisper")
 
 
 class TestVramReporting(unittest.TestCase):
