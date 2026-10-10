@@ -544,7 +544,18 @@ try {
             "modules/pipeline/transcription.py",
             "modules/pipeline/translation.py",
             "modules/utils.py",
-            "modules/workdir.py"
+            "modules/workdir.py",
+            "modules/asr/audio_source.py",
+            "modules/asr/canary.py",
+            "modules/asr/common.py",
+            "modules/asr/cues.py",
+            "modules/asr/language_id.py",
+            "modules/asr/languages.py",
+            "modules/asr/parakeet.py",
+            "modules/asr/pipeline.py",
+            "modules/asr/routing.py",
+            "modules/asr/tdt_guard.py",
+            "modules/configuration/asr_settings.py"
         )
 
         foreach ($coverageFile in $coverageFiles) {

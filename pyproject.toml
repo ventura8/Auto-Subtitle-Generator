@@ -57,6 +57,13 @@ audio-separator = [
 audioread = "^3.1.0"
 librosa = "^1.0.0"
 
+# Only the ASR benchmark (python -m tests.tools.asr_benchmark --voxpopuli ...) reads parquet.
+[tool.poetry.group.bench]
+optional = true
+
+[tool.poetry.group.bench.dependencies]
+pyarrow = "^26.0.0"
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1.1"
 pytest-cov = "^7.1.0"

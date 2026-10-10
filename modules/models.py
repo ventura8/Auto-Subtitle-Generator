@@ -8,8 +8,9 @@ import sys
 from collections import namedtuple
 from typing import Any
 
-from .configuration import config
+from .configuration import asr_settings, config
 from .runtime import vram_tuning
+from .runtime.logging_utils import log
 from .runtime.model_cache import is_corrupt_model_error as _is_corrupt_checkpoint_error
 from .runtime.model_cache import purge_separator_checkpoint as _purge_cached_separator_checkpoint
 from .runtime.model_cache import purge_whisper_model_cache as _purge_whisper_model_cache
@@ -187,22 +188,24 @@ class WhisperModel:
 
     def transcribe(self, *args, **kwargs):
         """Delegate transcription to underlying Faster-Whisper model."""
+        return self._call_with_cpu_fallback("transcribe", *args, **kwargs)
+
+    def detect_language(self, *args, **kwargs):
+        """Delegate language detection (one 30 s window) to the underlying Faster-Whisper model."""
+        return self._call_with_cpu_fallback("detect_language", *args, **kwargs)
+
+    def _call_with_cpu_fallback(self, method_name, *args, **kwargs):
+        """Call a model method; a missing CUDA runtime reloads the model on the CPU in int8 and retries once."""
         try:
-            return self._model.transcribe(*args, **kwargs)
+            return getattr(self._model, method_name)(*args, **kwargs)
         except (RuntimeError, OSError, ValueError) as error:
             if self._using_cpu or not _is_cuda_runtime_missing_error(error):
                 raise
-            LOGGER.warning(
-                "Faster-Whisper CUDA runtime failed during transcription (%s). Retrying on CPU int8.",
-                error,
-            )
-            self._model = self._faster_whisper_model(
-                config.WHISPER_MODEL_SIZE,
-                device="cpu",
-                compute_type="int8",
-            )
-            self._using_cpu = True
-            return self._model.transcribe(*args, **kwargs)
+            log(f"  [Whisper] CUDA runtime failed during {method_name} ({error}); retrying on CPU int8.", "WARNING")
+        # Retry outside the except block so the traceback does not pin the failed GPU model.
+        self._model = _build_cpu_whisper_model(self._faster_whisper_model)
+        self._using_cpu = True
+        return getattr(self._model, method_name)(*args, **kwargs)
 
     def release(self):
         """Release wrapped model reference."""
@@ -249,6 +252,9 @@ class ModelManager:
         self._translategemma = None
         self._separator = None
         self._separator_output_dir = None
+        # One NVIDIA ASR slot (Canary or Parakeet): only one is ever needed per file.
+        self._asr = None
+        self._asr_engine = None
 
     def get_whisper(self):
         """Return lazily initialized Whisper wrapper."""
@@ -262,6 +268,27 @@ class ModelManager:
             self._whisper.release()
         self._whisper = None
         _cleanup_torch_cache()
+
+    def get_asr(self, engine):
+        """Return the NVIDIA ASR wrapper for ``engine``, releasing a different engine's model first."""
+        if self._asr is not None and self._asr_engine != engine:
+            self.offload_asr()
+        if self._asr is None:
+            self._asr = _build_asr_model(engine)
+            self._asr_engine = engine
+            log_vram("after ASR load")
+        return self._asr
+
+    def offload_asr(self):
+        """Release the NVIDIA ASR model and reclaim memory; warn when VRAM stays allocated."""
+        released = self._asr is not None
+        if released:
+            self._asr.release()
+        self._asr = None
+        self._asr_engine = None
+        _cleanup_torch_cache()
+        if released:
+            _report_asr_release()
 
     def get_nllb(self):
         """Return lazily initialized NLLB translator wrapper."""
@@ -323,6 +350,50 @@ class ModelManager:
 
 OPTIMIZER = SystemOptimizer()
 
+# Lazily imported ASR backends: (module, class). The wrappers pull in transformers on construction only.
+_ASR_BACKENDS = {
+    "canary": ("modules.asr.canary", "CanaryModel"),
+    "parakeet": ("modules.asr.parakeet", "ParakeetModel"),
+}
+# torch blocks still allocated after an ASR release point at a leaked reference.
+ASR_RETAINED_WARN_BYTES = 64 * 1024**2
+
+
+def _build_asr_model(engine):
+    """Construct the configured checkpoint of an NVIDIA engine; an unknown engine raises ValueError."""
+    if engine not in _ASR_BACKENDS:
+        raise ValueError(f"Unknown NVIDIA ASR engine '{engine}'")
+    module_name, class_name = _ASR_BACKENDS[engine]
+    backend = getattr(_import_module(module_name), class_name)
+    return backend(asr_settings.model_id(engine), asr_settings.model_revision(engine))
+
+
+def _report_asr_release():
+    """Warn when torch still holds VRAM after the ASR model was released, then log the free VRAM."""
+    retained = _cuda_allocated_bytes()
+    if retained > ASR_RETAINED_WARN_BYTES:
+        log(f"  [ASR] {retained / 1024**2:.0f} MB of VRAM still allocated after releasing the ASR model.", "WARNING")
+    log_vram("after ASR offload")
+
+
+def _cuda_allocated_bytes():
+    """Bytes torch holds on the CUDA device, or 0 when there is none or it cannot be read."""
+    if not is_cuda_usable(torch):
+        return 0
+    try:
+        return int(torch.cuda.memory_allocated(0))
+    except (RuntimeError, AttributeError, ValueError, TypeError):
+        return 0
+
+
+def log_vram(stage):
+    """Log the free VRAM at a pipeline stage as a DEBUG ``[VRAM]`` line; silent without CUDA."""
+    if not is_cuda_usable(torch):
+        return
+    free_gb = _cuda_free_gb()
+    if free_gb is not None:
+        log(f"  [VRAM] {stage}: {free_gb:.1f} GB free", "DEBUG")
+
 
 def _cleanup_torch_cache():
     """Run conservative garbage collection and optional CUDA cache cleanup."""
@@ -359,6 +430,40 @@ def apply_dynamic_translation_batch(model_id, logger_func=None):
     return batch
 
 
+def apply_dynamic_asr_batch(model, segment_seconds):
+    """Return the ASR batch: ``performance.asr_batch`` when pinned, else sized from the VRAM free after loading.
+
+    A model running on the CPU gets the CPU cap; an unreadable VRAM reading keeps the profile cap.
+    """
+    pinned = OPTIMIZER.config.get("asr_batch")
+    if pinned:
+        return int(pinned)
+    if str(model.device).startswith("cpu"):
+        return vram_tuning.asr_batch_cap("CPU_ONLY")
+    cap = vram_tuning.asr_batch_cap(OPTIMIZER.profile)
+    free_gb = _cuda_free_gb()
+    if free_gb is None:
+        return cap
+    free_gb = min(free_gb, _budget_headroom_gb(model.model_id))
+    batch = vram_tuning.asr_batch_size(free_gb, model.model_id, segment_seconds, cap)
+    log(vram_tuning.describe_asr_budget(OPTIMIZER.effective_vram_gb(), free_gb, model.model_id, batch, cap), "DEBUG")
+    return batch
+
+
+def asr_gpu_shortfall(engine):
+    """Explain why ``engine`` would not fit the free VRAM, or return None (it fits, or no GPU is in play)."""
+    if not _should_try_cuda_whisper():
+        return None
+    free_gb = _cuda_free_gb()
+    if free_gb is None:
+        return None
+    model_id = asr_settings.model_id(engine)
+    free_gb = min(free_gb, OPTIMIZER.effective_vram_gb() or free_gb)
+    if vram_tuning.asr_fits_gpu(model_id, free_gb):
+        return None
+    return f"only {free_gb:.1f} GB of VRAM free for {model_id}"
+
+
 def _budget_headroom_gb(model_id):
     """VRAM left for activations inside ``max_vram_usage_gb`` once the model's weights are counted.
 
@@ -366,7 +471,7 @@ def _budget_headroom_gb(model_id):
     """
     if float(OPTIMIZER.config.get("max_vram_usage_gb") or 0) <= 0:
         return float("inf")
-    weights = vram_tuning.NLLB_WEIGHT_GB.get(model_id, 0.0)
+    weights = vram_tuning.NLLB_WEIGHT_GB.get(model_id, vram_tuning.ASR_WEIGHT_GB.get(model_id, 0.0))
     return max(0.0, OPTIMIZER.effective_vram_gb() - weights)
 
 

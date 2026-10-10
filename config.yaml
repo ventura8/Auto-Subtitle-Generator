@@ -33,8 +33,10 @@ whisper:
   # If false, the script will still use the "Smart Auto-Detect" bias (e.g. adding 'Primarily in RO').
   custom_prompt_priority: false
  
-  # Force Detected Language: If true, the result of the "Robust Scan" is forced as the primary language.
-  # This prevents Whisper from locking onto an English intro.
+  # Force Detected Language: If true, the language is first voted over 8 windows of 30 s spread
+  # across the whole file's speech, and Whisper is then told that language.
+  # This prevents Whisper from locking onto an English intro. Under asr.engine "auto" the vote
+  # always runs (unless a language is forced), so routing and transcript cannot disagree.
   force_detected_language: false
  
   # Use Vocal Separation: If true, use BS-Roformer to clean the audio.
@@ -48,6 +50,33 @@ whisper:
   # from the last completed chunk. Set to 0 to always separate the whole file in one pass.
   separation_chunk_minutes: 30
  
+# -----------------------------------------------------------------------------
+# Speech Recognition Engine (ASR)
+# -----------------------------------------------------------------------------
+# Selects which model transcribes the audio. NVIDIA Canary and Parakeet cover 25 European
+# languages (bg cs da de el en es et fi fr hr hu it lt lv mt nl pl pt ro ru sk sl sv uk);
+# anything else, a model that fails to load, or output that is mostly empty falls back to
+# Whisper with a logged warning.
+asr:
+  # Engine: Overridden per run by --asr.
+  # Available Options:
+  # - "whisper"   (Faster-Whisper, the model above. 99 languages, own language detection. - Default)
+  # - "canary"    (NVIDIA Canary-1B-v2. Best measured Romanian accuracy; needs the language,
+  #                which Whisper detects first. ~1.9 GB VRAM in bf16.)
+  # - "parakeet"  (NVIDIA Parakeet-TDT-0.6B-v3. Much faster, less accurate. ~1.2 GB VRAM in bf16.)
+  # - "auto"      (Detect the language with Whisper, then use the engine listed in routes below;
+  #                unlisted languages stay on Whisper. Whisper is also used when the NVIDIA model
+  #                would not fit the free VRAM.)
+  engine: "whisper"
+
+  # Routes: language (ISO 639-1) -> engine, used by "auto". Replaces the default {ro: canary}.
+  routes:
+    ro: canary
+
+  # Max Segment Seconds: Longest speech span handed to Canary/Parakeet in one piece (5-30).
+  # Both models are trained on short utterances and degrade on windows longer than ~30 s.
+  max_segment_seconds: 15
+
 # -----------------------------------------------------------------------------
 # Hallucination & Noise Filters
 # -----------------------------------------------------------------------------
@@ -234,6 +263,13 @@ models:
   # Set an explicit id to force a model; a warning is logged when it will not fit comfortably.
   nllb: "auto"
   
+  # NVIDIA Canary ASR Model (HuggingFace ID), used by asr.engine "canary" / "auto" routes.
+  # The default checkpoint is pinned to a tested revision; any other id loads its latest revision.
+  canary: "nvidia/canary-1b-v2"
+
+  # NVIDIA Parakeet ASR Model (HuggingFace ID), used by asr.engine "parakeet" / "auto" routes.
+  parakeet: "nvidia/parakeet-tdt-0.6b-v3"
+
   # Audio Separator Model (BS-Roformer Checkpoint)
   # Common options supported by python-audio-separator:
   # - "model_bs_roformer_ep_317_sdr_12.9755.ckpt" (Best vocal isolation)
@@ -260,6 +296,9 @@ performance:
   
   # Batch size for NLLB translation (will be dynamically overridden if null)
   nllb_batch: null
+
+  # Batch size for Canary/Parakeet speech spans (sized from free VRAM if null)
+  asr_batch: null
   
   # FFmpeg threads (0 = auto)
   ffmpeg_threads: null

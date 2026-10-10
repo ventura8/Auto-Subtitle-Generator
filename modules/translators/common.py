@@ -18,6 +18,17 @@ __all__ = [
 torch: Any | None = load_optional_torch()
 
 
+def _safetensor_errors() -> tuple[type[BaseException], ...]:
+    """Return ``safetensors.SafetensorError`` when installed; a corrupt header raises it unwrapped."""
+    try:
+        return (getattr(importlib.import_module("safetensors"), "SafetensorError"),)
+    except (ImportError, AttributeError):
+        return ()
+
+
+_LOAD_ERRORS = (RuntimeError, OSError, ValueError, *_safetensor_errors())
+
+
 def _log_cache_corruption(logger, label, error):
     """Log cache corruption warning when logger is available."""
     if logger is not None:
@@ -55,7 +66,7 @@ def load_with_cache_recovery(loader_callable, model_id, model_kwargs=None, logge
     label = model_label or model_id
     try:
         return loader_callable(model_id, **load_kwargs)
-    except (RuntimeError, OSError, ValueError) as error:
+    except _LOAD_ERRORS as error:
         return _handle_load_error((loader_callable, model_id), load_kwargs, error, (logger, label))
 
 

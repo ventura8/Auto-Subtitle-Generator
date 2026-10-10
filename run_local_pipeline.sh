@@ -101,7 +101,29 @@ echo "==> Step 23: Run Tests with Coverage"
 invoke_poetry run pytest -m "not e2e" -o addopts= --strict-config --strict-markers --cov=auto_subtitle --cov=modules --cov-branch --cov-report=xml --cov-report=json --cov-report=term --cov-fail-under=90 tests/
 
 echo "==> Step 24: Enforce per-file coverage >= 90%"
-for cov_file in "auto_subtitle.py" "modules/configuration/config.py" "modules/configuration/version.py" "modules/pipeline/isolated_translator.py" "modules/models.py" "modules/pipeline/transcription.py" "modules/pipeline/translation.py" "modules/utils.py" "modules/workdir.py"; do
+coverage_files=(
+    "auto_subtitle.py"
+    "modules/configuration/config.py"
+    "modules/configuration/version.py"
+    "modules/pipeline/isolated_translator.py"
+    "modules/models.py"
+    "modules/pipeline/transcription.py"
+    "modules/pipeline/translation.py"
+    "modules/utils.py"
+    "modules/workdir.py"
+    "modules/asr/audio_source.py"
+    "modules/asr/canary.py"
+    "modules/asr/common.py"
+    "modules/asr/cues.py"
+    "modules/asr/language_id.py"
+    "modules/asr/languages.py"
+    "modules/asr/parakeet.py"
+    "modules/asr/pipeline.py"
+    "modules/asr/routing.py"
+    "modules/asr/tdt_guard.py"
+    "modules/configuration/asr_settings.py"
+)
+for cov_file in "${coverage_files[@]}"; do
     echo "   -> Checking $cov_file"
     invoke_poetry run coverage report --include="$cov_file" --fail-under=90 -m
 done

@@ -20,6 +20,8 @@ KNOWN_CORRUPT_TOKENS = (
     "invalid safetensors header",
     "error loading safetensors",
     "error when deserializing header",
+    "error while deserializing header",
+    "incomplete metadata",
     "piece size is not valid",
 )
 

@@ -9,6 +9,7 @@ import sys
 import webbrowser
 from typing import Any, Dict
 
+from . import asr_settings
 from .version import __version__
 
 # =============================================================================
@@ -139,6 +140,7 @@ ISO_TO_NLLB = {
     "et": "est_Latn",
     "lv": "lvs_Latn",
     "lt": "lit_Latn",
+    "mt": "mlt_Latn",
     # Asian
     "th": "tha_Thai",
     "vi": "vie_Latn",
@@ -210,6 +212,7 @@ NLLB_PREFIX_TO_ISO = {
     "lav": "lv",
     "lvs": "lv",
     "lit": "lt",
+    "mlt": "mt",
     "tha": "th",
     "vie": "vi",
     "ind": "id",
@@ -288,6 +291,7 @@ ISO_639_1_TO_639_2 = {
     "sl": "slv",
     "lt": "lit",
     "et": "est",
+    "mt": "mlt",
     "he": "heb",
     "en": "eng",
 }
@@ -348,7 +352,15 @@ def get_nllb_code(iso_code):
         return TARGET_LANGUAGES[iso_code]["code"]
 
     # Then check static map
-    return ISO_TO_NLLB.get(iso_code, "eng_Latn")
+    if iso_code in ISO_TO_NLLB:
+        return ISO_TO_NLLB[iso_code]
+    _log_warning(f"[Config] No NLLB code for language '{iso_code}'; treating it as English (eng_Latn).")
+    return "eng_Latn"
+
+
+def _log_warning(message: str) -> None:
+    """Log a WARNING through the shared logger (imported lazily: logging_utils imports this module)."""
+    importlib.import_module("modules.runtime.logging_utils").log(message, "WARNING")
 
 
 def nllb_to_iso(code):
@@ -473,6 +485,8 @@ def _load_performance_overrides(p_conf: Dict[str, Any], optimizer: Any, logger_f
     _apply_numeric_override(p_conf, optimizer, "translategemma_max_new_tokens", updated_keys)
     _apply_numeric_override(p_conf, optimizer, "whisper_workers", updated_keys)
     _apply_numeric_override(p_conf, optimizer, "ffmpeg_threads", updated_keys)
+    # Absent from the optimizer defaults, so its presence alone marks the ASR batch as pinned.
+    _apply_numeric_override(p_conf, optimizer, "asr_batch", updated_keys)
 
     if updated_keys:
         logger_func(f"[Config] Performance Overrides: {', '.join(updated_keys)}")
@@ -643,6 +657,7 @@ def _load_model_identifiers(models_config: Dict[str, Any]) -> None:
         globals()["NLLB_MODEL_ID"] = models_config["nllb"]
     if "audio_separator" in models_config:
         globals()["AUDIO_SEPARATOR_MODEL_ID"] = models_config["audio_separator"]
+    asr_settings.load_model_ids(models_config)
 
 
 def _get_active_translator_model_id() -> str:
@@ -714,6 +729,7 @@ def _reset_config_defaults() -> None:
     globals()["AUDIO_SEPARATOR_MODEL_ID"] = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
     globals()["VAD_MIN_SILENCE_MS"] = 500
     TARGET_LANGUAGES.clear()
+    asr_settings.reset()
 
 
 def _handle_hf_token_prompt():
@@ -828,6 +844,8 @@ def _apply_loaded_config(config_data: dict[str, Any], optimizer: Any, logger_fun
     _load_type_and_model_config(config_data, logger_func)
     _configure_hf_runtime(config_data)
     _load_optional_engine_tuning(config_data, optimizer, logger_func)
+    # Last, and never raising, so a bad asr: section cannot undo the sections above.
+    asr_settings.load(config_data, logger_func)
 
 
 def _configure_hf_runtime(config_data: dict[str, Any]) -> None:

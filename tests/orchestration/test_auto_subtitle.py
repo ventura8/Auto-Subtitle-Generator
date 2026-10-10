@@ -391,7 +391,10 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
 
     def test_main_no_files(self):
         with (
-            patch("auto_subtitle.parse_cli_args", return_value=argparse.Namespace(input_path=None, lang=None, prompt=None, cpu=False)),
+            patch(
+                "auto_subtitle.parse_cli_args",
+                return_value=argparse.Namespace(input_path=None, lang=None, prompt=None, cpu=False, asr=None),
+            ),
             patch("auto_subtitle.get_input_files", return_value=([], None, None)),
             patch("auto_subtitle.init_ai_engine"),
             patch("auto_subtitle.setup_environment"),
@@ -409,7 +412,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         with (
             patch(
                 "auto_subtitle.parse_cli_args",
-                return_value=argparse.Namespace(input_path="ghost", lang=None, prompt=None, cpu=False),
+                return_value=argparse.Namespace(input_path="ghost", lang=None, prompt=None, cpu=False, asr=None),
             ),
             patch("auto_subtitle.get_input_files", side_effect=FileNotFoundError("ghost")),
             patch("auto_subtitle.init_ai_engine"),
@@ -562,6 +565,42 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0"}, clear=False):
             auto_subtitle.bootstrap_cpu_env(["--lang", "en"])
             self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "0")
+
+
+class TestAsrEngineOption(unittest.TestCase):
+    """``--asr`` parsing, the override hook in the banner, and the ASR offload before translation."""
+
+    def setUp(self):
+        global auto_subtitle, asr_settings
+        import auto_subtitle
+        from modules.configuration import asr_settings
+
+        self.addCleanup(asr_settings.set_cli_override, None)
+
+    def test_parse_cli_args_asr_choice(self):
+        self.assertEqual(auto_subtitle.parse_cli_args(["v.mp4", "--asr", "canary"]).asr, "canary")
+        self.assertIsNone(auto_subtitle.parse_cli_args(["v.mp4"]).asr)
+        with self.assertRaises(SystemExit) as ctx, patch("sys.stderr"):
+            auto_subtitle.parse_cli_args(["v.mp4", "--asr", "nemo"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_banner_sets_the_override_before_loading_config(self):
+        seen = []
+        args = argparse.Namespace(input_path=None, lang=None, prompt=None, cpu=False, asr="auto")
+        with (
+            patch("auto_subtitle.config.load_config", side_effect=lambda *_args: seen.append(asr_settings.active_engine())),
+            patch("auto_subtitle.models.OPTIMIZER.detect_hardware"),
+            patch("auto_subtitle.utils.print_banner"),
+        ):
+            auto_subtitle._show_startup_banner(args)
+        self.assertEqual(seen, ["auto"])
+
+    def test_translation_step_offloads_the_asr_model(self):
+        model_mgr = MagicMock()
+        context = {"folder": "folder", "base_name": "base"}
+        with patch("auto_subtitle.translate_segments"), patch("auto_subtitle._clear_cuda_cache_if_available"):
+            self.assertTrue(auto_subtitle._run_translation_step([], "ro", model_mgr, context))
+        model_mgr.offload_asr.assert_called_once_with()
 
 
 if __name__ == "__main__":
