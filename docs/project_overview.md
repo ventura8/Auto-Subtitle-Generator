@@ -20,7 +20,19 @@ automatic hardware detection to maximize performance.
 ├── run_local_pipeline.ps1      # Local quality gate (lint + tests + coverage)
 ├── modules/                    # Core logic and AI models
 │   ├── __init__.py
+│   ├── asr/                    # NVIDIA Canary/Parakeet ASR engines
+│   │   ├── audio_source.py     # Streaming 16 kHz reader + block VAD
+│   │   ├── language_id.py      # Spread language-ID vote (Whisper)
+│   │   ├── routing.py          # Engine choice per language, Whisper fallback
+│   │   ├── canary.py           # Canary-1B-v2 wrapper
+│   │   ├── parakeet.py         # Parakeet-TDT-0.6B-v3 wrapper
+│   │   ├── tdt_guard.py        # TDT symbol cap + frame mask (transformers #49388)
+│   │   ├── pipeline.py         # Span batching, filters, decoded-speech guard
+│   │   ├── cues.py             # Cue building from token times / pauses
+│   │   ├── common.py           # Device/dtype, loading, OOM bisection, budgets
+│   │   └── languages.py        # Supported languages, ISO 639-1 normalisation
 │   ├── configuration/          # Runtime configuration loading/validation
+│   │                           #   (asr_settings.py: the asr: section, --asr)
 │   ├── media/                  # FFmpeg and hardware-related helpers
 │   ├── pipeline/               # Transcription/translation stages
 │   ├── runtime/                # Logging and progress/runtime utilities
@@ -32,6 +44,8 @@ automatic hardware detection to maximize performance.
 ├── docs/                       # Technical documentation
 │   └── releases/               # Versioned release notes
 ├── tests/                      # Pytest suite
+│   ├── e2e/                    # Real-library end-to-end tests
+│   └── tools/                  # Gate tools + ASR benchmark harness
 ├── .github/workflows/ci.yml    # CI mirror of lint/type/security/test gates
 └── assets/                     # Logos and media
 ```

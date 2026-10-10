@@ -18,8 +18,12 @@ performance on any system.
 
 ## **📝 Release Notes**
 
+- v1.2.9: [docs/releases/v1.2.9.md](docs/releases/v1.2.9.md)
+- GitHub release body (copy-ready): [docs/releases/v1.2.9_github_description.md](docs/releases/v1.2.9_github_description.md)
+- v1.2.8: [docs/releases/v1.2.8.md](docs/releases/v1.2.8.md)
+- v1.2.7: [docs/releases/v1.2.7.md](docs/releases/v1.2.7.md)
+- v1.2.6: [docs/releases/v1.2.6.md](docs/releases/v1.2.6.md)
 - v1.2.5: [docs/releases/v1.2.5.md](docs/releases/v1.2.5.md)
-- GitHub release body (copy-ready): [docs/releases/v1.2.5_github_description.md](docs/releases/v1.2.5_github_description.md)
 - Earlier releases: [docs/releases/](docs/releases/)
 
 ## **🌟 Key Features**
@@ -96,7 +100,27 @@ remains backward compatible.
 
 ### **3. Full GPU AI Processing**
 
-- **Transcription:** Faster-Whisper (Large-v3) running natively on CUDA.
+- **Transcription:** Faster-Whisper (Large-v3) running natively on CUDA by
+  default. Two NVIDIA engines are available as options (`--asr` or
+  `asr.engine`):
+  - `canary` — [NVIDIA Canary-1B-v2](https://huggingface.co/nvidia/canary-1b-v2).
+    Published FLEURS results put it ahead of Whisper on Romanian and 14 other
+    European languages. It cannot detect the language itself, so Whisper
+    detects it first.
+  - `parakeet` — [NVIDIA Parakeet-TDT-0.6B-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+    Much faster than Whisper, less accurate.
+  - `auto` — detect the language with Whisper (a vote over 8 windows spread
+    across the whole file, so an English intro does not decide it), then use
+    the engine listed for that language in `asr.routes` (default:
+    Romanian → Canary). Every other language stays on Whisper.
+  - Both NVIDIA models cover 25 European languages and run through the
+    `transformers` already installed (no NeMo). An unsupported language, a
+    model that does not load or fit, or output that is mostly empty falls back
+    to Whisper with a logged warning.
+  - **Whisper stays the default** until the benchmark in
+    [docs/hardware_optimization.md](docs/hardware_optimization.md#benchmark-results)
+    shows Canary measurably ahead on real audio; until then the NVIDIA engines
+    are opt-in.
 - **Translation:** Configurable engine via `config.yaml`:
 - `nllb` (default, fast and stable; uses NLLB batch translation flow)
 - `translategemma` (higher quality, high VRAM requirement; does not use NLLB
@@ -181,10 +205,12 @@ global reach:
   few gigabytes of RAM and no intermediate file ever approaches the 4 GB WAV
   limit. Each finished chunk is kept as resume state, and the joined vocal
   track is 16 kHz mono, the format Whisper consumes, so it stays small.
-  Transcription, translation, and muxing already stream or window internally.
+  Transcription, translation, and muxing already stream or window internally;
+  the Canary/Parakeet path reads the audio span by span and runs voice
+  detection in 10-minute blocks, so it never holds a multi-hour file in RAM.
 - **Model Download Integrity & Auto-Recovery:** Every downloaded AI model and
-  tokenizer checkpoint (`BS-Roformer`, `Faster-Whisper`, `NLLB`,
-  `TranslateGemma`) automatically detects corrupted or truncated downloads,
+  tokenizer checkpoint (`BS-Roformer`, `Faster-Whisper`, `Canary`, `Parakeet`,
+  `NLLB`, `TranslateGemma`) automatically detects corrupted or truncated downloads,
   purges the stale cache, and re-downloads cleanly without crashing.
 - **Intelligent Skip:**
   - Automatically skips videos that already have a final `_multilang` output for
@@ -217,12 +243,17 @@ graph TD
     end
 
     subgraph Step3 ["Step 3 — AI Transcription"]
-        VC --> W["Faster-Whisper<br/>(Large-v3 / CUDA)"]
+        VC --> ASR{"ASR Engine<br/>(--asr / asr.engine)"}
+        ASR -- "whisper (default)" --> W["Faster-Whisper<br/>(Large-v3 / CUDA)"]
+        ASR -- "canary / parakeet / auto" --> LID["Language Vote<br/>(Whisper)"]
+        LID -- "routed" --> NV["Canary / Parakeet<br/>(transformers)"]
+        LID -- "unsupported / fallback" --> W
         W --> S1["Detected Lang SRT"]
+        NV --> S1
     end
 
     subgraph Step4 ["Step 4 — AI Translation (Isolated)"]
-        S1 --> OFF["Offload Whisper & UVR<br/>(Free VRAM)"]
+        S1 --> OFF["Offload Whisper, ASR & UVR<br/>(Free VRAM)"]
         OFF --> N["Translator Engine<br/>(Single Model Load)"]
         N -- "Batch Loop + Optional Pivot" --> T["Translate All Langs"]
         T -- "Real-time" --> S2["Save Individual SRTs"]
@@ -284,6 +315,15 @@ complete runtime, then executes the pipeline.
 - **Test/local quality gate**: installs `main + dev` groups **without** `ml`.
   - Used by `run_local_pipeline.ps1` and `run_local_pipeline.sh` to validate
     logic against real light dependencies without GPU-heavy packages.
+- **ASR benchmark** (optional): the `bench` group adds `pyarrow`, which only
+  the VoxPopuli section of the benchmark harness needs. Results go to
+  `.cache/asr_benchmark/`.
+
+```bash
+poetry install --no-root --with ml,dev,bench
+poetry run python -m tests.tools.asr_benchmark \
+  --engines whisper,canary,parakeet --langs ro_ro --limit 200
+```
 
 ## **🎮 Usage**
 
@@ -306,7 +346,20 @@ defined in `config.yaml`.
 
 # Or directly with Python:
 .venv/bin/python auto_subtitle.py "/path/to/my_video.mkv"
+
+# Route Romanian to NVIDIA Canary, keep Whisper for everything else:
+.venv/bin/python auto_subtitle.py --asr auto "/path/to/my_video.mkv"
 ```
+
+Command-line options:
+
+| Option | Meaning |
+| :--- | :--- |
+| `--lang ro` | Force the source language (skips language detection). |
+| `--prompt "..."` | Custom initial prompt for Whisper. |
+| `--cpu` | Force CPU-only inference. |
+| `--asr ENGINE` | `whisper`, `canary`, `parakeet`, `auto`; overrides config. |
+| `--version` | Print the version and exit. |
 
 The script will produce:
 
@@ -411,6 +464,16 @@ whisper:
   use_prompt: true
   custom_prompt: "This video contains medical terminology..."
 
+asr:
+  engine: "whisper"        # whisper | canary | parakeet | auto
+  routes:                  # used by "auto": language -> engine
+    ro: canary
+  max_segment_seconds: 15  # longest speech span per Canary/Parakeet call (5-30)
+
+models:
+  canary: "nvidia/canary-1b-v2"
+  parakeet: "nvidia/parakeet-tdt-0.6b-v3"
+
 hallucinations:
   silence_threshold: 0.1
   repetition_threshold: 5
@@ -428,3 +491,22 @@ target_languages:
 >   The "ULTRA" profile is specifically tuned for your 32GB VRAM.
 > - **Ryzen 9950X3D Users:** The script will automatically detect your 32-thread
 >   capacity and maximize FFmpeg throughput.
+
+## **📜 Model Licences**
+
+The AI models are downloaded from Hugging Face on first use; this repository
+does not redistribute any model weights.
+
+- **Faster-Whisper / OpenAI Whisper** (`large-v3`): MIT licence.
+- **NVIDIA Canary-1B-v2** ([`nvidia/canary-1b-v2`](https://huggingface.co/nvidia/canary-1b-v2)):
+  © NVIDIA Corporation, licensed under
+  [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Used unmodified
+  for inference.
+- **NVIDIA Parakeet-TDT-0.6B-v3**
+  ([`nvidia/parakeet-tdt-0.6b-v3`](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)):
+  © NVIDIA Corporation, licensed under
+  [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). Used unmodified
+  for inference.
+
+Anyone redistributing the NVIDIA checkpoints themselves must keep the
+CC-BY-4.0 attribution above.

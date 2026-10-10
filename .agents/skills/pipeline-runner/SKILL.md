@@ -55,8 +55,8 @@ The local pipeline enforces the following strict stages in sequence:
 
 1. **Cyclomatic Complexity & Maintainability Metrics**:
 
-   - `radon cc -s -n B auto_subtitle.py modules tests`: Enforces rank **A** (Cyclomatic Complexity < 10) across all functions.
-   - `radon mi auto_subtitle.py modules tests`: Enforces Maintainability Index rank **A**.
+   - `radon cc auto_subtitle.py modules tests -s -a`: Enforces grade **A** (Cyclomatic Complexity 1-5) across all functions; any B-F line fails the gate.
+   - `radon mi auto_subtitle.py modules tests -s`: Enforces Maintainability Index grade **A** for every file.
    - `radon hal auto_subtitle.py modules tests`: Generates Halstead metrics report.
 
 1. **Test Suite & Code Coverage**:
@@ -65,11 +65,24 @@ The local pipeline enforces the following strict stages in sequence:
    - **Per-file coverage >= 90%**: Explicitly enforces that every individual core module achieves >= 90% line and branch coverage:
      - `auto_subtitle.py`
      - `modules/configuration/config.py`
+     - `modules/configuration/version.py`
      - `modules/pipeline/isolated_translator.py`
      - `modules/models.py`
      - `modules/pipeline/transcription.py`
      - `modules/pipeline/translation.py`
      - `modules/utils.py`
+     - `modules/workdir.py`
+     - `modules/asr/audio_source.py`
+     - `modules/asr/canary.py`
+     - `modules/asr/common.py`
+     - `modules/asr/cues.py`
+     - `modules/asr/language_id.py`
+     - `modules/asr/languages.py`
+     - `modules/asr/parakeet.py`
+     - `modules/asr/pipeline.py`
+     - `modules/asr/routing.py`
+     - `modules/asr/tdt_guard.py`
+     - `modules/configuration/asr_settings.py`
 
 1. **Artifact & Badge Generation**:
 
@@ -79,6 +92,6 @@ The local pipeline enforces the following strict stages in sequence:
 ## Troubleshooting Failures
 
 - **Coverage drops below 90%**: Inspect uncovered lines in `coverage_summary.md` or `coverage.json`, and add targeted unit tests under `tests/modules/` or `tests/orchestration/`.
-- **Complexity >= 10 (Radon B-rank)**: Split complex branching or loops into small, focused, pure helper functions. Do not suppress.
+- **Complexity >= 6 (Radon B-rank or worse)**: Split complex branching or loops into small, focused, pure helper functions. Do not suppress.
 - **Suppression scanner failure**: Remove any `# noqa`, `# type: ignore`, or `# pylint: disable`. Fix the actual type signature or linter warning.
 - **Subprocess or mock issue**: Ensure subprocess calls mock `subprocess.Popen` / `subprocess.run` cleanly and handle Windows exit codes and process cleanup correctly.

@@ -25,6 +25,9 @@ ______________________________________________________________________
 ## Quality Bar
 
 - Prefer small pure helper functions over large branching blocks.
-- Keep complexity strictly below 10 (Radon A-rank) without any suppressions.
+- Keep every function at Radon grade A (CC 1-5) and every file at MI grade A, without any suppressions.
+- Import `torch`, `transformers`, `faster_whisper`, `numpy`, `soundfile` and `huggingface_hub` only through `importlib` or `load_optional_torch()`; the quality gate runs without the `ml` group.
+- Log every warning through `modules.utils.log` (the `models.py` `LOGGER` never reaches `subtitle_gen.log`).
+- Never pass a string as audio to a transformers processor; it would be opened as a path or URL.
 - **Zero suppressions**: Never use `# noqa`, `# type: ignore`, or `# pylint: disable`.
 - Add or update tests in `tests/` for all behavior changes, maintaining >= 90% coverage.

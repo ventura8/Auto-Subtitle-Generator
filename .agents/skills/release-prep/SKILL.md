@@ -100,7 +100,7 @@ release: vX.Y.Z – <summary>
 - Coverage: XX.X% (threshold ≥ 90%)
 - Linters: ✅ zero warnings
 - Type checkers: ✅ zero errors
-- Radon complexity: ✅ A-grade (CC ≤ 5); project complexity threshold: CC < 10
+- Radon complexity: ✅ A-grade (CC ≤ 5); project complexity threshold: Radon grade A (CC 1-5)
 
 ## Breaking changes
 <!-- Choose one of the following and remove the other: -->

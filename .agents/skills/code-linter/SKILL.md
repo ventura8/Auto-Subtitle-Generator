@@ -10,7 +10,7 @@ Use this skill to lint, format, type-check, and audit all Python modules, tests,
 
 1. **Zero Suppressions Allowed**: Never add `# noqa`, `# type: ignore`, `# pylint: disable`, `# bandit: disable`, or warning-ignore filters.
 1. `python tests/tools/check_no_suppressions.py` is mandatory and fails on any violation across product code, tests, and configs.
-1. Keep Cyclomatic Complexity < 10 (Radon A-rank) across every single function.
+1. Keep every single function at Radon grade A (Cyclomatic Complexity 1-5).
 1. Auto-format first with safe tools, then re-lint, and fix remaining errors manually.
 
 ## Workflow
@@ -52,7 +52,7 @@ poetry run pyright
 ### 4. Cyclomatic Complexity & Maintainability (Radon)
 
 ```powershell
-# Cyclomatic Complexity (Must be rank A, < 10)
+# Cyclomatic Complexity (Must be grade A, CC 1-5)
 poetry run radon cc -s -n B auto_subtitle.py modules tests
 
 # Maintainability Index (Must be rank A)

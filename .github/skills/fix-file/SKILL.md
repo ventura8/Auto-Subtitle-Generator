@@ -12,7 +12,7 @@ Apply the smallest safe fix to a target file and validate it against project inv
 
 1. Identify the failing behavior and the minimal edit scope.
 1. Apply focused changes without unrelated refactors.
-1. Ensure complexity remains < 10 and no suppressions are introduced.
+1. Ensure complexity remains Radon grade A (CC 1-5) and no suppressions are introduced.
 1. Run targeted linters, type checks, and unit tests.
 1. Report exactly what changed and why.
 

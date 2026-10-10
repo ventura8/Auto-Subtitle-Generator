@@ -17,7 +17,8 @@ throughput while maintaining quality.
 
 ## VRAM-aware tuning (`modules/runtime/vram_tuning.py`)
 
-Two decisions are made against the card actually present, not just its tier.
+Two NLLB decisions are made against the card actually present, not just its
+tier; the NVIDIA ASR engines follow the same scheme (see below).
 
 ### Which NLLB model fits
 
@@ -80,6 +81,87 @@ test interview with the GPU shared by another process, a batch pinned at 8
 or 16 took about 3.5 minutes, while 32 took 23 minutes as the allocator
 churned. Sizing from *free* memory exists for exactly that situation.
 
+## NVIDIA ASR engines (Canary / Parakeet)
+
+`--asr canary|parakeet|auto` loads an NVIDIA model in-process through
+`ModelManager.get_asr`. Whisper is offloaded first, and the ASR model is
+offloaded before the translation worker starts, so the two never share the
+card with NLLB.
+
+### Device and precision
+
+- `cuda:0` in **bf16** only when the card supports it natively
+  (`torch.cuda.is_bf16_supported(including_emulation=False)`, Ampere and
+  newer); otherwise fp32. fp16 is not used until a benchmark justifies it.
+- The CPU in fp32 under `--cpu`, without a usable CUDA device, and on Apple
+  MPS (not used).
+- A CUDA OOM while loading moves the model to the CPU with a WARNING. Under
+  `auto` the VRAM is checked first (`asr_gpu_shortfall`): if the weights plus
+  a 1 GB activation floor do not fit the free VRAM, Whisper on the GPU is
+  used instead of Canary on the CPU.
+
+### Weights (bf16, measured on an RTX 3080 Laptop)
+
+| Model | Weights | Charged in `vram_tuning.ASR_WEIGHT_GB` |
+| --- | --- | --- |
+| `nvidia/canary-1b-v2` | 1.83 GB | 1.9 GB |
+| `nvidia/parakeet-tdt-0.6b-v3` | 1.18 GB | 1.2 GB |
+
+An unknown model id is charged as the larger model (1.9 GB).
+
+### Batch of speech spans
+
+`apply_dynamic_asr_batch` sizes the batch from the VRAM free after the model
+loads: 80 % of it divided by `ASR_PER_SECOND_GB × max_segment_seconds`,
+capped per profile. `performance.asr_batch` pins it; a model on the CPU uses
+the `CPU_ONLY` cap. A CUDA OOM during decoding bisects the batch.
+
+| Profile | ASR batch cap |
+| --- | --- |
+| ULTRA | 32 |
+| HIGH | 16 |
+| MID | 8 |
+| LOW | 4 |
+| CPU_ONLY | 4 |
+
+> [!WARNING] `ASR_PER_SECOND_GB` (0.010 GB/s Canary, 0.006 GB/s Parakeet)
+> are **placeholders**, not measurements. Calibrate them on the 5090 with the
+> method used for NLLB above, and validate on the 3080, before relying on the
+> dynamic batch.
+
+### Benchmark results
+
+<!-- TODO: fill in after the benchmark runs (5090, RTX 3080 Laptop, NUC CPU). -->
+
+**TODO — not yet measured.** This section will hold the tables from
+`python -m tests.tools.asr_benchmark` (FLEURS and VoxPopuli WER/CER with
+diacritics kept and Open-ASR-normalised, diacritic error rate, RTF, peak
+VRAM, non-speech probes, synthetic long-form and the code-switch probe) for
+each host. Until it is filled in, `asr.engine` stays `whisper`.
+
+### Default-decision rule
+
+The shipped default flips to `asr.engine: auto` with `routes: {ro: canary}`
+only if **all five** hold:
+
+1. Full FLEURS-ro test split: Canary's diacritics-kept WER is at least 10 %
+   relative better than Whisper's, and the 95 % paired cluster-bootstrap CI
+   excludes 0.
+1. VoxPopuli-ro: Canary is no worse than Whisper by more than 1 point
+   absolute.
+1. Non-speech probes: Canary's characters per minute after filters is at
+   most Whisper's.
+1. Synthetic long-form: Canary's WER is not worse, no utterances are
+   dropped, and its median cue-onset error is at most Whisper's + 0.2 s.
+1. On the RTX 3080 Laptop the Canary stage stays on the GPU, and NLLB's
+   free-after-load VRAM drops by at most 0.3 GB against a Whisper-only run.
+
+Other languages join `routes` only with a 99 % CI on the full split and
+agreement on VoxPopuli where it exists. Parakeet joins `routes` only if it
+qualifies the same way; otherwise it stays an explicit "fast" engine. If
+Romanian fails, Whisper stays the default, the NVIDIA engines stay opt-in,
+and the numbers are published here anyway.
+
 ## `NLLBTranslator` & OOM Recovery
 
 - **Functionality**: Handles batch translation.
@@ -98,8 +180,9 @@ churned. Sizing from *free* memory exists for exactly that situation.
 ## `ModelManager` (Persistent Loading)
 
 - **Location**: `modules/models.py`.
-- **Functionality**: Implements lazy loading for heavy AI models (Whisper plus
-  the configured translation backend: NLLB or TranslateGemma) and persists them
-  across multiple video files in a batch.
+- **Functionality**: Implements lazy loading for heavy AI models (Whisper, the
+  optional NVIDIA ASR model, plus the configured translation backend: NLLB or
+  TranslateGemma) and persists them across multiple video files in a batch.
+  The single NVIDIA ASR slot is released (`offload_asr`) before translation.
 - **Benefit**: Eliminates re-initialization overhead (saving ~10s per video) and
   reduces VRAM fragmentation.

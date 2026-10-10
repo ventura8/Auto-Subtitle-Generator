@@ -13,7 +13,7 @@ Resolve PR feedback with a rigorous, traceable workflow combining GitHub CLI and
 1. **Verify validity first**: Classify each comment as Valid, Not Valid, or Blocked before editing code.
 1. **Reply before resolving**: Always post a clear reply detailing what changed or why the suggestion was skipped.
 1. **No silent skips**: Address all open conversation threads.
-1. **Preserve repository invariants**: No suppressions, complexity < 10, >= 90% per-file test coverage.
+1. **Preserve repository invariants**: No suppressions, Radon grade A complexity (CC 1-5), >= 90% per-file test coverage.
 
 ## Commands
 
