@@ -10,11 +10,12 @@ reliability and performance constraints.
   in ModelManager patterns.
 - Never introduce device_map="auto" for GPU model loading. Use explicit CUDA
   device mapping.
-- ASR: Whisper is the default engine; NVIDIA Canary/Parakeet (modules/asr/,
-  --asr / asr.engine, auto routing per language) run in-process through
-  ModelManager.get_asr and are released with offload_asr() before
-  translation. Every fallback to Whisper logs a WARNING; never fall back
-  silently.
+- ASR: asr.engine auto is the shipped default: it routes the languages in
+  asr.routes to NVIDIA Canary and keeps Whisper for every other language
+  (or when --asr whisper is chosen). Canary/Parakeet (modules/asr/) run
+  in-process through ModelManager.get_asr and are released with
+  offload_asr() before translation. Every fallback to Whisper logs a
+  WARNING; never fall back silently.
 - Prioritize safe shutdown behavior on Windows. Do not weaken subprocess cleanup
   paths.
 - Preserve resume behavior and atomic writes when touching subtitle output

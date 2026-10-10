@@ -1,6 +1,7 @@
 """JSON and Markdown output of ``tests.tools.asr_benchmark``; both go only to the ``--out`` directory."""
 
 import json
+import math
 import os
 import time
 from typing import Any
@@ -103,13 +104,26 @@ def render_markdown(report: dict) -> str:
     return "\n".join(parts)
 
 
+def _finite_or_none(value: Any) -> Any:
+    return None if isinstance(value, float) and not math.isfinite(value) else value
+
+
+def _json_safe(value: Any) -> Any:
+    """``value`` with every NaN or infinity replaced by ``None``, so the JSON stays valid."""
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return _finite_or_none(value)
+
+
 def write_report(report: dict, out_dir: str) -> tuple[str, str]:
     """Write ``asr_benchmark_<timestamp>.json`` and ``.md`` into ``out_dir``."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     json_path = os.path.join(out_dir, f"asr_benchmark_{stamp}.json")
     md_path = os.path.join(out_dir, f"asr_benchmark_{stamp}.md")
     with open(json_path, "w", encoding="utf-8") as handle:
-        json.dump(report, handle, indent=2, ensure_ascii=False, default=str)
+        json.dump(_json_safe(report), handle, indent=2, ensure_ascii=False, allow_nan=False, default=str)
     with open(md_path, "w", encoding="utf-8") as handle:
         handle.write(render_markdown(report))
     return json_path, md_path

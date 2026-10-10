@@ -101,8 +101,9 @@ remains backward compatible.
 
 ### **3. Full GPU AI Processing**
 
-- **Transcription:** Faster-Whisper (Large-v3) running natively on CUDA by
-  default. Two NVIDIA engines are available as options (`--asr` or
+- **Transcription:** Faster-Whisper (Large-v3) running natively on CUDA for
+  every language that `auto` routing does not send elsewhere, or for all of
+  them with `--asr whisper`. Two NVIDIA engines are available (`--asr` or
   `asr.engine`):
   - `canary` — [NVIDIA Canary-1B-v2](https://huggingface.co/nvidia/canary-1b-v2).
     Published FLEURS results put it ahead of Whisper on Romanian and 14 other

@@ -119,13 +119,15 @@ function Install-LocalFfmpeg {
         Write-Information "Extracting FFmpeg..."
         # The archive holds one folder, 'ffmpeg-9.0.2-full_build', which becomes .venv\ffmpeg.
         Expand-Archive -Path $ffmpegZip -DestinationPath $VenvRoot -Force
-        $extractedDir = Get-ChildItem -Path $VenvRoot -Directory -Filter "ffmpeg-*" | Select-Object -First 1
-        if (-not $extractedDir) {
-            throw "FFmpeg archive did not contain the expected ffmpeg-* folder."
+        $extractedDir = Join-Path $VenvRoot "ffmpeg-9.0.2-full_build"
+        foreach ($exe in @("ffmpeg.exe", "ffprobe.exe")) {
+            if (-not (Test-Path (Join-Path $extractedDir "bin\$exe"))) {
+                throw "FFmpeg archive did not contain ffmpeg-9.0.2-full_build\bin\$exe."
+            }
         }
         # A folder left by a failed earlier run is replaced.
         if (Test-Path $FfmpegDir) { Remove-Item $FfmpegDir -Recurse -Force }
-        Rename-Item -Path $extractedDir.FullName -NewName "ffmpeg"
+        Rename-Item -Path $extractedDir -NewName "ffmpeg"
         Write-Information "FFmpeg installed locally in venv."
     }
     catch {
@@ -296,13 +298,14 @@ if ($venvVersion -ge $maxVersionExclusive) {
 Write-Information "`nStep 3: Checking FFmpeg..."
 $ffmpegDir = "$PSScriptRoot\.venv\ffmpeg"
 $ffmpegBin = "$ffmpegDir\bin\ffmpeg.exe"
+$ffprobeBin = "$ffmpegDir\bin\ffprobe.exe"
 $systemFfmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
 $systemFfprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
 
 if ($systemFfmpeg -and $systemFfprobe) {
     Write-Information "Found system FFmpeg: $($systemFfmpeg.Source)"
 }
-elseif (Test-Path $ffmpegBin) {
+elseif ((Test-Path $ffmpegBin) -and (Test-Path $ffprobeBin)) {
     Write-Information "Local FFmpeg already exists."
 }
 else {
@@ -425,7 +428,7 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
 )
-set PATH=%~dp0.venv\ffmpeg\bin;%PATH%
+set PATH=%PATH%;%~dp0.venv\ffmpeg\bin
 call .venv\Scripts\activate.bat
 python auto_subtitle.py %*
 if errorlevel 1 (

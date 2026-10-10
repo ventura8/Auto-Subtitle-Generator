@@ -1,6 +1,7 @@
 """Unit tests for the pure helpers of the ASR benchmark harness (no models, numpy or audio libraries)."""
 
 import io
+import json
 import os
 import tarfile
 import tempfile
@@ -136,6 +137,15 @@ class TestReportAndCli(unittest.TestCase):
         self.assertIn("## Non-speech probes", rendered)
         self.assertIn("PASS: the spread vote picked `ro`", rendered)
         self.assertNotIn("## Utterance-level accuracy", rendered)
+
+    def test_write_report_turns_non_finite_values_into_null(self):
+        meta = {"started": "now", "host": "h", "hardware": {}, "torch": "t", "transformers": "x", "faster_whisper": "f", "git_commit": "c"}
+        rows = [{"engine": "canary", "wer": float("nan"), "rtf": float("inf"), "ci": (float("-inf"), 0.5)}]
+        with tempfile.TemporaryDirectory() as folder:
+            json_path, _md_path = report.write_report({"meta": meta, "utterance": rows}, folder)
+            with open(json_path, encoding="utf-8") as handle:
+                saved = json.load(handle)
+        self.assertEqual(saved["utterance"], [{"engine": "canary", "wer": None, "rtf": None, "ci": [None, 0.5]}])
 
     def test_parse_args_defaults_and_bare_sweeps(self):
         args = asr_benchmark.parse_args(["--segment-sweep", "--canary-beams", "--longform"])

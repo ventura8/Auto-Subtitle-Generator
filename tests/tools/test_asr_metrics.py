@@ -15,6 +15,7 @@ def _load_asr_metrics_module():
 
 
 METRICS = _load_asr_metrics_module()
+_NUMPY_INSTALLED = importlib.util.find_spec("numpy") is not None
 
 
 class TestNormalisers(unittest.TestCase):
@@ -99,6 +100,7 @@ class TestDiacriticErrorRate(unittest.TestCase):
         self.assertEqual(METRICS.diacritic_error_rate([]), 0.0)
 
 
+@unittest.skipUnless(_NUMPY_INSTALLED, "numpy comes with the ml dependency group")
 class TestPairedClusterBootstrap(unittest.TestCase):
     def test_identical_systems_give_a_zero_interval(self):
         errors = [1, 2, 0, 3]
