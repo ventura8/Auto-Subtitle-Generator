@@ -10,7 +10,9 @@
    chunks and the stems joined as 16 kHz mono, so multi-hour recordings are
    bounded in RAM and never approach the 4 GB WAV limit.
 1. **AI Transcription**: Uses `faster-whisper` (Large-v3) with **Contextual
-   Prompting** and anti-hallucination filtering.
+   Prompting** and anti-hallucination filtering by default. `--asr` /
+   `asr.engine` can select NVIDIA Canary or Parakeet, or `auto` routing by
+   language (see [ASR engine dispatch](#asr-engine-dispatch-defined-in-modulespipelinetranscriptionpy)).
 1. **AI Translation**: Uses the configured translation engine (`nllb` or
    `translategemma`) in an **isolated subprocess** (`isolated_translator.py`).
    With `models.nllb: auto` the NLLB size is chosen to fit the card, and the
@@ -38,6 +40,69 @@
 - **Contextual Seeding**: Automatically uses the video filename as the initial
   prompt context.
 
+### ASR engine dispatch (defined in `modules/pipeline/transcription.py`)
+
+`transcribe_video_audio(video_path, model_mgr, forced_lang, forced_prompt)`
+keeps its signature and returns `(segments, iso639_1, transcribe_path)` for
+every engine.
+
+```mermaid
+graph TD
+    P["_prepare_audio<br/>(temp WAV / vocal stem)"] --> E{"asr_settings.active_engine()"}
+    E -- "whisper" --> W["Faster-Whisper<br/>(original path)"]
+    E -- "canary / parakeet / auto" --> L{"--lang / whisper.language?"}
+    L -- "yes" --> R
+    L -- "no" --> S["open_pcm_source + block VAD<br/>(streamed spans)"]
+    S --> V["Language vote<br/>(Whisper, 8 x 30 s windows)"]
+    V --> R{"routing.resolve"}
+    R -- "whisper (WARNING reason)" --> W
+    R -- "canary / parakeet" --> N["offload Whisper, get_asr(engine)"]
+    N -- "load failed / no VRAM (WARNING)" --> W
+    N --> D["Batched decode + filters"]
+    D -- "AsrEngineFailed (WARNING)" --> W
+    D --> C["Cues -> Segments"]
+```
+
+1. **Whisper** (`engine == whisper`): the original path runs untouched — no
+   extra decode, no language vote — unless
+   `whisper.force_detected_language` is set without a forced language.
+1. **Audio source** (`modules/asr/audio_source.py`): a 16 kHz mono WAV is
+   read span by span through `soundfile`; any other file up to 30 min is
+   decoded in memory; anything longer is transcoded once to
+   `<base>_asr16k.wav` in the work directory (reused on resume when its
+   length matches). Silero VAD runs in 600 s blocks with spans carried across
+   block edges; spans are capped at `asr.max_segment_seconds`.
+1. **Language** (`modules/asr/language_id.py`): a forced language is
+   normalised to ISO 639-1. Otherwise Whisper's `detect_language` scores 8
+   windows of 30 s spread across cumulative speech time and the summed
+   probabilities pick the winner. A winner share below 0.6 logs a
+   "mixed-language audio" warning. No speech, or no scorable window, leaves
+   the language to Whisper.
+1. **Routing** (`modules/asr/routing.py`): `auto` looks the language up in
+   `asr.routes`. An unsupported or undetected language, a model that does
+   not fit the free VRAM under `auto`, or a load failure falls back to
+   Whisper with a WARNING. Under `auto`, Whisper reuses the model already
+   loaded for the vote.
+1. **NVIDIA decode** (`modules/asr/pipeline.py`, `canary.py`,
+   `parakeet.py`): Whisper is offloaded, `ModelManager.get_asr(engine)`
+   loads the pinned checkpoint, and spans are batched by length (order
+   restored) with OOM bisection. Canary is given the source language;
+   Parakeet TDT runs with the `tdt_guard` symbol cap and frame mask.
+1. **Filters**: zlib ratio > 2.4, more than 25 chars/s, repeated-phrase
+   loops, low Canary log-probability, then the known hallucination phrases;
+   one WARNING summarises what was dropped.
+1. **Decoded-speech guard**: at least 30 s of speech with less than 20 %
+   decoded raises `AsrEngineFailed`, and the file is redone with Whisper in
+   the voted language rather than treated as "no speech".
+1. **Cues** (`modules/asr/cues.py`): Parakeet groups its token times into
+   cues at sentence ends and pauses; Canary has no timestamps, so its text is
+   split at punctuation and the proportional times are snapped to pauses a
+   second, finer VAD pass finds inside each span. Romanian cedilla ş/ţ is
+   folded to comma-below ș/ț for every engine.
+1. **Cleanup**: `offload_whisper()` and `offload_asr()` run in `finally`.
+   Translation later reuses an English pivot SRT or skips a target SRT only
+   while its cue timings match the new source; a stale one is regenerated.
+
 ### Resume candidate selection (orchestrated in `auto_subtitle.py`)
 
 - **Role**: Reuses valid source SRT files to avoid repeating transcription.
@@ -50,7 +115,8 @@
 
 - **Role**: The single home for every temporary artifact of one input video:
   `<folder>/<base_name>.asg-temp/`. It holds `*_temp.wav`, the isolated
-  `*_(Vocals)_*.wav` stem, `*.common_input.json`, `*.manifest.json`,
+  `*_(Vocals)_*.wav` stem, the `<base>_asr16k.wav` transcode of the NVIDIA
+  ASR path, `*.common_input.json`, `*.manifest.json`,
   `*.pivot_pivoted.json`, `.temp_output.*.json` worker outputs (and their
   `.tmp` staging files), `*.source_lang.txt`, and every `.asg-tmp-*` scratch
   entry. Only the per-language SRT files and the `_multilang` container are
@@ -189,7 +255,9 @@
   `_get_separated_vocal_path`, which validates it against `*_temp.wav`.
 - **Other stages**: extraction adds `-rf64 auto` so a >17 h source WAV stays
   valid; `faster-whisper` decodes to 16 kHz mono (0.9 GB for 4 h) and windows
-  internally; translation holds only text; muxing is a stream copy.
+  internally; the Canary/Parakeet path streams spans (see
+  [ASR engine dispatch](#asr-engine-dispatch-defined-in-modulespipelinetranscriptionpy));
+  translation holds only text; muxing is a stream copy.
 
 ### `SystemOptimizer` (defined in `modules/models.py`)
 
@@ -199,12 +267,14 @@
 ### `ModelManager` (defined in `modules/models.py`)
 
 - **Role**: Lazy loader for heavy AI models, ensuring they reside in memory
-  once.
+  once. `get_asr(engine)` / `offload_asr()` hold one NVIDIA ASR model (Canary
+  or Parakeet) at a time and warn when VRAM stays allocated after release.
 
 ### `modules/runtime/model_cache.py` (Model Download Integrity & Auto-Recovery)
 
 - **Role**: Detects corrupt or incomplete model checkpoints across BS-Roformer,
-  Faster-Whisper, NLLB, and TranslateGemma.
+  Faster-Whisper, Canary, Parakeet, NLLB, and TranslateGemma (including a
+  corrupt safetensors header).
 - **Auto-Recovery**: Automatically purges stale/corrupted disk caches and
   triggers a clean re-download transparently before inference.
 

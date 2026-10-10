@@ -11,7 +11,7 @@ Use this skill when resolving GitHub pull request review comments and conversati
 1. **Verify Before Action**: For every review comment, verify whether the feedback is **Valid**, **Not Valid**, or **Blocked** against real codebase behavior, performance constraints, and project rules.
 1. **Reply Before Resolve**: Always post a clear, detailed comment explaining what was changed (for valid feedback) or why it was skipped (for invalid feedback) before marking the thread resolved.
 1. **No Silent Ignored Threads**: Process every unresolved thread systematically.
-1. **Preserve Project Guardrails**: Never introduce `# noqa` or suppressions to silence a reviewer's complaint. Maintain complexity < 10 and >= 90% per-file coverage.
+1. **Preserve Project Guardrails**: Never introduce `# noqa` or suppressions to silence a reviewer's complaint. Maintain Radon grade A complexity (CC 1-5) and >= 90% per-file coverage.
 
 ## Workflow
 

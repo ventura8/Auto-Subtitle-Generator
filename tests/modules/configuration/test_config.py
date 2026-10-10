@@ -124,11 +124,13 @@ class TestConfig(unittest.TestCase):
         self.assertFalse(res)
         log.assert_called_with(unittest.mock.ANY, "ERROR")
 
-    def test_get_nllb_code(self):
+    @patch("modules.runtime.logging_utils.log")
+    def test_get_nllb_code(self, mock_log):
         with patch.object(config, "TARGET_LANGUAGES", {"xx": {"code": "xxx_Latn"}}):
             self.assertEqual(config.get_nllb_code("xx"), "xxx_Latn")
             self.assertEqual(config.get_nllb_code("es"), "spa_Latn")  # fallback
             self.assertEqual(config.get_nllb_code("unknown"), "eng_Latn")  # default
+        mock_log.assert_called_once_with(unittest.mock.ANY, "WARNING")
 
     def test_to_mux_language_code(self):
         self.assertEqual(config.to_mux_language_code("ar"), "ara")

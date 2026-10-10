@@ -24,6 +24,7 @@ m_transformers.__version__ = "4.30.0"
 sys.modules["transformers"] = m_transformers
 
 sys.modules["faster_whisper"] = MagicMock()
+sys.modules["faster_whisper.vad"] = sys.modules["faster_whisper"].vad
 sys.modules["audio_separator"] = MagicMock()
 sys.modules["audio_separator.separator"] = MagicMock()
 

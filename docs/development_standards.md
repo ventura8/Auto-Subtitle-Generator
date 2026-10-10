@@ -10,7 +10,11 @@ are extracted into the `modules/` package:
 - **`modules/configuration/config.py`**: Centralized constants, language
   mappings, and YAML loading.
 - **`modules/models.py`**: Hardware-aware AI model management (`ModelManager`,
-  `SystemOptimizer`).
+  `SystemOptimizer`), including the NVIDIA ASR slot (`get_asr` /
+  `offload_asr`).
+- **`modules/asr/`** and **`modules/configuration/asr_settings.py`**: NVIDIA
+  Canary/Parakeet engines (streaming audio, language vote, routing, decoding,
+  filters, cues) and the `asr:` config section / `--asr` override.
 - **`modules/runtime/model_cache.py`**: Centralized model corruption detection and
   cache-purging auto-recovery for all downloaded AI models and tokenizers.
 - **`modules/utils.py`** plus focused subpackages in `modules/media/`,
@@ -38,11 +42,25 @@ are extracted into the `modules/` package:
 1. **Testing**:
    - Run the local CI pipeline and update the badge: `./run_local_pipeline.ps1`
    - **Strict Requirement**: Maintain at least **90% test coverage** for the
-     entire project.
+     entire project and for every file in the per-file list (including each
+     `modules/asr/*.py` and `modules/configuration/asr_settings.py`).
+   - Real-library checks of the NVIDIA engines live in
+     `tests/e2e/test_real_nvidia_asr.py` (subprocesses, because `conftest.py`
+     mocks torch/transformers in-process); `ASG_E2E_NVIDIA_ASR=1` adds the
+     real checkpoints. CI runs them in the `e2e_nvidia_asr` job.
+   - ASR benchmark: `python -m tests.tools.asr_benchmark` (optional `bench`
+     Poetry group for VoxPopuli); it writes only to `--out` and the Hugging
+     Face cache.
    - Badge and reports are generated automatically on every test run.
 1. **Linting & Code Quality**:
-   - **Strict Complexity Limit**: All functions must have a Cyclomatic
-     Complexity of **< 10**.
+   - **Strict Complexity Limit**: All functions must be Radon **grade A
+     (CC 1-5)**; the gate fails on any B-F line. Ruff's mccabe
+     (`max-complexity = 9`) and flake8 `--max-complexity=9` are only
+     backstops. Every file must also keep maintainability index grade A.
+   - **Heavy Libraries**: `torch`, `transformers`, `faster_whisper`, `numpy`,
+     `soundfile` and `huggingface_hub` are imported only through `importlib`
+     or `load_optional_torch()`, never at module top level, so the gate runs
+     without the `ml` group.
    - **Zero Suppressions**: Do **NOT** use `# noqa`, `# type: ignore`, warning
      ignore filters, or linter/type checker ignore knobs. If code fails checks,
      fix the root cause.

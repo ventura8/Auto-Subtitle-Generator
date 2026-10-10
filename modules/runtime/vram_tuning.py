@@ -19,6 +19,12 @@ settings, 10 beams (``docs/hardware_optimization.md``): fp16 weights measured
 as 6.27 / 2.59 / 1.15 GB and per-item activations as 0.154 / 0.093 / 0.063 GB
 for 3.3B / 1.3B / 600M, rounded up here. They are conservative estimates,
 not exact accounting; the worker's OOM bisection remains the safety net.
+
+The NVIDIA ASR engines (Canary, Parakeet) follow the same scheme: measured
+bf16 weights decide whether the GPU is worth trying (``asr_fits_gpu``) and the
+batch of speech spans is sized from the VRAM free after loading
+(``asr_batch_size``). Their per-second activation costs are placeholders until
+calibrated.
 """
 
 # fp16 weight footprint in GB, largest first. Only models the pipeline ships with.
@@ -111,3 +117,57 @@ def describe_budget(vram_gb, free_gb, model_id, batch, cap):
     weight_gb = NLLB_WEIGHT_GB.get(model_id)
     weights = f"{weight_gb:.1f} GB weights" if weight_gb else "unknown weights"
     return f"[VRAM] {vram_gb} GB card, {free_gb:.1f} GB free after load ({weights}) -> batch {batch} (profile cap {cap})"
+
+
+# NVIDIA ASR (Canary / Parakeet). bf16 weights measured on an RTX 3080 Laptop as
+# 1.83 / 1.18 GB, rounded up. Unknown ids are charged as the larger model.
+ASR_WEIGHT_GB = {
+    "nvidia/canary-1b-v2": 1.9,
+    "nvidia/parakeet-tdt-0.6b-v3": 1.2,
+}
+ASR_WEIGHT_DEFAULT_GB = 1.9
+
+# Activation memory per second of batched audio (GB). PLACEHOLDERS, not yet
+# calibrated: re-measure on the 5090 (docs/hardware_optimization.md) before relying on them.
+ASR_PER_SECOND_GB = {
+    "nvidia/canary-1b-v2": 0.010,
+    "nvidia/parakeet-tdt-0.6b-v3": 0.006,
+}
+ASR_PER_SECOND_DEFAULT_GB = 0.010
+
+# Minimum room for activations on top of the weights before the GPU is worth trying;
+# below it the loader would only OOM and fall back to the CPU anyway.
+ASR_ACTIVATION_FLOOR_GB = 1.0
+
+ASR_BATCH_CAPS = {"ULTRA": 32, "HIGH": 16, "MID": 8, "LOW": 4, "CPU_ONLY": 4}
+ASR_BATCH_CAP_DEFAULT = 4
+
+
+def asr_batch_cap(profile):
+    """Return the ASR batch cap for a hardware profile; unknown profiles get the smallest cap."""
+    return ASR_BATCH_CAPS.get(profile, ASR_BATCH_CAP_DEFAULT)
+
+
+def asr_fits_gpu(model_id, free_gb):
+    """Return True when the model's weights plus the activation floor fit in ``free_gb``."""
+    weight_gb = ASR_WEIGHT_GB.get(model_id, ASR_WEIGHT_DEFAULT_GB)
+    return weight_gb + ASR_ACTIVATION_FLOOR_GB <= free_gb
+
+
+def asr_batch_size(free_gb, model_id, segment_seconds, cap, floor=1):
+    """Size an ASR batch from the VRAM free after the model loaded.
+
+    Each item costs ``segment_seconds`` of audio at the model's per-second
+    rate; the result never exceeds ``cap`` and never drops below ``floor``.
+    """
+    per_item = ASR_PER_SECOND_GB.get(model_id, ASR_PER_SECOND_DEFAULT_GB) * max(1.0, segment_seconds)
+    usable = max(0.0, free_gb) * ACTIVATION_BUDGET_FRACTION
+    fitted = int(usable / per_item) if per_item > 0 else cap
+    return max(floor, min(cap, fitted))
+
+
+def describe_asr_budget(vram_gb, free_gb, model_id, batch, cap):
+    """One log line summarising the dynamic ASR batch decision."""
+    weight_gb = ASR_WEIGHT_GB.get(model_id)
+    weights = f"{weight_gb:.1f} GB weights" if weight_gb else "unknown weights"
+    return f"[VRAM] ASR {model_id}: {vram_gb} GB card, {free_gb:.1f} GB free after load ({weights}) -> batch {batch} (profile cap {cap})"

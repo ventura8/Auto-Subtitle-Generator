@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "auto-subtitle-generator"
-version = "1.2.9"
+version = "1.3.0"
 description = "Auto-Subtitle Generator using Faster Whisper and optional Translation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -56,6 +56,13 @@ audio-separator = [
 ]
 audioread = "^3.1.0"
 librosa = "^1.0.0"
+
+# Only the ASR benchmark (python -m tests.tools.asr_benchmark --voxpopuli ...) reads parquet.
+[tool.poetry.group.bench]
+optional = true
+
+[tool.poetry.group.bench.dependencies]
+pyarrow = "^26.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1.1"

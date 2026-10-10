@@ -16,7 +16,7 @@ Bring the local machine to a fully functional state capable of running high-perf
 1. **Package Manager**: Poetry (`pyproject.toml` is the single source of truth for dependencies).
 1. **PyTorch with CUDA 13.2**: Explicit wheel source from `https://download.pytorch.org/whl/cu132`.
 1. **NVIDIA CUDA/cuDNN**: Windows-specific wheels `nvidia-cudnn-cu13` and `nvidia-cublas`.
-1. **FFmpeg**: Standalone official static build installed into local environment or system PATH.
+1. **FFmpeg**: An installed FFmpeg on `PATH` wins; otherwise `install_dependencies.ps1` installs a versioned, SHA256-pinned gyan.dev build into `.venv\ffmpeg`.
 
 ## Installation & Repair Workflow
 

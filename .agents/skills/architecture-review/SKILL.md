@@ -18,6 +18,13 @@ Use this skill when designing or implementing structural changes across `auto_su
    - Transcriber (`FasterWhisper`) and Translator (`NLLBTranslator` default, `TranslateGemmaTranslator` optional) are never memory-co-located during heavy execution.
    - Faster Whisper model instances are explicitly unloaded, and CUDA cache cleared, prior to translation.
    - Translation runs in an isolated child process (`isolated_translator.py`) to guarantee total OS-level VRAM reclamation on completion.
+   - NVIDIA ASR (Canary/Parakeet) runs in-process via `ModelManager.get_asr` and is released with `offload_asr()` before translation. If NLLB's free-after-load VRAM drops by more than 0.3 GB against a Whisper-only run, move ASR into an isolated worker that reuses the translator's stdin-manifest containment.
+
+1. **ASR Engine Routing**:
+
+   - `--asr` / `asr.engine` / `asr.routes` (`modules/configuration/asr_settings.py`) select the engine; `routing.resolve` falls back to Whisper with a logged WARNING, never silently.
+   - Canary needs a source language: the forced language or the spread Whisper vote (8 windows across the speech).
+   - Long inputs are streamed (16 kHz spans, block VAD, `<base>_asr16k.wav` transcode in the work directory); never decode a multi-hour file into RAM.
 
 1. **Stateless Functions & Deterministic State**:
 
@@ -37,7 +44,8 @@ Architecture Review:
 - [ ] Are core domain algorithms kept out of `auto_subtitle.py`?
 - [ ] Is model loading explicit (no `device_map="auto"`)?
 - [ ] Are process boundaries preserved for translation?
-- [ ] Is Cyclomatic Complexity < 10 for all newly introduced functions?
+- [ ] Is every new function Radon grade A (CC 1-5) and every file MI grade A?
+- [ ] Does every fallback (e.g. NVIDIA ASR -> Whisper) log a WARNING?
 - [ ] Are zero suppressions maintained across all files?
 - [ ] Is test coverage >= 90% for touched modules?
 ```

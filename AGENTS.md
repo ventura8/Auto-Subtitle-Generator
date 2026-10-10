@@ -4,7 +4,9 @@
 
 `Auto-Subtitle-Generator` is a local-first, GPU-accelerated video/audio subtitle
 generation and translation pipeline. It leverages `faster-whisper`
-(CTranslate2) for speech recognition, Hugging Face `transformers`
+(CTranslate2) for speech recognition by default, with NVIDIA Canary-1B-v2 and
+Parakeet-TDT-0.6B-v3 (Hugging Face `transformers`, in-process) as optional
+engines routed by language (`--asr` / `asr.engine`), Hugging Face `transformers`
 (`NLLBTranslator` default, `TranslateGemmaTranslator` optional) in isolated
 child processes for translation, and `audio-separator` for vocal isolation.
 
@@ -12,8 +14,8 @@ child processes for translation, and `audio-separator` for vocal isolation.
   cross-platform compatible).
 - **Python Version**: Python `3.12.x` (managed via Poetry).
 - **Core Orchestrator**: `auto_subtitle.py`.
-- **Modular Subpackages**: `modules/` (`configuration/`, `media/`, `pipeline/`,
-  `runtime/`, `subtitles/`), plus `modules/safe_io.py` for symlink-safe
+- **Modular Subpackages**: `modules/` (`asr/`, `configuration/`, `media/`,
+  `pipeline/`, `runtime/`, `subtitles/`), plus `modules/safe_io.py` for symlink-safe
   sidecar/temp writes, `modules/media/input_binding.py` for descriptor-bound
   input reads, and `modules/workdir.py` for the per-video work directory that
   holds every temporary artifact.
@@ -31,10 +33,15 @@ ______________________________________________________________________
 - Fix underlying type signatures, logic branches, and lint issues at their
   root cause.
 
-### 2. Cyclomatic Complexity Limit (< 10)
+### 2. Cyclomatic Complexity Limit (Radon Grade A, CC 1-5)
 
 - Every function and method across `auto_subtitle.py`, `modules/`, and
-  `tests/` must maintain Cyclomatic Complexity of **A-rank (< 10)**.
+  `tests/` must be Radon **grade A (CC 1-5)**: the gate fails on any B-F
+  line from `radon cc`. Ruff's `mccabe` (`max-complexity = 9`) and
+  `flake8 --max-complexity=9` are looser backstops, not the limit.
+- Every file must also keep Radon maintainability index grade A.
+- Bare `assert` statements in tests count toward CC; use `unittest`'s
+  `self.assert*` methods instead.
 - Monolithic functions must be decomposed into small, testable,
   single-responsibility helper functions.
 
@@ -52,6 +59,20 @@ ______________________________________________________________________
   - `modules/pipeline/translation.py`
   - `modules/utils.py`
   - `modules/workdir.py`
+  - `modules/asr/audio_source.py`
+  - `modules/asr/canary.py`
+  - `modules/asr/common.py`
+  - `modules/asr/cues.py`
+  - `modules/asr/language_id.py`
+  - `modules/asr/languages.py`
+  - `modules/asr/parakeet.py`
+  - `modules/asr/pipeline.py`
+  - `modules/asr/routing.py`
+  - `modules/asr/tdt_guard.py`
+  - `modules/configuration/asr_settings.py`
+- Each file is listed individually in `run_local_pipeline.sh`,
+  `run_local_pipeline.ps1` and `.github/workflows/ci.yml`; a glob would
+  average files together and hide a weak one.
 
 ### 4. Mandatory Documentation Synchronization (Strict)
 
@@ -93,8 +114,10 @@ ______________________________________________________________________
   1. Bundled or venv-local copies (built).
   1. A bare command name as a last-resort fallback.
 - Installer scripts and runtime discovery **must agree** on this order.
-  `install_dependencies.sh` probes the system FFmpeg before the venv copy, so
-  `modules/media/ffmpeg_utils.get_ffmpeg_paths()` must do the same.
+  `install_dependencies.sh` and `install_dependencies.ps1` both probe the system
+  FFmpeg before the venv copy, so `modules/media/ffmpeg_utils.get_ffmpeg_paths()`
+  must do the same. The Windows fallback is a versioned, SHA256-pinned gyan.dev
+  build; never pin a rolling autobuild that upstream prunes.
 - Do not add a build/vendor step for a dependency that can be installed via the
   platform package manager or an existing wheel.
 
@@ -135,6 +158,69 @@ ______________________________________________________________________
      and `nvidia_paths.is_cuda_explicitly_disabled()` must keep recognising
      that value so bundled cuBLAS is never injected into a CPU-only run.
 
+1. **ASR Engines** (`modules/asr/`, `modules/configuration/asr_settings.py`):
+
+   - Three engines: `whisper` (faster-whisper), `canary`
+     (`nvidia/canary-1b-v2`) and `parakeet` (`nvidia/parakeet-tdt-0.6b-v3`),
+     plus `auto`, the default, which routes per language through
+     `asr.routes` (default: bg et hr lt lv mt ro sk sl → Canary,
+     `CANARY_DEFAULT_LANGUAGES`) and keeps Whisper for every unlisted
+     language. `--asr` overrides `asr.engine` through
+     `asr_settings.set_cli_override()`, which survives the per-video
+     `load_config()` reset. A language joins the default routes only by the
+     measured decision rule in `docs/hardware_optimization.md`; re-measure
+     before changing the table. `asr_settings.load` never raises:
+     an invalid key logs a WARNING and keeps its default.
+   - `transcribe_video_audio` keeps its signature and return contract.
+     `engine == whisper` runs the original Whisper path untouched (no decode,
+     no language vote) unless `whisper.force_detected_language` is set.
+   - The NVIDIA engines cover 25 European languages only (`NVIDIA_EU25`).
+     Canary has no language ID and needs a source language: `--lang` /
+     `whisper.language` when given, otherwise a vote with Whisper's
+     `detect_language` over 8 windows of 30 s spread across cumulative
+     *speech* time (probabilities summed; a winner share below 0.6 logs a
+     "mixed-language" WARNING). faster-whisper's own detection locks onto the
+     first window, so an English intro would win.
+   - `routing.resolve` falls back to Whisper with a `utils.log(..., "WARNING")`
+     reason for an unsupported or undetected language, a model that fails to
+     load, and (under `auto`) a model that would not fit the free VRAM
+     (`asr_gpu_shortfall`). **Never** fall back silently.
+   - The NVIDIA engines run in-process through `ModelManager.get_asr(engine)`
+     / `offload_asr()` (one slot: `_asr` + `_asr_engine`). Whisper is
+     offloaded before the NVIDIA model loads, and `offload_asr()` runs before
+     translation (`auto_subtitle._run_translation_step`, `translation.py`);
+     it warns when more than 64 MB stays allocated. `[VRAM]` DEBUG lines mark
+     each hand-over. If NLLB's free-after-load memory ever drops by more
+     than 0.3 GB against a Whisper-only run, move ASR into an isolated worker
+     that reuses the translator's stdin-manifest containment.
+   - Checkpoints are pinned to tested Hugging Face revisions
+     (`asr_settings.MODEL_REVISIONS`) and load only the safetensors through
+     `load_with_cache_recovery`. Device: `cuda:0` in bf16 only when
+     `torch.cuda.is_bf16_supported(including_emulation=False)`, else fp32; the
+     CPU in fp32 under `--cpu` or without CUDA (MPS is not used). A load OOM
+     moves to the CPU with a WARNING. **Never** use `device_map="auto"` or
+     `attn_implementation="eager"` (NaN in padded batches), and never hand
+     transformers a string as audio (it would open it as a path or URL).
+   - Spans are batched by length with order restored, sized by
+     `apply_dynamic_asr_batch` (`performance.asr_batch` pins it), and a CUDA
+     OOM bisects the batch recursively.
+   - Parakeet TDT: `modules/asr/tdt_guard.py` restores the per-frame symbol
+     cap transformers skips (transformers #49388, NeMo's
+     `max_symbols_per_step`) and masks what padded batch rows emit past their
+     own valid frames. Keep both until upstream fixes the decoder.
+   - Degenerate output is dropped before it becomes a cue: zlib ratio > 2.4,
+     more than 25 chars/s, repeated-phrase loops collapsed, Canary mean
+     log-probability below -1.5 (or -1.0 with at most 3 words), then the
+     existing hallucination-phrase filter; one WARNING summarises the counts.
+   - Decoded-speech guard: if VAD found at least 30 s of speech but less than
+     20 % of it decoded to text, `AsrEngineFailed` redoes the file with
+     Whisper in the voted language instead of purging the work directory as
+     "no speech".
+   - Switching engines changes cue timings, so an existing English pivot SRT
+     or target SRT is reused only while its cue count and millisecond timings
+     match the current source; a stale one is regenerated with a WARNING,
+     never deleted.
+
 1. **Subprocess Process Isolation**:
 
    - Translation runs in `modules/pipeline/isolated_translator.py` to prevent
@@ -162,7 +248,9 @@ ______________________________________________________________________
    - Every temporary artifact for one input video lives in
      `<folder>/<base_name>.asg-temp/`: `*_temp.wav`, the isolated
      `*_(Vocals)_*.wav` stem, the per-chunk `*_sepchunk_NNN.wav` stems of a
-     chunked separation, `*.common_input.json`, `*.manifest.json`,
+     chunked separation, the `<base>_asr16k.wav` 16 kHz mono transcode the
+     NVIDIA ASR engines stream from (long non-16 kHz inputs only),
+     `*.common_input.json`, `*.manifest.json`,
      `*.pivot_pivoted.json`, `.temp_output.*.json` worker outputs and their
      `.tmp` staging files, `*.source_lang.txt`, and every `.asg-tmp-*`
      scratch entry (including the ones backing SRT and `_multilang` writes).
@@ -258,17 +346,29 @@ ______________________________________________________________________
    - Every WAV FFmpeg writes carries `-rf64 auto`, so nothing breaks at the
      4 GB RIFF limit. Whisper (`faster-whisper`) decodes to 16 kHz mono and
      windows internally, the translation worker holds only segment text, and
-     muxing is a stream copy, so those stages need no chunking. **Never**
+     muxing is a stream copy, so those stages need no chunking.
+   - The NVIDIA ASR path (`modules/asr/audio_source.py`) never decodes a long
+     input whole: a 16 kHz mono WAV (`*_temp.wav`, joined chunk stems) is
+     read span by span through `soundfile` seeks; any other file up to
+     30 min (an un-chunked 44.1 kHz vocal stem, at most about 115 MB) is
+     decoded in memory; anything longer is transcoded once, atomically, to
+     `<base>_asr16k.wav` in the work directory and streamed from there (a
+     finished transcode of the right length is reused on resume). Silero VAD
+     runs block by block (600 s blocks, spans carried across block edges).
+     **Never**
      add a stage that materialises a whole multi-hour input in RAM without
      a chunked path.
 
 1. **Model Download Integrity & Auto-Recovery**:
 
    - Every downloaded AI model and tokenizer checkpoint (`audio-separator`,
-     `faster-whisper`, `nllb`, `translategemma`) incorporates auto-detection of
+     `faster-whisper`, `nllb`, `translategemma`, `canary`, `parakeet`)
+     incorporates auto-detection of
      corrupted/truncated downloads (`is_corrupt_model_error`), automated cache
      purging (`modules/runtime/model_cache.py`), and transparent re-download
      recovery before inference.
+     A corrupt safetensors header (`safetensors.SafetensorError`) counts as
+     a corrupt download too.
 
 ______________________________________________________________________
 

@@ -17,18 +17,21 @@ from modules.utils import log
 torch: Any | None = load_optional_torch()
 
 
-def _identify_missing_targets(src_lang, folder, base_name, reuse_outputs=True):
+def _identify_missing_targets(src_lang, folder, base_name, reuse_outputs=True, source_data=None):
     """Identifies which languages still need translation.
 
     ``reuse_outputs=False`` redoes every target: the SRT files beside the video
-    were produced for a different input that carried the same name.
+    were produced for a different input that carried the same name. With
+    ``source_data`` an existing target is only kept while its cues still match
+    the source's count and millisecond timings (a re-transcription, e.g. with
+    another ASR engine, makes it stale).
     """
     all_targets = [lang for lang in config.TARGET_LANGUAGES if lang != src_lang]
     if not all_targets:
         return [], 0
 
     if reuse_outputs:
-        missing_langs, skipped_count = _scan_target_language_states(all_targets, folder, base_name)
+        missing_langs, skipped_count = _scan_target_language_states(all_targets, folder, base_name, source_data)
     else:
         missing_langs, skipped_count = list(all_targets), 0
 
@@ -37,12 +40,12 @@ def _identify_missing_targets(src_lang, folder, base_name, reuse_outputs=True):
     return missing_langs, skipped_count
 
 
-def _scan_target_language_states(all_targets, folder, base_name):
+def _scan_target_language_states(all_targets, folder, base_name, source_data=None):
     """Scan target language outputs and return pending languages plus skip count."""
     missing_langs = []
     skipped_count = 0
     for lang in all_targets:
-        is_missing, was_skipped = _classify_target_language_state(lang, folder, base_name)
+        is_missing, was_skipped = _classify_target_language_state(lang, folder, base_name, source_data)
         if was_skipped:
             skipped_count += 1
         if is_missing:
@@ -50,17 +53,39 @@ def _scan_target_language_states(all_targets, folder, base_name):
     return missing_langs, skipped_count
 
 
-def _classify_target_language_state(lang, folder, base_name):
+def _classify_target_language_state(lang, folder, base_name, source_data=None):
     """Return whether translation is missing and whether an existing output was skipped as valid."""
     lang_srt_path = os.path.join(folder, f"{base_name}.{lang}.srt")
     if not os.path.exists(lang_srt_path):
         return True, False
 
-    if utils.validate_srt(lang_srt_path):
-        return False, True
+    if not utils.validate_srt(lang_srt_path):
+        log(f"  [Translate] Found invalid/corrupt SRT for {lang}. Re-doing.", "WARNING")
+        return True, False
 
-    log(f"  [Translate] Found invalid/corrupt SRT for {lang}. Re-doing.", "WARNING")
-    return True, False
+    if _is_stale_srt(lang_srt_path, source_data):
+        log(f"  [Translate] {lang} subtitles do not match the current source timings (re-transcribed?). Re-doing.", "WARNING")
+        return True, False
+    return False, True
+
+
+def _is_stale_srt(srt_path, source_data):
+    """True when the SRT's cue count or millisecond timings differ from ``source_data`` (None: not checked)."""
+    if source_data is None:
+        return False
+    return not _same_timings(utils.parse_srt(srt_path), source_data)
+
+
+def _same_timings(cues, source_data):
+    """True when ``cues`` carry exactly the source's cue count and SRT (millisecond) timestamps."""
+    if len(cues) != len(source_data):
+        return False
+    return all(_timing_key(cue.start, cue.end) == _timing_key(item["start"], item["end"]) for cue, item in zip(cues, source_data))
+
+
+def _timing_key(start, end):
+    """The start and end exactly as an SRT file stores them."""
+    return utils.format_timestamp(start), utils.format_timestamp(end)
 
 
 def _temp_output_path(folder, base_name, lang):
@@ -189,12 +214,15 @@ def _build_pivot_source_data_from_segments(segments):
     return [{"text": segment.text.strip(), "start": segment.start, "end": segment.end} for segment in segments if segment.text.strip()]
 
 
-def _load_reusable_pivot_srt_data(folder, base_name):
-    """Load an existing valid English pivot SRT when available."""
+def _load_reusable_pivot_srt_data(folder, base_name, source_data=None):
+    """Load an existing valid English pivot SRT when available and, given ``source_data``, still aligned with it."""
     pivot_srt_path = os.path.join(folder, f"{base_name}.en.srt")
     if not os.path.exists(pivot_srt_path):
         return None
     if not utils.validate_srt(pivot_srt_path):
+        return None
+    if _is_stale_srt(pivot_srt_path, source_data):
+        log("  [Translate] English pivot SRT does not match the current source timings; translating a new pivot.", "WARNING")
         return None
     return _build_pivot_source_data_from_segments(utils.parse_srt(pivot_srt_path))
 
@@ -210,7 +238,8 @@ def _build_pivot_config(worker_context, common_input, temp_files):
     pivot_output = os.path.join(workdir.work_dir_path(folder, base_name), f"{base_name}.pivot_pivoted.json")
     temp_files.append(pivot_output)
 
-    pivot_srt_data = _load_reusable_pivot_srt_data(folder, base_name) if worker_context.get("reuse_outputs", True) else None
+    reuse = worker_context.get("reuse_outputs", True)
+    pivot_srt_data = _load_reusable_pivot_srt_data(folder, base_name, worker_context.get("source_data")) if reuse else None
     if pivot_srt_data:
         with atomic_text_writer(pivot_output) as file_handle:
             json.dump(pivot_srt_data, file_handle, ensure_ascii=False)
@@ -448,7 +477,9 @@ def translate_segments(segments, src_lang, model_mgr, target):
     """
     folder, base_name = target["folder"], target["base_name"]
     reuse_outputs = target.get("reuse_outputs", True)
-    missing_langs, _skipped_count = _identify_missing_targets(src_lang, folder, base_name, reuse_outputs)
+    # The source comes first so existing translations can be checked against its timings.
+    valid_segments, source_data = _prepare_source_data(segments)
+    missing_langs, _skipped_count = _identify_missing_targets(src_lang, folder, base_name, reuse_outputs, source_data or None)
 
     if not missing_langs:
         log("  [Skip] All targets completed. Moving to next step.")
@@ -457,13 +488,13 @@ def translate_segments(segments, src_lang, model_mgr, target):
     # CRITICAL: Offload previous models to prevent VRAM Contention/Shared Memory usage
     # The isolated worker will load NLLB, so we need to clear space in the main process first.
     if model_mgr:
-        log("  [System] Offloading Whisper/Separator to free VRAM for Translation Worker...", level="DEBUG")
+        log("  [System] Offloading Whisper/ASR/Separator to free VRAM for Translation Worker...", level="DEBUG")
         model_mgr.offload_whisper()
+        model_mgr.offload_asr()
         model_mgr.offload_separator()
 
     # PREPARE DATA FOR ISOLATION
     src_code = config.get_nllb_code(src_lang)
-    valid_segments, source_data = _prepare_source_data(segments)
 
     if not source_data:
         log("  [Skip] No valid text to translate.")

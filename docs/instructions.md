@@ -9,6 +9,10 @@ this project. Adherence to these rules is mandatory.
   strictly an orchestrator (< 500 lines).
 - **Isolated Execution**: Heavy AI translation tasks MUST run in a separate
   process (`isolated_translator.py`) to allow full VRAM cleanup.
+- **ASR Engines**: Canary/Parakeet run in-process via
+  `ModelManager.get_asr` and MUST be released with `offload_asr()` before
+  translation. Every fallback to Whisper MUST log a WARNING; never fall back
+  silently.
 - **No Shared State**: Modules should be stateless where possible. Use
   `ModelManager` for persistent state.
 
@@ -34,7 +38,8 @@ this project. Adherence to these rules is mandatory.
 
 ## 3. 🧹 Code Quality (Zero Tolerance)
 
-- **Complexity Limit**: Cyclomatic Complexity MUST be **< 10**.
+- **Complexity Limit**: Every function MUST be Radon **grade A (CC 1-5)**,
+  and every file maintainability index grade A.
   - ❌ DO NOT use suppression patterns (`# noqa`, `# type: ignore`, warning
     filter ignores, or ignore-based config knobs). Refactor or type/fix code
     instead.
@@ -46,13 +51,15 @@ this project. Adherence to these rules is mandatory.
   - ✅ Enforce suppression policy with
     `python tests/tools/check_no_suppressions.py`.
   - ✅ Run `ruff format --check .` for formatting verification.
-  - ✅ Verify with `ruff check .` (must enforce cyclomatic complexity **< 10**
-    via C90 with max complexity 9),
+  - ✅ Verify with `ruff check .` (C90 mccabe backstop, max complexity 9;
+    the binding limit is Radon grade A),
     `flake8 modules auto_subtitle.py --max-complexity=9`,
     `pylint modules`, `pylint tests --errors-only`, and
     the repository test suite.
   - ✅ Run security checks with `bandit -q -r auto_subtitle.py modules -lll -iii`
     and `pip-audit`.
+  - ✅ Run `radon cc auto_subtitle.py modules tests -s -a` and
+    `radon mi auto_subtitle.py modules tests -s`: no B-F grade allowed.
   - ✅ Use `run_local_pipeline.ps1` as the canonical local quality gate.
 
 ## 4. ⚡ High-Performance Standards
@@ -62,8 +69,11 @@ this project. Adherence to these rules is mandatory.
     (e.g., translation batches).
   - ✅ **Explicit Offloading**: Always unload previous models (e.g.,
     `model_mgr.offload_whisper()`) *before* starting a new heavy task.
-  - ✅ **Tier-based Caps**: Batch sizes for NLLB must follow dynamic tier limits
-    (32/16/8/4) to prevent VRAM overflow.
+  - ✅ **Tier-based Caps**: Batch sizes for NLLB and for Canary/Parakeet
+    speech spans must follow dynamic tier limits (32/16/8/4) to prevent VRAM
+    overflow.
+  - ✅ **ASR Precision**: bf16 only where the GPU supports it natively,
+    otherwise fp32; never `attn_implementation="eager"`.
   - ✅ **Shared Memory Guard**: Forced device mapping MUST be used to prevent
     "System RAM Spillover".
 
@@ -86,5 +96,5 @@ ______________________________________________________________________
 - [Development & Standards](development_standards.md) (Detailed
   Linting/Testing rules)
 - [Configuration](configuration.md)
-- [Release Notes](releases/v1.2.9.md)
+- [Release Notes](releases/v1.3.0.md)
 - [Release Prep Skill](../.github/skills/release-prep/SKILL.md)

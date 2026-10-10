@@ -15,7 +15,7 @@ Use this skill to apply the smallest safe fix to a target file while ensuring st
 
 ### 2. Apply Safe Changes
 
-- Maintain Cyclomatic Complexity below 10 for every function.
+- Keep every function at Radon grade A (Cyclomatic Complexity 1-5).
 - Do NOT add `# noqa`, `# type: ignore`, `# pylint: disable`, or warning filters.
 - Preserve atomic file writing and resume semantics for subtitle files.
 - Preserve Windows-safe subprocess execution and cleanup.
@@ -36,7 +36,7 @@ poetry run pylint <target_file_path>
 poetry run mypy <target_file_path>
 poetry run pyright <target_file_path>
 
-# Radon Complexity check (< 10)
+# Radon Complexity check (grade A, CC 1-5)
 poetry run radon cc -s -n B <target_file_path>
 ```
 

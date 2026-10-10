@@ -10,7 +10,7 @@ import importlib.metadata
 import tomllib
 from pathlib import Path
 
-_FALLBACK_VERSION = "1.2.9"
+_FALLBACK_VERSION = "1.3.0"
 _PACKAGE_NAME = "auto-subtitle-generator"
 
 

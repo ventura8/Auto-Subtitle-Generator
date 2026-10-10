@@ -10,6 +10,12 @@ reliability and performance constraints.
   in ModelManager patterns.
 - Never introduce device_map="auto" for GPU model loading. Use explicit CUDA
   device mapping.
+- ASR: asr.engine auto is the shipped default: it routes the languages in
+  asr.routes to NVIDIA Canary and keeps Whisper for every other language
+  (or when --asr whisper is chosen). Canary/Parakeet (modules/asr/) run
+  in-process through ModelManager.get_asr and are released with
+  offload_asr() before translation. Every fallback to Whisper logs a
+  WARNING; never fall back silently.
 - Prioritize safe shutdown behavior on Windows. Do not weaken subprocess cleanup
   paths.
 - Preserve resume behavior and atomic writes when touching subtitle output
@@ -17,8 +23,11 @@ reliability and performance constraints.
 
 ## Development Standards
 
-- Keep cyclomatic complexity below 10; refactor instead of suppressing
+- Keep every function at Radon grade A (cyclomatic complexity 1-5) and every
+  file at maintainability index grade A; refactor instead of suppressing
   complexity warnings.
+- Import heavy libraries (torch, transformers, faster_whisper, numpy,
+  soundfile) only through importlib or load_optional_torch().
 - Use clear, testable functions and avoid broad side effects.
 - Update or add tests in tests/ when behavior changes.
 - Keep changes minimal and avoid unrelated refactors.

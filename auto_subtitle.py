@@ -5,7 +5,7 @@ High-performance multilingual subtitle generation with hardware auto-tuning.
 
 Features:
 - Auto-detects GPU/CPU and applies optimal settings
-- Transcribes audio using Faster-Whisper (large-v3)
+- Transcribes audio with Faster-Whisper (large-v3), or NVIDIA Canary / Parakeet routed by language
 - Translates to 30+ languages using NLLB-200
 - Embeds all subtitles into the video container
 
@@ -24,7 +24,7 @@ import sys
 import time
 
 from modules import models, utils, workdir
-from modules.configuration import config
+from modules.configuration import asr_settings, config
 from modules.configuration.version import __version__
 from modules.media.ffmpeg_utils import build_primary_media_metadata_args
 from modules.media.input_binding import bind_input, is_link, media_source, set_input_root
@@ -481,6 +481,7 @@ def _run_translation_step(segments, src_lang, model_mgr, pipeline_context):
     }
     try:
         model_mgr.offload_whisper()
+        model_mgr.offload_asr()
         model_mgr.offload_separator()
         _clear_cuda_cache_if_available()
         translate_segments(segments, src_lang, model_mgr, target)
@@ -586,6 +587,11 @@ def parse_cli_args(cli_args=None):
     parser.add_argument("--lang", help="Force source language (e.g., 'en', 'ro')")
     parser.add_argument("--prompt", help="Custom initial prompt for Whisper")
     parser.add_argument("--cpu", action="store_true", help="Force CPU usage")
+    parser.add_argument(
+        "--asr",
+        choices=asr_settings.ENGINES,
+        help="Speech recognition engine (overrides asr.engine): whisper, canary, parakeet, or auto (route by language)",
+    )
     return parser.parse_args(cli_args)
 
 
@@ -666,6 +672,8 @@ def _show_startup_banner(args):
     """
     if args.cpu:
         force_cpu_only_env()
+    # Before the first config load, and kept apart from it: process_video reloads config per input.
+    asr_settings.set_cli_override(args.asr)
     # Load config first so a performance.max_vram_usage_gb cap shows in the banner's profile.
     config.load_config(OPTIMIZER, lambda message, level="INFO", **_kwargs: log(message, level, to_console=False))
     models.OPTIMIZER.detect_hardware(verbose=False)
