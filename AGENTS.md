@@ -289,9 +289,12 @@ ______________________________________________________________________
      anything found in the input directory, and never read or change the
      process umask.
    - **Never** write a pipeline output with a bare `open(path, "w")` or point
-     FFmpeg `-y` at a predictable name in the input directory. Audio-Separator
-     writes into a private scratch directory inside the work directory; only
-     the finished vocal stem is moved out.
+     FFmpeg `-y` at a predictable name in the input directory **or** inside a
+     listable work-/scratch-directory under it. Chunked vocal separation lands
+     `chunk_NNN.wav` and `stems.list` through `reserve_temp_path` /
+     `atomic_text_writer` then promote (`write_audio_window`,
+     `concat_audio_files`); Audio-Separator still writes into a private
+     scratch directory and only the finished vocal stem is moved out.
    - Existing outputs are safely skipped when valid subtitles already exist.
      A resumed vocal stem must probe to the same duration as `*_temp.wav`;
      a truncated stem is discarded. A resumed `*.pivot_pivoted.json` must
