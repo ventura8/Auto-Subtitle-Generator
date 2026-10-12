@@ -127,7 +127,8 @@ class TestChunkedSeparation(_ChunkCase):
         # Output trim: skip the leading pad, keep exactly the window, downmix to 16 kHz mono.
         self.assertEqual(trim.args[2:4], (2.0, 60.0))
         self.assertTrue(trim.kwargs["mono_16k"])
-        self.assertNotEqual(trim.args[1], os.path.join(self.work_dir, "movie_sepchunk_001.wav"), "written via scratch, promoted after")
+        # Callers pass the final stem path; write_audio_window owns the only reservation.
+        self.assertEqual(trim.args[1], os.path.join(self.work_dir, "movie_sepchunk_001.wav"))
         self.assertTrue(os.path.isfile(os.path.join(self.work_dir, "movie_sepchunk_001.wav")))
 
     def test_first_chunk_has_no_leading_pad(self):
@@ -179,7 +180,7 @@ class TestChunkedSeparation(_ChunkCase):
         with patch("modules.pipeline.transcription.ffmpeg_utils.write_audio_window", side_effect=RuntimeError("ffmpeg died")):
             stem_path = os.path.join(self.work_dir, "movie_sepchunk_000.wav")
             with self.assertRaises(RuntimeError):
-                transcription._write_chunk_stem(raw, stem_path, 2.0, 60.0, self.work_dir)
+                transcription._write_chunk_stem(raw, stem_path, 2.0, 60.0)
         self.assertFalse(os.path.exists(raw))
         self.assertEqual(self._work_entries(), ["movie_temp.wav"])
 
@@ -192,6 +193,27 @@ class TestChunkedSeparation(_ChunkCase):
         self.assertFalse(os.path.exists(os.path.join(self.work_dir, "final.wav")))
         self.assertFalse(os.path.exists(os.path.join(self.scratch_dir, "stems.list")))
         self.assertEqual([e for e in self._work_entries() if e.startswith(safe_io.SCRATCH_PREFIX)], [], "no leaked reservation")
+
+    def test_join_passes_final_path_so_concat_owns_the_only_reservation(self):
+        # Nesting an outer reserve_temp_path around concat would replace that
+        # reserved inode on promote and make the caller's promote refuse the join.
+        stems = [self._write(os.path.join(self.work_dir, f"movie_sepchunk_00{i}.wav")) for i in range(2)]
+        joined_path = os.path.join(self.work_dir, "movie_temp_(Vocals)_chunked.wav")
+        captured = {}
+
+        def capture_concat(sources, target, list_path):
+            captured["target"] = target
+            captured["list_path"] = list_path
+            self._write(list_path, b"list")
+            self._write(target, b"JOINED")
+
+        with patch("modules.pipeline.transcription.ffmpeg_utils.concat_audio_files", side_effect=capture_concat):
+            transcription._join_chunk_stems(stems, joined_path, self.job)
+        self.assertEqual(captured["target"], joined_path)
+        self.assertEqual(captured["list_path"], os.path.join(self.scratch_dir, "stems.list"))
+        with open(joined_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"JOINED")
+        self.assertFalse(os.path.exists(os.path.join(self.scratch_dir, "stems.list")))
 
 
 class TestSeparateDispatch(_ChunkCase):

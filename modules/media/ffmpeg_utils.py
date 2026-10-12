@@ -10,7 +10,7 @@ import time
 from ..configuration import config
 from ..runtime.logging_utils import log, register_subprocess, unregister_subprocess
 from ..runtime.progress import print_progress_bar
-from ..safe_io import discard_temp_path, promote_temp_path, reserve_temp_path
+from ..safe_io import atomic_text_writer, discard_temp_path, promote_temp_path, reserve_temp_path
 from ..subtitles.timestamp_utils import parse_timestamp
 from ..workdir import ensure_work_dir
 from .input_binding import media_source, rewind_inputs
@@ -178,28 +178,60 @@ def write_audio_window(source_path, target_path, start_seconds, length_seconds, 
 
     ``mono_16k`` downmixes and resamples to the 16 kHz mono format Whisper
     consumes, which also keeps a joined multi-hour stem far below the RIFF
-    limit. ``target_path`` must be a private scratch path: FFmpeg ``-y``
-    follows symlinks.
+    limit. FFmpeg ``-y`` follows symlinks, so the cut is written into a
+    private scratch file and promoted onto ``target_path``.
     """
-    cmd = [FFMPEG_CMD, "-y", "-loglevel", "error", "-ss", f"{start_seconds:.3f}", "-t", f"{length_seconds:.3f}", "-i", source_path]
-    if mono_16k:
-        cmd += ["-ac", "1", "-ar", "16000"]
-    cmd += ["-c:a", "pcm_f32le", "-rf64", "auto", target_path]
-    run_ffmpeg_quiet(cmd)
+    scratch_dir = os.path.dirname(target_path) or "."
+    reservation = reserve_temp_path(target_path, scratch_dir=scratch_dir)
+    try:
+        _run_audio_window_ffmpeg(source_path, reservation.path, start_seconds, length_seconds, mono_16k)
+        promote_temp_path(reservation, target_path)
+    except BaseException:
+        discard_temp_path(reservation)
+        raise
 
 
 def concat_audio_files(source_paths, target_path, list_path):
     """Join same-format WAV files in order into ``target_path`` (RF64 once it outgrows RIFF).
 
-    ``list_path`` is where the concat manifest is written; it must live inside
-    a private scratch directory owned by this process, like ``target_path``.
+    ``list_path`` holds the concat manifest. Both it and ``target_path`` are
+    landed through ``safe_io`` so a planted symlink at either predictable
+    name cannot be followed by ``open`` or FFmpeg ``-y``.
     """
-    # FFmpeg resolves relative manifest entries against the manifest's own
-    # directory, not the working directory, so a relative input path would
-    # point the join at the wrong place.
-    with open(list_path, "w", encoding="utf-8") as handle:
+    _write_concat_manifest(source_paths, list_path)
+    scratch_dir = os.path.dirname(target_path) or "."
+    reservation = reserve_temp_path(target_path, scratch_dir=scratch_dir)
+    try:
+        _run_concat_ffmpeg(list_path, reservation.path)
+        promote_temp_path(reservation, target_path)
+    except BaseException:
+        discard_temp_path(reservation)
+        raise
+
+
+def _run_audio_window_ffmpeg(source_path, output_path, start_seconds, length_seconds, mono_16k):
+    """Point FFmpeg at an already-reserved ``output_path`` for one audio window cut."""
+    cmd = [FFMPEG_CMD, "-y", "-loglevel", "error", "-ss", f"{start_seconds:.3f}", "-t", f"{length_seconds:.3f}", "-i", source_path]
+    if mono_16k:
+        cmd += ["-ac", "1", "-ar", "16000"]
+    cmd += ["-c:a", "pcm_f32le", "-rf64", "auto", output_path]
+    run_ffmpeg_quiet(cmd)
+
+
+def _write_concat_manifest(source_paths, list_path):
+    """Write the FFmpeg concat demuxer list through the symlink-safe text writer.
+
+    FFmpeg resolves relative manifest entries against the manifest's own
+    directory, not the working directory, so every input path is absolutised.
+    """
+    scratch_dir = os.path.dirname(list_path) or "."
+    with atomic_text_writer(list_path, scratch_dir=scratch_dir) as handle:
         for path in source_paths:
             handle.write(f"file '{_concat_quote(os.path.abspath(path))}'\n")
+
+
+def _run_concat_ffmpeg(list_path, target_path):
+    """Stream-copy concat demuxer inputs into an already-reserved ``target_path``."""
     run_ffmpeg_quiet(
         [
             FFMPEG_CMD,

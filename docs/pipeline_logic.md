@@ -237,21 +237,24 @@ graph TD
   into the previous window (4 h 00 m 05 s becomes eight windows, the last
   30 m 05 s).
 - **Per chunk**: cut the window with 2 s of context on each side into the
-  private scratch directory (`write_audio_window`), run the separator there,
-  trim the context off and downmix to 16 kHz mono float
-  (`write_audio_window(..., mono_16k=True)`) through a `safe_io` reservation
-  onto `<base>_sepchunk_NNN.wav` in the work directory, then delete the raw
-  chunk and stem. Peak RAM for a 30-minute chunk is around 3 GB.
+  private scratch directory. `write_audio_window` never points FFmpeg `-y` at
+  the predictable `chunk_NNN.wav` name: it reserves a private scratch file,
+  writes there, then promotes (refusing a planted symlink). The separator
+  runs on the promoted chunk, then the context is trimmed and downmixed to
+  16 kHz mono float onto `<base>_sepchunk_NNN.wav` the same way (callers pass
+  the final path; they must not nest a second `reserve_temp_path`). Peak RAM
+  for a 30-minute chunk is around 3 GB.
 - **Join**: the concat manifest lists every chunk stem as an absolute path,
   because FFmpeg resolves relative entries against the manifest's own
   directory rather than the working directory.
 - **Resume**: `_is_finished_chunk` reuses a chunk stem that is a regular file
   of the expected duration (within 0.5 s); a truncated one is redone. A
   power loss mid-separation costs at most one chunk.
-- **Join**: `concat_audio_files` writes a concat manifest into the scratch
-  directory and stream-copies the stems into `<base>_temp_(Vocals)_chunked.wav`
-  (RF64 when large), again through a reservation; the chunk stems are then
-  removed. The joined name matches the resume scan in
+- **Join**: `concat_audio_files` writes `stems.list` through
+  `atomic_text_writer` and stream-copies the stems into a reserved scratch
+  file promoted onto `<base>_temp_(Vocals)_chunked.wav` (RF64 when large);
+  a planted symlink at either predictable name is refused. The chunk stems
+  are then removed. The joined name matches the resume scan in
   `_get_separated_vocal_path`, which validates it against `*_temp.wav`.
 - **Other stages**: extraction adds `-rf64 auto` so a >17 h source WAV stays
   valid; `faster-whisper` decodes to 16 kHz mono (0.9 GB for 4 h) and windows

@@ -15,7 +15,6 @@ from typing import Any
 
 from modules.media import ffmpeg_utils
 from modules.runtime.logging_utils import log
-from modules.safe_io import discard_temp_path, promote_temp_path, reserve_temp_path
 
 SAMPLE_RATE = 16000
 BLOCK_SECONDS = 600.0
@@ -139,13 +138,8 @@ def _transcode_once(path: str, transcode_path: str, duration: float) -> str:
         "transcoding it once so it can be streamed instead of decoded whole.",
         "WARNING",
     )
-    reservation = reserve_temp_path(transcode_path, scratch_dir=os.path.dirname(os.path.abspath(transcode_path)))
-    try:
-        ffmpeg_utils.write_audio_window(path, reservation.path, 0, duration, mono_16k=True)
-        promote_temp_path(reservation, transcode_path)
-    except BaseException:
-        discard_temp_path(reservation)
-        raise
+    # write_audio_window reserves, writes, and promotes; do not nest another reservation.
+    ffmpeg_utils.write_audio_window(path, transcode_path, 0, duration, mono_16k=True)
     return transcode_path
 
 

@@ -17,7 +17,7 @@ from modules.configuration import asr_settings, config
 from modules.media import ffmpeg_utils
 from modules.models import OPTIMIZER, Segment, apply_dynamic_asr_batch, asr_gpu_shortfall, log_vram
 from modules.runtime.optional_imports import load_optional_torch
-from modules.safe_io import create_private_dir, discard_temp_path, promote_temp_path, reject_symlink, reserve_temp_path
+from modules.safe_io import create_private_dir, reject_symlink
 from modules.utils import log
 
 torch: Any | None = load_optional_torch()
@@ -282,7 +282,7 @@ def _separate_chunk(job, index, total, window):
     try:
         ffmpeg_utils.write_audio_window(job["audio_path"], chunk_input, start - pad_before, length + pad_before + CHUNK_PAD_SECONDS)
         raw_stem = _separate_chunk_input(job, chunk_input, index)
-        _write_chunk_stem(raw_stem, stem_path, pad_before, length, job["work_dir"])
+        _write_chunk_stem(raw_stem, stem_path, pad_before, length)
     finally:
         _discard_file(chunk_input)
     return stem_path
@@ -297,15 +297,13 @@ def _separate_chunk_input(job, chunk_input, index):
     return raw_stem
 
 
-def _write_chunk_stem(raw_stem, stem_path, pad_before, length, work_dir):
-    """Trim the padding off a raw chunk stem and land it atomically as 16 kHz mono."""
-    reservation = reserve_temp_path(stem_path, scratch_dir=work_dir)
+def _write_chunk_stem(raw_stem, stem_path, pad_before, length):
+    """Trim the padding off a raw chunk stem and land it atomically as 16 kHz mono.
+
+    ``write_audio_window`` owns the reservation and promote onto ``stem_path``.
+    """
     try:
-        ffmpeg_utils.write_audio_window(raw_stem, reservation.path, pad_before, length, mono_16k=True)
-        promote_temp_path(reservation, stem_path)
-    except BaseException:
-        discard_temp_path(reservation)
-        raise
+        ffmpeg_utils.write_audio_window(raw_stem, stem_path, pad_before, length, mono_16k=True)
     finally:
         _discard_file(raw_stem)
 
@@ -318,15 +316,14 @@ def _is_finished_chunk(stem_path, length):
 
 
 def _join_chunk_stems(stems, final_path, job):
-    """Concatenate the chunk stems into the resumable vocal track, atomically."""
+    """Concatenate the chunk stems into the resumable vocal track, atomically.
+
+    ``concat_audio_files`` owns the reservation/promote for ``final_path`` and
+    the atomic write of ``stems.list``.
+    """
     list_path = os.path.join(job["scratch_dir"], "stems.list")
-    reservation = reserve_temp_path(final_path, scratch_dir=job["work_dir"])
     try:
-        ffmpeg_utils.concat_audio_files(stems, reservation.path, list_path)
-        promote_temp_path(reservation, final_path)
-    except BaseException:
-        discard_temp_path(reservation)
-        raise
+        ffmpeg_utils.concat_audio_files(stems, final_path, list_path)
     finally:
         _discard_file(list_path)
 

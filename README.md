@@ -18,9 +18,10 @@ performance on any system.
 
 ## **📝 Release Notes**
 
+- v1.3.1: [docs/releases/v1.3.1.md](docs/releases/v1.3.1.md)
 - v1.3.0: [docs/releases/v1.3.0.md](docs/releases/v1.3.0.md)
 - v1.2.9: [docs/releases/v1.2.9.md](docs/releases/v1.2.9.md)
-- GitHub release body (copy-ready): [docs/releases/v1.3.0_github_description.md](docs/releases/v1.3.0_github_description.md)
+- GitHub release body (copy-ready): [docs/releases/v1.3.1_github_description.md](docs/releases/v1.3.1_github_description.md)
 - v1.2.8: [docs/releases/v1.2.8.md](docs/releases/v1.2.8.md)
 - v1.2.7: [docs/releases/v1.2.7.md](docs/releases/v1.2.7.md)
 - v1.2.6: [docs/releases/v1.2.6.md](docs/releases/v1.2.6.md)
