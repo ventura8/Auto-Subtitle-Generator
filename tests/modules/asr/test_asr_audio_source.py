@@ -29,6 +29,12 @@ def _write_fake_wav(path, seconds, rate=SR, channels=1):
         handle.write(f"{rate} {channels} {int(seconds * rate)}")
 
 
+def _write_cmd_bytes(cmd):
+    """Emulate FFmpeg by writing bytes to the command's final output path."""
+    with open(cmd[-1], "wb") as handle:
+        handle.write(b"WAV")
+
+
 def _read_header(path):
     """Parse a fake WAV header; libsndfile-style RuntimeError for anything else."""
     with open(path, encoding="utf-8", errors="replace") as handle:
@@ -274,10 +280,19 @@ class TestTranscodeOnce(_AudioDirTestCase):
     def test_symlinked_transcode_is_refused(self):
         decoy = os.path.join(self.dir, "decoy.wav")
         _write_fake_wav(decoy, 2.0)
+        with open(decoy, "rb") as handle:
+            original = handle.read()
         os.symlink(decoy, self.transcode)
-        with self.assertRaises(SymlinkRefusedError):
-            self._open()
+        # Exercise the real write_audio_window promote path (not a mocked writer).
+        with (
+            patch("modules.media.ffmpeg_utils.run_ffmpeg_quiet", side_effect=_write_cmd_bytes),
+            patch("modules.asr.audio_source.log"),
+            self.assertRaises(SymlinkRefusedError),
+        ):
+            audio_source.open_pcm_source(self.audio, self.transcode)
         self.assertTrue(os.path.islink(self.transcode))
+        with open(decoy, "rb") as handle:
+            self.assertEqual(handle.read(), original)
         self.assertEqual(sorted(os.listdir(self.dir)), ["decoy.wav", "stem.wav", "stem_asr16k.wav"])
 
 

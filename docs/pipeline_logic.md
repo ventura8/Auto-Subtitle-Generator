@@ -241,9 +241,9 @@ graph TD
   the predictable `chunk_NNN.wav` name: it reserves a private scratch file,
   writes there, then promotes (refusing a planted symlink). The separator
   runs on the promoted chunk, then the context is trimmed and downmixed to
-  16 kHz mono float (`write_audio_window(..., mono_16k=True)`) through another
-  reservation onto `<base>_sepchunk_NNN.wav` in the work directory; the raw
-  chunk and stem are deleted. Peak RAM for a 30-minute chunk is around 3 GB.
+  16 kHz mono float onto `<base>_sepchunk_NNN.wav` the same way (callers pass
+  the final path; they must not nest a second `reserve_temp_path`). Peak RAM
+  for a 30-minute chunk is around 3 GB.
 - **Join**: the concat manifest lists every chunk stem as an absolute path,
   because FFmpeg resolves relative entries against the manifest's own
   directory rather than the working directory.
