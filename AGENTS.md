@@ -298,7 +298,14 @@ ______________________________________________________________________
    - Existing outputs are safely skipped when valid subtitles already exist.
      A resumed vocal stem must probe to the same duration as `*_temp.wav`;
      a truncated stem is discarded. A resumed `*.pivot_pivoted.json` must
-     match the current segment timings; a stale one is discarded.
+     match the current segment timings; a stale one is discarded. Candidate
+     resume SRTs (`_read_resume_srt`), English pivot SRTs
+     (`_load_reusable_pivot_srt_data`), and target language outputs
+     (`_classify_target_language_state`) refuse symbolic links/junctions
+     (`is_link`), bind descriptors through `bind_input`, and
+     `modules/subtitles/srt_io.py` opens SRTs without following links
+     (`O_NOFOLLOW` / `_safe_srt_opener`), preventing victim subtitle text
+     from leaking into translated outputs.
 
 1. **Descriptor-Bound Input Reads**:
 

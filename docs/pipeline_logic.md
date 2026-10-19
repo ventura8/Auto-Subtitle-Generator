@@ -110,6 +110,13 @@ graph TD
   configured translation-target SRT files are excluded from source candidates.
   If the recorded source is unavailable, existing SRT discovery remains a
   fallback for resumability.
+- **Symlink hardening**: Candidate resume SRTs (`_read_resume_srt`), English
+  pivot SRTs (`_load_reusable_pivot_srt_data`), and target language outputs
+  (`_classify_target_language_state`) check for and refuse symbolic links or
+  Windows junctions (`is_link`). They bind descriptors using `bind_input` so the
+  validated bytes rather than pathnames are parsed, and
+  `modules/subtitles/srt_io.py` opens files with `O_NOFOLLOW` /
+  `_safe_srt_opener` to prevent victim subtitle leaks.
 
 ### Per-video work directory (defined in `modules/workdir.py`)
 

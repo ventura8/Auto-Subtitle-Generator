@@ -198,13 +198,29 @@ def _is_resume_source_candidate(language, recorded_source_lang):
     return language not in config.TARGET_LANGUAGES or language == recorded_source_lang
 
 
+def _bind_and_parse_resume_srt(srt_path):
+    """Bind candidate resume SRT to a descriptor and parse its cues."""
+    try:
+        with bind_input(srt_path) as bound:
+            if bound is None:
+                log(f"  [Resume] Could not bind SRT {srt_path}", "WARNING")
+                return []
+            return utils.parse_srt(media_source(srt_path)[0])
+    except (OSError, ValueError) as e:
+        log(f"  [Resume] Could not bind SRT {srt_path}: {e}", "WARNING")
+        return []
+
+
 def _read_resume_srt(folder, base_name, lang_code):
     """Read and validate a candidate resume SRT file."""
     srt_path = os.path.join(folder, f"{base_name}.{lang_code}.srt")
     if not os.path.exists(srt_path):
         return None, srt_path
+    if is_link(srt_path):
+        log(f"  [Resume] Refusing linked SRT: {srt_path}", "WARNING")
+        return None, srt_path
 
-    segments = utils.parse_srt(srt_path)
+    segments = _bind_and_parse_resume_srt(srt_path)
     if segments:
         log(f"  [Resume] Found valid SRT: {srt_path}")
         return segments, srt_path

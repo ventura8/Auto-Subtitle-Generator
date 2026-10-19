@@ -1,5 +1,6 @@
 """Tests that translation never reuses a pivot or target SRT made for an older transcription."""
 
+import contextlib
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -35,7 +36,11 @@ class TestStaleTargets(unittest.TestCase):
         patcher = patch.object(config, "TARGET_LANGUAGES", {"es": {"code": "spa_Latn", "label": "Spanish"}})
         patcher.start()
         self.addCleanup(patcher.stop)
-        for target, value in (("os.path.exists", True), ("modules.pipeline.translation.utils.validate_srt", True)):
+        for target, value in (
+            ("os.path.exists", True),
+            ("modules.pipeline.translation.utils.validate_srt", True),
+            ("modules.pipeline.translation.bind_input", contextlib.nullcontext(MagicMock(name="bound"))),
+        ):
             started = patch(target, return_value=value)
             started.start()
             self.addCleanup(started.stop)
@@ -56,10 +61,37 @@ class TestStaleTargets(unittest.TestCase):
             "  [Translate] es subtitles do not match the current source timings (re-transcribed?). Re-doing.", "WARNING"
         )
 
+    def test_verify_bound_target_srt_when_bind_is_none(self):
+        with (
+            patch("modules.pipeline.translation.bind_input", return_value=contextlib.nullcontext(None)),
+            patch("modules.pipeline.translation.log") as mock_log,
+        ):
+            missing, skipped = translation._verify_bound_target_srt("target.srt", "es", SOURCE)
+        self.assertEqual((missing, skipped), (True, False))
+        self.assertIn("Could not bind es SRT", mock_log.call_args[0][0])
+
+    def test_verify_bound_target_srt_when_bind_raises(self):
+        with (
+            patch("modules.pipeline.translation.bind_input", side_effect=OSError("bind fail")),
+            patch("modules.pipeline.translation.log") as mock_log,
+        ):
+            missing, skipped = translation._verify_bound_target_srt("target.srt", "es", SOURCE)
+        self.assertEqual((missing, skipped), (True, False))
+        self.assertIn("Could not bind es SRT", mock_log.call_args[0][0])
+
+    def test_classify_target_language_state_when_not_exists(self):
+        with patch("os.path.exists", return_value=False):
+            missing, skipped = translation._classify_target_language_state("es", "folder", "base", SOURCE)
+        self.assertEqual((missing, skipped), (True, False))
+
 
 class TestStalePivot(unittest.TestCase):
     def setUp(self):
-        for target, value in (("os.path.exists", True), ("modules.pipeline.translation.utils.validate_srt", True)):
+        for target, value in (
+            ("os.path.exists", True),
+            ("modules.pipeline.translation.utils.validate_srt", True),
+            ("modules.pipeline.translation.bind_input", contextlib.nullcontext(MagicMock(name="bound"))),
+        ):
             started = patch(target, return_value=value)
             started.start()
             self.addCleanup(started.stop)
@@ -85,6 +117,34 @@ class TestStalePivot(unittest.TestCase):
         with patch("modules.pipeline.translation._load_reusable_pivot_srt_data", return_value=None) as load:
             translation._build_pivot_config({**context, "source_data": SOURCE}, "input.json", [])
         load.assert_called_once_with("folder", "base", SOURCE)
+
+    def test_read_bound_pivot_srt_when_bind_is_none(self):
+        with (
+            patch("modules.pipeline.translation.bind_input", return_value=contextlib.nullcontext(None)),
+            patch("modules.pipeline.translation.log") as mock_log,
+        ):
+            res = translation._read_bound_pivot_srt("pivot.srt", SOURCE)
+        self.assertIsNone(res)
+        self.assertIn("Could not bind English pivot SRT", mock_log.call_args[0][0])
+
+    def test_read_bound_pivot_srt_when_bind_raises(self):
+        with (
+            patch("modules.pipeline.translation.bind_input", side_effect=OSError("bind error")),
+            patch("modules.pipeline.translation.log") as mock_log,
+        ):
+            res = translation._read_bound_pivot_srt("pivot.srt", SOURCE)
+        self.assertIsNone(res)
+        self.assertIn("Could not bind English pivot SRT", mock_log.call_args[0][0])
+
+    def test_read_bound_pivot_srt_when_invalid_srt(self):
+        with patch("modules.pipeline.translation.utils.parse_srt", return_value=[]):
+            res = translation._read_bound_pivot_srt("pivot.srt", SOURCE)
+        self.assertIsNone(res)
+
+    def test_load_reusable_pivot_srt_data_when_not_exists(self):
+        with patch("os.path.exists", return_value=False):
+            res = translation._load_reusable_pivot_srt_data("folder", "base", SOURCE)
+        self.assertIsNone(res)
 
 
 class TestTranslateSegmentsOrder(unittest.TestCase):
