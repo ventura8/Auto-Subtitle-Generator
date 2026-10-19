@@ -1,5 +1,6 @@
 """End-of-video temp hygiene: nothing left behind on completion, everything kept for resume on failure."""
 
+import contextlib
 import json
 import os
 import tempfile
@@ -344,6 +345,18 @@ class TestResumeAndPivotSymlinkHardening(_WorkDirCase):
     def test_srt_io_parse_and_validate_refuse_symlink(self):
         self.assertFalse(srt_io.validate_srt(self.srt))
         self.assertEqual(srt_io.parse_srt(self.srt), [])
+
+    def test_bind_and_parse_resume_srt_when_bind_is_none(self):
+        with patch("auto_subtitle.bind_input", return_value=contextlib.nullcontext(None)), patch("auto_subtitle.log") as mock_log:
+            res = auto_subtitle._bind_and_parse_resume_srt(self.srt)
+        self.assertEqual(res, [])
+        self.assertIn("Could not bind SRT", mock_log.call_args[0][0])
+
+    def test_bind_and_parse_resume_srt_when_bind_raises(self):
+        with patch("auto_subtitle.bind_input", side_effect=OSError("permission denied")), patch("auto_subtitle.log") as mock_log:
+            res = auto_subtitle._bind_and_parse_resume_srt(self.srt)
+        self.assertEqual(res, [])
+        self.assertIn("Could not bind SRT", mock_log.call_args[0][0])
 
 
 class TestExtractCleanAudioWorkDir(_WorkDirCase):

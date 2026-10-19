@@ -389,6 +389,17 @@ class TestCoverageUtils(unittest.TestCase):
 
         self.assertEqual(timestamp_utils.format_timestamp(-1.25), "00:00:00,000")
 
+    def test_is_untrusted_srt_link_and_unreadable_srt(self):
+        from modules.subtitles import srt_io
+
+        self.assertFalse(srt_io._is_untrusted_srt_link("/dev/fd/10"))
+        with patch("os.path.exists", return_value=False):
+            self.assertTrue(srt_io._is_unreadable_srt("missing.srt"))
+        with patch("os.path.exists", return_value=True), patch("modules.subtitles.srt_io._is_untrusted_srt_link", return_value=True):
+            self.assertTrue(srt_io._is_unreadable_srt("linked.srt"))
+        with patch("os.path.exists", return_value=True), patch("modules.subtitles.srt_io._is_untrusted_srt_link", return_value=False):
+            self.assertFalse(srt_io._is_unreadable_srt("regular.srt"))
+
 
 if __name__ == "__main__":
     unittest.main()
