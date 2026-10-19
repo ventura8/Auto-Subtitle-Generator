@@ -137,7 +137,7 @@ class TestStalePivot(unittest.TestCase):
         self.assertIn("Could not bind English pivot SRT", mock_log.call_args[0][0])
 
     def test_read_bound_pivot_srt_when_invalid_srt(self):
-        with patch("modules.pipeline.translation.utils.validate_srt", return_value=False):
+        with patch("modules.pipeline.translation.utils.parse_srt", return_value=[]):
             res = translation._read_bound_pivot_srt("pivot.srt", SOURCE)
         self.assertIsNone(res)
 

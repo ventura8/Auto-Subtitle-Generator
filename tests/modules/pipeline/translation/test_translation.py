@@ -28,17 +28,17 @@ class TestTranslation(unittest.TestCase):
         bind_patcher.start()
         self.addCleanup(bind_patcher.stop)
 
-    @patch("modules.pipeline.translation.utils.validate_srt", return_value=False)
+    @patch("modules.pipeline.translation.utils.parse_srt", return_value=[])
     @patch("os.path.exists", return_value=True)
-    def test_identify_missing_targets_invalid_srt(self, mock_exists, mock_validate):
+    def test_identify_missing_targets_invalid_srt(self, mock_exists, mock_parse):
         with patch.object(config, "TARGET_LANGUAGES", {"es": {"code": "spa", "label": "Esp"}}):
             missing, skipped = translation._identify_missing_targets("en", "folder", "base")
         self.assertEqual(len(missing), 1)
         self.assertEqual(skipped, 0)
 
-    @patch("modules.pipeline.translation.utils.validate_srt", return_value=True)
+    @patch("modules.pipeline.translation.utils.parse_srt", return_value=[MagicMock(start=0.0, end=1.0, text="hi")])
     @patch("os.path.exists", return_value=True)
-    def test_identify_missing_targets_skipped(self, mock_exists, mock_validate):
+    def test_identify_missing_targets_skipped(self, mock_exists, mock_parse):
         with patch.object(config, "TARGET_LANGUAGES", {"es": {"code": "spa", "label": "Esp"}}):
             missing, skipped = translation._identify_missing_targets("en", "folder", "base")
         self.assertEqual(len(missing), 0)

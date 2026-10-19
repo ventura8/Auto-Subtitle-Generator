@@ -62,10 +62,11 @@ def _verify_bound_target_srt(lang_srt_path, lang, source_data):
                 log(f"  [Translate] Could not bind {lang} SRT {lang_srt_path}. Re-doing.", "WARNING")
                 return True, False
             source = media_source(lang_srt_path)[0]
-            if not utils.validate_srt(source):
+            parsed_segments = utils.parse_srt(source)
+            if not parsed_segments:
                 log(f"  [Translate] Found invalid/corrupt SRT for {lang}. Re-doing.", "WARNING")
                 return True, False
-            if _is_stale_srt(source, source_data):
+            if _is_stale_srt(source, source_data, parsed_segments):
                 log(f"  [Translate] {lang} subtitles do not match the current source timings (re-transcribed?). Re-doing.", "WARNING")
                 return True, False
             return False, True
@@ -87,11 +88,12 @@ def _classify_target_language_state(lang, folder, base_name, source_data=None):
     return _verify_bound_target_srt(lang_srt_path, lang, source_data)
 
 
-def _is_stale_srt(srt_path, source_data):
+def _is_stale_srt(srt_path, source_data, parsed_segments=None):
     """True when the SRT's cue count or millisecond timings differ from ``source_data`` (None: not checked)."""
     if source_data is None:
         return False
-    return not _same_timings(utils.parse_srt(srt_path), source_data)
+    cues = parsed_segments if parsed_segments is not None else utils.parse_srt(srt_path)
+    return not _same_timings(cues, source_data)
 
 
 def _same_timings(cues, source_data):
@@ -240,12 +242,13 @@ def _read_bound_pivot_srt(pivot_srt_path, source_data):
                 log(f"  [Translate] Could not bind English pivot SRT {pivot_srt_path}", "WARNING")
                 return None
             source = media_source(pivot_srt_path)[0]
-            if not utils.validate_srt(source):
+            parsed_segments = utils.parse_srt(source)
+            if not parsed_segments:
                 return None
-            if _is_stale_srt(source, source_data):
+            if _is_stale_srt(source, source_data, parsed_segments):
                 log("  [Translate] English pivot SRT does not match the current source timings; translating a new pivot.", "WARNING")
                 return None
-            return _build_pivot_source_data_from_segments(utils.parse_srt(source))
+            return _build_pivot_source_data_from_segments(parsed_segments)
     except (OSError, ValueError) as e:
         log(f"  [Translate] Could not bind English pivot SRT {pivot_srt_path}: {e}", "WARNING")
         return None
