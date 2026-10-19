@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import unittest
@@ -19,6 +20,13 @@ class TestTranslation(unittest.TestCase):
         previous_target_languages = config.TARGET_LANGUAGES
         self.addCleanup(setattr, config, "TARGET_LANGUAGES", previous_target_languages)
         config.TARGET_LANGUAGES = {"es": {"code": "spa_Latn", "label": "Spanish"}}
+
+        bind_patcher = patch(
+            "modules.pipeline.translation.bind_input",
+            return_value=contextlib.nullcontext(MagicMock(name="bound")),
+        )
+        bind_patcher.start()
+        self.addCleanup(bind_patcher.stop)
 
     @patch("modules.pipeline.translation.utils.validate_srt", return_value=False)
     @patch("os.path.exists", return_value=True)

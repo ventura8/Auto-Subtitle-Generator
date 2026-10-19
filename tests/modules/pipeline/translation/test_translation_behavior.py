@@ -1,3 +1,4 @@
+import contextlib
 import os
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
@@ -176,6 +177,10 @@ class TestCoverageTranslation(unittest.TestCase):
             patch("os.path.exists", return_value=True),
             patch("modules.pipeline.translation.utils.validate_srt", return_value=True),
             patch("modules.pipeline.translation.utils.parse_srt", return_value=pivot_segments),
+            patch(
+                "modules.pipeline.translation.bind_input",
+                return_value=contextlib.nullcontext(MagicMock(name="bound")),
+            ),
             patch("modules.pipeline.translation.atomic_text_writer", mock_open()) as mock_file,
             patch("modules.pipeline.translation.json.dump") as mock_dump,
             patch("modules.pipeline.translation.log") as mock_log,

@@ -57,7 +57,10 @@ def _scan_target_language_states(all_targets, folder, base_name, source_data=Non
 def _verify_bound_target_srt(lang_srt_path, lang, source_data):
     """Verify bound target SRT cues against current source data."""
     try:
-        with bind_input(lang_srt_path, strict=False):
+        with bind_input(lang_srt_path) as bound:
+            if bound is None:
+                log(f"  [Translate] Could not bind {lang} SRT {lang_srt_path}. Re-doing.", "WARNING")
+                return True, False
             source = media_source(lang_srt_path)[0]
             if not utils.validate_srt(source):
                 log(f"  [Translate] Found invalid/corrupt SRT for {lang}. Re-doing.", "WARNING")
@@ -232,7 +235,10 @@ def _build_pivot_source_data_from_segments(segments):
 def _read_bound_pivot_srt(pivot_srt_path, source_data):
     """Bind candidate pivot SRT, validate against source data, and extract cues."""
     try:
-        with bind_input(pivot_srt_path, strict=False):
+        with bind_input(pivot_srt_path) as bound:
+            if bound is None:
+                log(f"  [Translate] Could not bind English pivot SRT {pivot_srt_path}", "WARNING")
+                return None
             source = media_source(pivot_srt_path)[0]
             if not utils.validate_srt(source):
                 return None

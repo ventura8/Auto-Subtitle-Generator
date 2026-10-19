@@ -201,7 +201,10 @@ def _is_resume_source_candidate(language, recorded_source_lang):
 def _bind_and_parse_resume_srt(srt_path):
     """Bind candidate resume SRT to a descriptor and parse its cues."""
     try:
-        with bind_input(srt_path, strict=False):
+        with bind_input(srt_path) as bound:
+            if bound is None:
+                log(f"  [Resume] Could not bind SRT {srt_path}", "WARNING")
+                return []
             return utils.parse_srt(media_source(srt_path)[0])
     except (OSError, ValueError) as e:
         log(f"  [Resume] Could not bind SRT {srt_path}: {e}", "WARNING")

@@ -1,5 +1,6 @@
 """Tests that translation never reuses a pivot or target SRT made for an older transcription."""
 
+import contextlib
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -35,7 +36,11 @@ class TestStaleTargets(unittest.TestCase):
         patcher = patch.object(config, "TARGET_LANGUAGES", {"es": {"code": "spa_Latn", "label": "Spanish"}})
         patcher.start()
         self.addCleanup(patcher.stop)
-        for target, value in (("os.path.exists", True), ("modules.pipeline.translation.utils.validate_srt", True)):
+        for target, value in (
+            ("os.path.exists", True),
+            ("modules.pipeline.translation.utils.validate_srt", True),
+            ("modules.pipeline.translation.bind_input", contextlib.nullcontext(MagicMock(name="bound"))),
+        ):
             started = patch(target, return_value=value)
             started.start()
             self.addCleanup(started.stop)
@@ -59,7 +64,11 @@ class TestStaleTargets(unittest.TestCase):
 
 class TestStalePivot(unittest.TestCase):
     def setUp(self):
-        for target, value in (("os.path.exists", True), ("modules.pipeline.translation.utils.validate_srt", True)):
+        for target, value in (
+            ("os.path.exists", True),
+            ("modules.pipeline.translation.utils.validate_srt", True),
+            ("modules.pipeline.translation.bind_input", contextlib.nullcontext(MagicMock(name="bound"))),
+        ):
             started = patch(target, return_value=value)
             started.start()
             self.addCleanup(started.stop)
