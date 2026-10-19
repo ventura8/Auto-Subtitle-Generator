@@ -10,6 +10,7 @@ from typing import Any
 
 from modules import utils, workdir
 from modules.configuration import config
+from modules.media.input_binding import bind_input, is_link, media_source
 from modules.runtime.optional_imports import load_optional_torch
 from modules.safe_io import atomic_text_writer
 from modules.utils import log
@@ -53,20 +54,34 @@ def _scan_target_language_states(all_targets, folder, base_name, source_data=Non
     return missing_langs, skipped_count
 
 
+def _verify_bound_target_srt(lang_srt_path, lang, source_data):
+    """Verify bound target SRT cues against current source data."""
+    try:
+        with bind_input(lang_srt_path, strict=False):
+            source = media_source(lang_srt_path)[0]
+            if not utils.validate_srt(source):
+                log(f"  [Translate] Found invalid/corrupt SRT for {lang}. Re-doing.", "WARNING")
+                return True, False
+            if _is_stale_srt(source, source_data):
+                log(f"  [Translate] {lang} subtitles do not match the current source timings (re-transcribed?). Re-doing.", "WARNING")
+                return True, False
+            return False, True
+    except (OSError, ValueError) as e:
+        log(f"  [Translate] Could not bind {lang} SRT {lang_srt_path}: {e}. Re-doing.", "WARNING")
+        return True, False
+
+
 def _classify_target_language_state(lang, folder, base_name, source_data=None):
     """Return whether translation is missing and whether an existing output was skipped as valid."""
     lang_srt_path = os.path.join(folder, f"{base_name}.{lang}.srt")
     if not os.path.exists(lang_srt_path):
         return True, False
 
-    if not utils.validate_srt(lang_srt_path):
-        log(f"  [Translate] Found invalid/corrupt SRT for {lang}. Re-doing.", "WARNING")
+    if is_link(lang_srt_path):
+        log(f"  [Translate] Refusing linked {lang} SRT: {lang_srt_path}. Re-doing.", "WARNING")
         return True, False
 
-    if _is_stale_srt(lang_srt_path, source_data):
-        log(f"  [Translate] {lang} subtitles do not match the current source timings (re-transcribed?). Re-doing.", "WARNING")
-        return True, False
-    return False, True
+    return _verify_bound_target_srt(lang_srt_path, lang, source_data)
 
 
 def _is_stale_srt(srt_path, source_data):
@@ -214,17 +229,31 @@ def _build_pivot_source_data_from_segments(segments):
     return [{"text": segment.text.strip(), "start": segment.start, "end": segment.end} for segment in segments if segment.text.strip()]
 
 
+def _read_bound_pivot_srt(pivot_srt_path, source_data):
+    """Bind candidate pivot SRT, validate against source data, and extract cues."""
+    try:
+        with bind_input(pivot_srt_path, strict=False):
+            source = media_source(pivot_srt_path)[0]
+            if not utils.validate_srt(source):
+                return None
+            if _is_stale_srt(source, source_data):
+                log("  [Translate] English pivot SRT does not match the current source timings; translating a new pivot.", "WARNING")
+                return None
+            return _build_pivot_source_data_from_segments(utils.parse_srt(source))
+    except (OSError, ValueError) as e:
+        log(f"  [Translate] Could not bind English pivot SRT {pivot_srt_path}: {e}", "WARNING")
+        return None
+
+
 def _load_reusable_pivot_srt_data(folder, base_name, source_data=None):
     """Load an existing valid English pivot SRT when available and, given ``source_data``, still aligned with it."""
     pivot_srt_path = os.path.join(folder, f"{base_name}.en.srt")
     if not os.path.exists(pivot_srt_path):
         return None
-    if not utils.validate_srt(pivot_srt_path):
+    if is_link(pivot_srt_path):
+        log(f"  [Translate] Refusing linked English pivot SRT: {pivot_srt_path}", "WARNING")
         return None
-    if _is_stale_srt(pivot_srt_path, source_data):
-        log("  [Translate] English pivot SRT does not match the current source timings; translating a new pivot.", "WARNING")
-        return None
-    return _build_pivot_source_data_from_segments(utils.parse_srt(pivot_srt_path))
+    return _read_bound_pivot_srt(pivot_srt_path, source_data)
 
 
 def _build_pivot_config(worker_context, common_input, temp_files):

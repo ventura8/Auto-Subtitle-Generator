@@ -303,6 +303,49 @@ class TestEmbedScratch(_WorkDirCase):
         self.assertIn("Skipping invalid source SRT", mock_log.call_args[0][0])
 
 
+class TestResumeAndPivotSymlinkHardening(_WorkDirCase):
+    def setUp(self):
+        super().setUp()
+        self.srt = os.path.join(self.folder, "movie.en.srt")
+        secret_payload = "1\n00:00:00,000 --> 00:00:01,000\nSECRET_VICTIM_TEXT\n\n"
+        self.secret = self._write(os.path.join(self.folder, "secret_victim.srt"), secret_payload)
+        try:
+            os.symlink(self.secret, self.srt)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest(f"symlinks unavailable: {e}")
+
+    def test_resume_srt_refuses_symlink(self):
+        with patch("auto_subtitle.log") as mock_log:
+            segs, path = auto_subtitle._read_resume_srt(self.folder, "movie", "en")
+        self.assertIsNone(segs)
+        self.assertEqual(path, self.srt)
+        self.assertIn("Refusing linked SRT", mock_log.call_args[0][0])
+
+    def test_check_resume_refuses_symlink(self):
+        with patch("auto_subtitle.log"):
+            segs, lang, path = auto_subtitle._check_resume(self.folder, "movie", "en")
+        self.assertIsNone(segs)
+        self.assertIsNone(lang)
+        self.assertIsNone(path)
+
+    def test_pivot_reuse_refuses_symlink(self):
+        with patch("modules.pipeline.translation.log") as mock_log:
+            data = translation._load_reusable_pivot_srt_data(self.folder, "movie")
+        self.assertIsNone(data)
+        self.assertIn("Refusing linked English pivot SRT", mock_log.call_args[0][0])
+
+    def test_target_reuse_refuses_symlink(self):
+        with patch("modules.pipeline.translation.log") as mock_log:
+            missing, skipped = translation._classify_target_language_state("en", self.folder, "movie")
+        self.assertTrue(missing)
+        self.assertFalse(skipped)
+        self.assertIn("Refusing linked en SRT", mock_log.call_args[0][0])
+
+    def test_srt_io_parse_and_validate_refuse_symlink(self):
+        self.assertFalse(srt_io.validate_srt(self.srt))
+        self.assertEqual(srt_io.parse_srt(self.srt), [])
+
+
 class TestExtractCleanAudioWorkDir(_WorkDirCase):
     def test_extracted_audio_lands_in_work_dir(self):
         def fake_ffmpeg(cmd, _desc, _dur, pass_fds=()):

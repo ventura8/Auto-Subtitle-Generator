@@ -372,6 +372,18 @@ class TestCoverageUtils(unittest.TestCase):
             segs = utils.parse_srt("invalid_time.srt")
             self.assertEqual(segs, [])
 
+    def test_safe_srt_opener_refuses_symlinks_and_allows_proc_fd(self):
+        from modules.subtitles import srt_io
+
+        with patch("os.path.islink", return_value=True):
+            with self.assertRaises(OSError):
+                srt_io._safe_srt_opener("link.srt", os.O_RDONLY)
+
+        with patch("os.open", return_value=99) as mock_open_fn:
+            fd = srt_io._safe_srt_opener("/dev/fd/12", os.O_RDONLY)
+            self.assertEqual(fd, 99)
+            mock_open_fn.assert_called_once_with("/dev/fd/12", os.O_RDONLY)
+
     def test_format_timestamp_clamps_negative_seconds(self):
         from modules.subtitles import timestamp_utils
 

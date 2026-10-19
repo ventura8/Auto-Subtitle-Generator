@@ -221,12 +221,14 @@ global reach:
   tokenizer checkpoint (`BS-Roformer`, `Faster-Whisper`, `Canary`, `Parakeet`,
   `NLLB`, `TranslateGemma`) automatically detects corrupted or truncated downloads,
   purges the stale cache, and re-downloads cleanly without crashing.
-- **Intelligent Skip:**
+- **Intelligent Skip & Safe Resume:**
   - Automatically skips videos that already have a final `_multilang` output for
     the same container extension.
   - Skips individual languages if a valid `.srt` file already exists.
   - Verifies SRT integrity before skipping (re-processes empty or corrupted
     files).
+  - Refuses symbolic links and junctions for resume, English pivot reuse, and
+    target subtitle skips, parsing only descriptor-bound regular files.
 - **Batching & Caching (NLLB only):** The NLLB model is loaded **once** per
   video (in a separate process) to translate all 30+ languages, eliminating
   repetitive loading times.

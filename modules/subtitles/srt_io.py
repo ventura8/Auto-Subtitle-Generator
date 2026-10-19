@@ -96,9 +96,36 @@ def _is_valid_full_srt_content(path):
     return parsed_segments is not None and len(parsed_segments) > 0
 
 
+def _is_untrusted_srt_link(path):
+    """Return True if path is a symlink or junction and not a descriptor-bound path."""
+    if isinstance(path, str) and path.startswith("/dev/fd/"):
+        return False
+    return os.path.islink(path) or getattr(os.path, "isjunction", lambda _p: False)(path)
+
+
+def _safe_srt_opener(file_path, flags):
+    """Opener for SRT files that refuses symbolic links and junctions."""
+    if _is_untrusted_srt_link(file_path):
+        raise OSError(f"Refusing to read through symlink: {file_path}")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if isinstance(file_path, str) and file_path.startswith("/dev/fd/"):
+        return os.open(file_path, flags)
+    return os.open(file_path, flags | nofollow)
+
+
+def _open_srt_reader(path):
+    """Open an SRT file with BOM-tolerant UTF-8 decoding without following symlinks."""
+    return open(path, "r", encoding="utf-8-sig", opener=_safe_srt_opener)
+
+
+def _is_unreadable_srt(path):
+    """Return True when path does not exist or is an untrusted link."""
+    return not os.path.exists(path) or _is_untrusted_srt_link(path)
+
+
 def _validate_and_parse_srt(path):
     """Return (is_valid, parsed_segments, rejection_reason) for one-pass SRT checks."""
-    if not os.path.exists(path):
+    if _is_unreadable_srt(path):
         return False, [], "corrupted"
 
     try:
@@ -116,7 +143,7 @@ def _validate_and_parse_srt(path):
 
 def _read_srt_content(path):
     """Read full SRT content with BOM-tolerant UTF-8 decoding."""
-    with open(path, "r", encoding="utf-8-sig") as file_handle:
+    with _open_srt_reader(path) as file_handle:
         return file_handle.read()
 
 
@@ -147,7 +174,7 @@ def _contains_known_srt_corruption(content):
 
 def _read_and_parse_full_srt(path):
     """Read full SRT and parse every cue, returning None on malformed content."""
-    with open(path, "r", encoding="utf-8-sig") as file_handle:
+    with _open_srt_reader(path) as file_handle:
         full_content = file_handle.read()
     chunks = full_content.split("\n\n")
     return _parse_srt_chunks(chunks, _get_segment_class())
@@ -190,7 +217,7 @@ def _parse_srt_time_range(time_range):
 
 def _read_srt_preview(path):
     """Read first bytes of SRT for fast structural validation."""
-    with open(path, "r", encoding="utf-8-sig") as file_handle:
+    with _open_srt_reader(path) as file_handle:
         return file_handle.read(4096)
 
 
