@@ -1,6 +1,7 @@
 """Tests for ASR engine dispatch, language vote, routing and Whisper fallback in transcription.py."""
 
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
 
@@ -12,6 +13,8 @@ from modules.pipeline import transcription
 
 WORK_DIR = os.path.join("folder", "vid.asg-temp")
 AUDIO = os.path.join(WORK_DIR, "vid_temp.wav")
+# The private staged copy every reader gets; the work-directory path is only checked and returned.
+STAGED = os.path.join("stage", "vid_temp.wav")
 SPANS = [(0.0, 10.0), (12.0, 20.0)]
 
 
@@ -37,7 +40,7 @@ class _DispatchCase(unittest.TestCase):
         self.mm.get_whisper.return_value.transcribe.return_value = _whisper_result()
         self.source = MagicMock()
         self.log = self._patch("modules.pipeline.transcription.log")
-        self._patch("modules.pipeline.transcription._prepare_audio", return_value=AUDIO)
+        self._patch("modules.pipeline.transcription._prepare_audio", return_value=(AUDIO, STAGED))
         self._patch("modules.pipeline.transcription.utils.print_progress_bar")
         self._patch("modules.pipeline.transcription.log_vram")
         self.open_source = self._patch("modules.pipeline.transcription.audio_source.open_pcm_source", return_value=self.source)
@@ -70,6 +73,7 @@ class TestWhisperEngine(_DispatchCase):
         segments, language, path = self._run("whisper")
         self.assertEqual((language, path), ("ro", AUDIO))
         self.assertEqual(len(segments), 1)
+        self.assertEqual(self.mm.get_whisper.return_value.transcribe.call_args.args[0], STAGED)
         self.open_source.assert_not_called()
         self.detect.assert_not_called()
         self.mm.offload_whisper.assert_called_once_with()
@@ -79,6 +83,8 @@ class TestWhisperEngine(_DispatchCase):
         asr_settings._STATE["force_detected_language"] = True
         self._run("whisper")
         self.assertEqual(self.mm.get_whisper.return_value.transcribe.call_args.kwargs["language"], "ro")
+        self.assertEqual(self.mm.get_whisper.return_value.transcribe.call_args.args[0], STAGED)
+        self.open_source.assert_called_once_with(STAGED, os.path.join(WORK_DIR, "vid_asr16k.wav"))
         self.source.close.assert_called_once_with()
         self.mm.get_asr.assert_not_called()
 
@@ -100,7 +106,7 @@ class TestNvidiaEngines(_DispatchCase):
         self.assertEqual([segment.text for segment in segments], ["Unu.", "Doi."])
         request = self.asr_transcribe.call_args.args[3]
         self.assertEqual((request.language, request.batch_size), ("ro", 4))
-        self.open_source.assert_called_once_with(AUDIO, os.path.join(WORK_DIR, "vid_asr16k.wav"))
+        self.open_source.assert_called_once_with(STAGED, os.path.join(WORK_DIR, "vid_asr16k.wav"))
         self.source.close.assert_called_once_with()
 
     def test_parakeet_with_detected_language(self):
@@ -202,10 +208,31 @@ class TestAutoEngine(_DispatchCase):
 
 class TestWorkDirGuard(_DispatchCase):
     def test_audio_outside_the_work_directory_is_refused(self):
-        with patch("modules.pipeline.transcription._prepare_audio", return_value=os.path.join("elsewhere", "a.wav")):
+        audio = (os.path.join("elsewhere", "a.wav"), STAGED)
+        with patch("modules.pipeline.transcription._prepare_audio", return_value=audio):
             with self.assertRaisesRegex(ValueError, "must come from the work directory"):
                 self._run("canary")
         self.open_source.assert_not_called()
+
+    def test_containment_is_checked_on_the_work_path_and_the_job_reads_the_staged_copy(self):
+        video = os.path.join("folder", "vid.mp4")
+        job = transcription._asr_job("canary", video, (AUDIO, STAGED), self.mm)
+        self.assertEqual(job.audio_path, STAGED)
+        self.assertEqual(job.transcode_path, os.path.join(WORK_DIR, "vid_asr16k.wav"))
+        with self.assertRaisesRegex(ValueError, "must come from the work directory"):
+            transcription._asr_job("canary", video, (STAGED, AUDIO), self.mm)
+
+    def test_link_at_the_work_path_is_not_resolved_by_the_guard(self):
+        with tempfile.TemporaryDirectory() as root:
+            work_dir = os.path.join(root, "vid.asg-temp")
+            os.mkdir(work_dir)
+            stem = os.path.join(work_dir, "vid_temp_(Vocals)_m.wav")
+            try:
+                os.symlink(os.path.join(root, "victim.wav"), stem)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks unavailable: {error}")
+            job = transcription._asr_job("canary", os.path.join(root, "vid.mp4"), (stem, STAGED), self.mm)
+        self.assertEqual(job.audio_path, STAGED)
 
 
 if __name__ == "__main__":

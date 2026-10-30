@@ -10,7 +10,7 @@ from typing import Any
 
 from modules import utils, workdir
 from modules.configuration import config
-from modules.media.input_binding import bind_input, is_link, media_source
+from modules.media.input_binding import bind_input, is_link, media_source, open_bound_input
 from modules.runtime.optional_imports import load_optional_torch
 from modules.safe_io import atomic_text_writer
 from modules.utils import log
@@ -142,12 +142,24 @@ def _process_completed_output(output_file, lang, segments, folder, base_name):
         return False
 
 
+def _read_work_file(path):
+    """Return the bytes of a work-directory file opened without following links.
+
+    The work directory sits in the untrusted input folder; a link planted at a
+    worker output or the manifest name must never be read through.
+    """
+    bound = open_bound_input(path)
+    file_handle = os.fdopen(bound.fd, "rb")
+    bound.fd = None
+    with file_handle:
+        return file_handle.read()
+
+
 def _load_translation_output_with_retry(output_file, retries=3, sleep_seconds=0.1):
     """Load translation JSON output with short retries for writer race conditions."""
     for _ in range(retries):
         try:
-            with open(output_file, "r", encoding="utf-8") as file_handle:
-                return json.load(file_handle)
+            return json.loads(_read_work_file(output_file))
         except (OSError, json.JSONDecodeError):
             time.sleep(sleep_seconds)
     raise RuntimeError(f"Could not read {output_file}")
@@ -396,8 +408,7 @@ def _cleanup_temp_files(temp_files):
 def _send_manifest_to_worker(proc, manifest_path):
     """Write the manifest to the worker's stdin and close it."""
     try:
-        with open(manifest_path, "rb") as handle:
-            proc.stdin.write(handle.read())
+        proc.stdin.write(_read_work_file(manifest_path))
     finally:
         proc.stdin.close()
 

@@ -120,6 +120,10 @@ ______________________________________________________________________
   build; never pin a rolling autobuild that upstream prunes.
 - Do not add a build/vendor step for a dependency that can be installed via the
   platform package manager or an existing wheel.
+- pip and Poetry are installed from the hash-locked `bootstrap-requirements.txt`
+  (`--require-hashes --only-binary=:all:`) by both installers and every CI job.
+  Never `pip install poetry` (or upgrade pip) unpinned; regenerate the file with
+  the command in its header when bumping either version.
 
 ______________________________________________________________________
 
@@ -230,18 +234,29 @@ ______________________________________________________________________
      only the work directory on the command line:
      `isolated_translator.py --batch-stdin <work_dir>`. There is no
      `--batch <manifest path>` mode; do not reintroduce one.
-   - `_load_contained_manifest(stream, work_dir)` then confines every `input`,
-     `output` and `en_output` the manifest carries to that work directory,
-     raising `ManifestPathError` otherwise, and `_work_root_from_argument`
-     refuses a work directory that does not end in `WORK_DIR_SUFFIX`. The work
-     directory is only ever compared against job paths, never opened.
-   - That containment is **load-time validation**, not a binding: each path is
-     resolved once and opened by name later. Job inputs and outputs are not yet
-     descriptor-bound the way `modules/safe_io.py` and `modules/workdir.py`
-     bind theirs, so a work directory replaced between validation and use is
-     still a gap. Do not describe it as a guarantee.
-   - **Never** open a path taken from the manifest without passing it through
-     that containment first.
+   - `_load_contained_manifest(stream, work_dir)` then requires every `input`,
+     `output` and `en_output` the manifest carries to name an entry
+     **directly** inside that work directory, raising `ManifestPathError`
+     otherwise, and `_work_root_from_argument` refuses a work directory that
+     does not end in `WORK_DIR_SUFFIX`.
+   - The directory the validated job paths live in (`_job_directory`, i.e.
+     the work directory) is then **held** before the model loads
+     (`modules/held_dir.py`, `HeldDirectory`, in the `_held_work_dir` slot);
+     the command-line value stays a comparison operand and is never opened.
+     Every job read, existence check, write and unlink goes through it: on
+     POSIX relative to the `O_NOFOLLOW` directory descriptor (`dir_fd`) with
+     entries opened `O_NOFOLLOW` and required to be regular files; on Windows
+     after re-verifying the directory identity and a link/junction check, with
+     reads comparing the opened file's identity to its `lstat`. The Windows
+     path is re-verification, not a binding; do not describe it as one.
+   - Worker JSON is written through the descriptor of an exclusively created
+     `.asg-tmp-<hex>.tmp` entry and renamed only while that entry is still the
+     one created. **Never** `mkstemp`/close then reopen a temp file by name.
+     The legacy single-file mode writes through `safe_io.atomic_text_writer`.
+   - The parent reads worker outputs and the manifest it pipes through
+     `translation._read_work_file` (`open_bound_input`, links refused).
+   - **Never** open a path taken from the manifest except through the held
+     work directory.
 
 1. **Per-Video Work Directory & Temp Hygiene** (`modules/workdir.py`):
 
@@ -252,10 +267,25 @@ ______________________________________________________________________
      NVIDIA ASR engines stream from (long non-16 kHz inputs only),
      `*.common_input.json`, `*.manifest.json`,
      `*.pivot_pivoted.json`, `.temp_output.*.json` worker outputs and their
-     `.tmp` staging files, `*.source_lang.txt`, and every `.asg-tmp-*`
-     scratch entry (including the ones backing SRT and `_multilang` writes).
-     Only deliverables (`<base>.<lang>.srt`, `<base>_multilang.<ext>`) are
-     written beside the video. **Never** create a temp file anywhere else.
+     `.asg-tmp-<hex>.tmp` staging entries, `*.source_lang.txt`, and every
+     `.asg-tmp-*` scratch entry (including the ones backing SRT and
+     `_multilang` writes). Only deliverables (`<base>.<lang>.srt`,
+     `<base>_multilang.<ext>`) are written beside the video. **Never** create
+     a temp file anywhere else in the input tree; the only exception is the
+     private audio stage below, which lives *outside* it.
+   - **Private audio stage** (`modules/media/audio_stage.py`): the work
+     directory stays listable and writable to the input folder's owner, so no
+     model or tool reads it, or writes into it by a predictable name, after a
+     model load. `transcribe_video_audio` opens an `AudioStage`
+     (`tempfile.mkdtemp()` under `%TEMP%`/`$TMPDIR`, removed afterwards);
+     work-directory audio enters it through `import_file` (bytes copied from
+     an `open_bound_input` descriptor) **before** any model loads.
+     Audio-Separator reads the staged audio and writes into a stage
+     sub-directory; chunk inputs/stems and the joined vocal track are made
+     in the stage and copied into the work directory with
+     `safe_io.copy_file_into` only for resume. Whisper, the language vote and
+     the NVIDIA engines read the staged copy; the `<base>_asr16k.wav`
+     transcode is opened once through `open_bound_input` and held.
    - Terminal states (muxed output written, output already present, or no
      speech) purge the work directory with `workdir.purge_work_dir` and sweep
      legacy sidecars beside the video with `utils.cleanup_temp_files`. Any
@@ -293,8 +323,9 @@ ______________________________________________________________________
      listable work-/scratch-directory under it. Chunked vocal separation lands
      `chunk_NNN.wav` and `stems.list` through `reserve_temp_path` /
      `atomic_text_writer` then promote (`write_audio_window`,
-     `concat_audio_files`); Audio-Separator still writes into a private
-     scratch directory and only the finished vocal stem is moved out.
+     `concat_audio_files`). Audio-Separator, which writes its stems by
+     pathname, is pointed only at a sub-directory of the private audio stage
+     outside the input tree, never at anything under the work directory.
    - Existing outputs are safely skipped when valid subtitles already exist.
      A resumed vocal stem must probe to the same duration as `*_temp.wav`;
      a truncated stem is discarded. A resumed `*.pivot_pivoted.json` must
@@ -348,9 +379,10 @@ ______________________________________________________________________
      `config.SEPARATION_CHUNK_MINUTES` (default 30; 0 disables) are
      separated window by window in `modules/pipeline/transcription.py`:
      each window is cut with 2 s of context on both sides, separated in the
-     private scratch directory, trimmed back to the window and downmixed to
-     16 kHz mono as `<base>_sepchunk_NNN.wav` in the work directory, then
-     all stems are joined with the FFmpeg concat demuxer. A finished chunk
+     private audio stage, trimmed back to the window and downmixed to
+     16 kHz mono as a staged `<base>_sepchunk_NNN.wav` (copied into the work
+     directory for resume), then the staged stems are joined with the FFmpeg
+     concat demuxer. A finished chunk
      stem of the right duration is reused on resume. A tail shorter than
      60 s folds into the previous window.
    - Every WAV FFmpeg writes carries `-rf64 auto`, so nothing breaks at the

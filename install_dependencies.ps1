@@ -316,12 +316,11 @@ else {
 Write-Information "`nStep 4: Installing Dependencies via Poetry..."
 
 try {
-    $setupPhase = "Upgrading pip"
-    Invoke-CheckedCommand $VenvPy @("-m", "pip", "install", "--upgrade", "pip")
-
-    $setupPhase = "Installing Poetry"
-    Write-Information "Installing Poetry in the virtual environment..."
-    Invoke-CheckedCommand $VenvPy @("-m", "pip", "install", "poetry")
+    # pip and Poetry come from a hash-locked file: an unpinned install would run
+    # whatever PyPI serves at that moment as this user.
+    $setupPhase = "Installing pip and Poetry"
+    Write-Information "Installing hash-locked pip and Poetry in the virtual environment..."
+    Invoke-CheckedCommand $VenvPy @("-m", "pip", "install", "--require-hashes", "--only-binary=:all:", "-r", "$PSScriptRoot\bootstrap-requirements.txt")
 
     $setupPhase = "Configuring Poetry"
     Write-Information "Configuring Poetry and installing runtime dependencies..."

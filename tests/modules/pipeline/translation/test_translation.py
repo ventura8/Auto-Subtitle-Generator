@@ -118,10 +118,8 @@ class TestTranslation(unittest.TestCase):
         fake_translation = [{"text": "Hola", "start": 0.0, "end": 1.0}]
         fake_json = json.dumps(fake_translation)
 
-        m_open = mock_open(read_data=fake_json)
-
         with (
-            patch("builtins.open", m_open),
+            patch("modules.pipeline.translation._read_work_file", return_value=fake_json.encode("utf-8")) as mock_read,
             patch("modules.workdir.ensure_work_dir", side_effect=_fake_work_dir),
             patch("modules.pipeline.translation.atomic_text_writer", mock_open()),
             patch("modules.pipeline.translation.subprocess.TimeoutExpired", FakeTimeoutExpired),
@@ -132,6 +130,10 @@ class TestTranslation(unittest.TestCase):
         mock_popen.assert_called()
         # Should have saved SRT (because output file "appeared")
         mock_save.assert_called()
+        # The manifest and the worker output are both read through the no-follow reader.
+        read_paths = [call.args[0] for call in mock_read.call_args_list]
+        self.assertTrue(any(path.endswith(".manifest.json") for path in read_paths))
+        self.assertTrue(any("temp_output" in path for path in read_paths))
 
 
 if __name__ == "__main__":

@@ -7,10 +7,50 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
+from modules.held_dir import HeldDirectory
+from modules.safe_io import DIR_FD_SUPPORTED, SCRATCH_PREFIX, SymlinkRefusedError
+
 isolated_translator = importlib.import_module("modules.pipeline.isolated_translator")
 
 
-class TestCoverageIsolated(unittest.TestCase):
+def _release_held_work_dir():
+    """Close and clear the worker's held work directory so no state leaks between tests."""
+    held = isolated_translator._held_work_dir[0]
+    if held is not None:
+        held.close()
+    isolated_translator._held_work_dir[0] = None
+
+
+def _hold_work_dir(work_dir):
+    """Hold ``work_dir`` the way a validated batch manifest does."""
+    isolated_translator._hold_work_dir(work_dir)
+
+
+def _write_json_file(path, payload):
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+
+def _read_json_file(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+class _WorkDirCase(unittest.TestCase):
+    """Base case with a real ``*.asg-temp`` work directory under a private temp root."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.work_dir = os.path.join(self.root, "movie.asg-temp")
+        os.mkdir(self.work_dir)
+        self.addCleanup(_release_held_work_dir)
+
+    def work_path(self, name):
+        return os.path.join(self.work_dir, name)
+
+
+class TestCoverageIsolated(_WorkDirCase):
     def test_resolve_translation_batch_size_translategemma(self):
         with (
             patch("modules.pipeline.isolated_translator.config.TRANSLATOR_ENGINE", "translategemma"),
@@ -56,14 +96,15 @@ class TestCoverageIsolated(unittest.TestCase):
         mock_log.assert_called_once()
 
     def test_wait_for_parent_timeout(self):
+        output_file = self.work_path("out.json")
+        _write_json_file(output_file, [])
         time_values = [0.0, 11.0, 11.2]
         with (
-            patch("os.path.exists", return_value=True),
             patch("time.time", side_effect=time_values),
             patch("time.sleep"),
             patch("modules.pipeline.isolated_translator.log") as mock_log,
         ):
-            isolated_translator._wait_for_parent_to_consume_output("out.json", "ro")
+            isolated_translator._wait_for_parent_to_consume_output(output_file, "ro")
             mock_log.assert_called()
 
     def test_run_translation_worker_batch_size_zero(self):
@@ -248,51 +289,41 @@ class TestCoverageIsolated(unittest.TestCase):
                 isolated_translator._process_single_job(job, 0, 1, translator)
             self.assertTrue(any("Job fr failed" in str(call.args[0]) for call in mock_log.call_args_list if call.args))
 
-    def test_run_pivot_phase_writes_segment_dicts(self):
-        pivot_job = {
-            "input": "pivot_input.json",
-            "output": "pivot_output.json",
+    def _pivot_job(self, emit_en_output=True):
+        return {
+            "input": self.work_path("pivot_input.json"),
+            "output": self.work_path("pivot_output.json"),
             "src_code": "ron_Latn",
             "tgt_code": "eng_Latn",
-            "emit_en_output": True,
-            "en_output": "en_output.json",
+            "emit_en_output": emit_en_output,
+            "en_output": self.work_path("en_output.json"),
         }
+
+    def test_run_pivot_phase_writes_segment_dicts(self):
+        _hold_work_dir(self.work_dir)
+        pivot_job = self._pivot_job()
         source_data = [{"text": "salut", "start": 0.0, "end": 1.0}]
-        translations = ["hello"]
+        _write_json_file(pivot_job["input"], source_data)
 
         with (
-            patch("modules.pipeline.isolated_translator._load_segments", return_value=source_data),
-            patch("modules.pipeline.isolated_translator._run_job_batches", return_value=translations),
+            patch("modules.pipeline.isolated_translator._run_job_batches", return_value=["hello"]),
             patch("modules.pipeline.isolated_translator._save_job_translations") as mock_save_en,
-            patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "pivot_output.tmp")),
-            patch("modules.pipeline.isolated_translator.os.close") as mock_close,
-            patch("modules.pipeline.isolated_translator.os.replace") as mock_replace,
-            patch("modules.pipeline.isolated_translator.open", mock_open()),
-            patch("modules.pipeline.isolated_translator.json.dump") as mock_dump,
             patch("modules.pipeline.isolated_translator.log"),
         ):
             isolated_translator._run_pivot_phase(pivot_job, MagicMock())
 
-            dumped_payload = mock_dump.call_args[0][0]
-            self.assertEqual(dumped_payload, [{"text": "hello", "start": 0.0, "end": 1.0}])
-            mock_close.assert_called_once_with(99)
-            mock_replace.assert_called_once_with("pivot_output.tmp", "pivot_output.json")
-            mock_save_en.assert_called_once_with("en_output.json", ["hello"], source_data)
+        self.assertEqual(_read_json_file(pivot_job["output"]), [{"text": "hello", "start": 0.0, "end": 1.0}])
+        mock_save_en.assert_called_once_with(pivot_job["en_output"], ["hello"], source_data)
+        self.assertEqual(sorted(os.listdir(self.work_dir)), ["pivot_input.json", "pivot_output.json"])
 
     def test_run_pivot_phase_reuses_existing_output(self):
-        pivot_job = {
-            "input": "pivot_input.json",
-            "output": "pivot_output.json",
-            "src_code": "ron_Latn",
-            "tgt_code": "eng_Latn",
-            "emit_en_output": True,
-            "en_output": "en_output.json",
-        }
+        _hold_work_dir(self.work_dir)
+        pivot_job = self._pivot_job()
         pivot_data = [{"text": "hello", "start": 0.0, "end": 1.0}]
+        _write_json_file(pivot_job["input"], [{"text": "salut", "start": 0.0, "end": 1.0}])
+        _write_json_file(pivot_job["output"], pivot_data)
 
         with (
-            patch("os.path.exists", return_value=True),
-            patch("modules.pipeline.isolated_translator._load_segments", return_value=pivot_data),
             patch("modules.pipeline.isolated_translator._run_job_batches") as mock_run_batches,
             patch("modules.pipeline.isolated_translator._save_pivot_output_atomic") as mock_save_pivot,
             patch("modules.pipeline.isolated_translator._save_job_translations") as mock_save_en,
@@ -302,7 +333,7 @@ class TestCoverageIsolated(unittest.TestCase):
 
         mock_run_batches.assert_not_called()
         mock_save_pivot.assert_not_called()
-        mock_save_en.assert_called_once_with("en_output.json", ["hello"], pivot_data)
+        mock_save_en.assert_called_once_with(pivot_job["en_output"], ["hello"], pivot_data)
         mock_log.assert_any_call("[Isolation] Reusing existing pivot output. Skipping pivot pass.")
 
     def test_run_batch_translation_worker_skips_jobs_when_pivot_fails(self):
@@ -343,87 +374,102 @@ class TestCoverageIsolated(unittest.TestCase):
                 isolated_translator._run_pivot_phase(pivot_job, translator)
             self.assertTrue(any("Pivot phase failed" in str(call.args[0]) for call in mock_log.call_args_list if call.args))
 
-    def test_save_worker_output_error_cleanup(self):
-        with (
-            patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "test_temp.tmp")),
-            patch("modules.pipeline.isolated_translator.os.close"),
-            patch("builtins.open", mock_open()),
-            patch("modules.pipeline.isolated_translator.json.dump", side_effect=OSError("Disk full")),
-            patch("os.path.exists", return_value=True),
-            patch("os.remove") as mock_remove,
-        ):
+    def _assert_failed_write_leaves_destination_alone(self, write, failure_target):
+        """A write that fails mid-way removes its scratch entry and never touches the destination."""
+        destination = self.work_path("out.json")
+        _write_json_file(destination, ["previous"])
+        with patch(failure_target, side_effect=OSError("boom")):
             with self.assertRaises(OSError):
-                isolated_translator._save_worker_output("out.json", ["test"])
-            mock_remove.assert_called_once_with("test_temp.tmp")
+                write(destination)
+        self.assertEqual(os.listdir(self.work_dir), ["out.json"])
+        self.assertEqual(_read_json_file(self.work_path("out.json")), ["previous"])
+
+    def test_save_worker_output_error_cleanup(self):
+        _hold_work_dir(self.work_dir)
+        self._assert_failed_write_leaves_destination_alone(
+            lambda path: isolated_translator._save_worker_output(path, ["test"]),
+            "modules.pipeline.isolated_translator.json.dump",
+        )
 
     def test_save_worker_output_replace_error_cleanup(self):
-        with (
-            patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "test_temp.tmp")),
-            patch("modules.pipeline.isolated_translator.os.close"),
-            patch("builtins.open", mock_open()),
-            patch("modules.pipeline.isolated_translator.json.dump"),
-            patch("os.replace", side_effect=OSError("Replace failed")),
-            patch("os.path.exists", return_value=True),
-            patch("os.remove") as mock_remove,
-        ):
-            with self.assertRaises(OSError):
-                isolated_translator._save_worker_output("out.json", ["test"])
-            mock_remove.assert_called_once_with("test_temp.tmp")
+        _hold_work_dir(self.work_dir)
+        self._assert_failed_write_leaves_destination_alone(
+            lambda path: isolated_translator._save_worker_output(path, ["test"]),
+            "os.replace",
+        )
 
     def test_save_job_translations_error_cleanup(self):
-        with (
-            patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "test_job_temp.tmp")),
-            patch("modules.pipeline.isolated_translator.os.close"),
-            patch("builtins.open", mock_open()),
-            patch("modules.pipeline.isolated_translator.json.dump", side_effect=OSError("Disk full")),
-            patch("os.path.exists", return_value=True),
-            patch("os.remove") as mock_remove,
-        ):
-            with self.assertRaises(OSError):
-                isolated_translator._save_job_translations("out.json", ["test"], [{"text": "orig"}])
-            mock_remove.assert_called_once_with("test_job_temp.tmp")
+        _hold_work_dir(self.work_dir)
+        self._assert_failed_write_leaves_destination_alone(
+            lambda path: isolated_translator._save_job_translations(path, ["test"], [{"text": "orig"}]),
+            "modules.pipeline.isolated_translator.json.dump",
+        )
 
     def test_save_job_translations_replace_error_cleanup(self):
-        with (
-            patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "test_job_temp.tmp")),
-            patch("modules.pipeline.isolated_translator.os.close"),
-            patch("builtins.open", mock_open()),
-            patch("modules.pipeline.isolated_translator.json.dump"),
-            patch("os.replace", side_effect=OSError("Replace failed")),
-            patch("os.path.exists", return_value=True),
-            patch("os.remove") as mock_remove,
-        ):
-            with self.assertRaises(OSError):
-                isolated_translator._save_job_translations("out.json", ["test"], [{"text": "orig"}])
-            mock_remove.assert_called_once_with("test_job_temp.tmp")
+        _hold_work_dir(self.work_dir)
+        self._assert_failed_write_leaves_destination_alone(
+            lambda path: isolated_translator._save_job_translations(path, ["test"], [{"text": "orig"}]),
+            "os.replace",
+        )
 
     def test_save_pivot_output_atomic_replace_error_cleanup(self):
-        with (
-            patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "test_pivot_temp.tmp")),
-            patch("modules.pipeline.isolated_translator.os.close"),
-            patch("builtins.open", mock_open()),
-            patch("modules.pipeline.isolated_translator.json.dump"),
-            patch("os.replace", side_effect=OSError("Replace failed")),
-            patch("os.path.exists", return_value=True),
-            patch("os.remove") as mock_remove,
-        ):
-            with self.assertRaises(OSError):
-                isolated_translator._save_pivot_output_atomic("pivot_out.json", [{"text": "orig"}])
-            mock_remove.assert_called_once_with("test_pivot_temp.tmp")
+        _hold_work_dir(self.work_dir)
+        self._assert_failed_write_leaves_destination_alone(
+            lambda path: isolated_translator._save_pivot_output_atomic(path, [{"text": "orig"}]),
+            "os.replace",
+        )
+
+    def test_legacy_mode_write_failure_leaves_destination_alone(self):
+        """Without a held directory (single-file mode) writes go through ``safe_io``."""
+        self._assert_failed_write_leaves_destination_alone(
+            lambda path: isolated_translator._save_worker_output(path, ["test"]),
+            "modules.pipeline.isolated_translator.json.dump",
+        )
+
+    def test_legacy_mode_write_and_read_round_trip(self):
+        output_file = self.work_path("out.json")
+        isolated_translator._save_worker_output(output_file, ["hola"])
+
+        self.assertEqual(isolated_translator._load_segments(output_file), ["hola"])
+        self.assertTrue(isolated_translator._output_exists(output_file))
+        isolated_translator._discard_temp_file(output_file)
+        self.assertFalse(isolated_translator._output_exists(output_file))
+
+    def test_discard_temp_file_ignores_empty_path_and_errors(self):
+        isolated_translator._discard_temp_file("")
+        isolated_translator._discard_temp_file(None)
+        with patch("modules.pipeline.isolated_translator.os.path.lexists", side_effect=OSError("denied")):
+            isolated_translator._discard_temp_file(self.work_path("out.json"))
+
+    def test_discard_temp_file_removes_through_the_held_directory(self):
+        _hold_work_dir(self.work_dir)
+        _write_json_file(self.work_path("out.json"), [])
+
+        isolated_translator._discard_temp_file(self.work_path("out.json"))
+        isolated_translator._discard_temp_file(self.work_path("missing.json"))
+
+        self.assertEqual(os.listdir(self.work_dir), [])
+
+    def test_held_mode_refuses_a_path_outside_the_work_directory(self):
+        _hold_work_dir(self.work_dir)
+        victim = os.path.join(self.root, "victim.json")
+        _write_json_file(victim, ["secret"])
+
+        with self.assertRaises(SymlinkRefusedError):
+            isolated_translator._load_segments(victim)
+
+    def test_hold_work_dir_closes_the_previous_directory(self):
+        _hold_work_dir(self.work_dir)
+        first = isolated_translator._held_work_dir[0]
+
+        _hold_work_dir(self.work_dir)
+
+        self.assertIsNot(isolated_translator._held_work_dir[0], first)
+        self.assertIsNone(first.fd)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestManifestPathContainment(unittest.TestCase):
+class TestManifestPathContainment(_WorkDirCase):
     """The worker must refuse manifest paths that point outside the work directory."""
-
-    def setUp(self):
-        self.root = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.root, True)
-        self.work_dir = os.path.join(self.root, "movie.asg-temp")
-        os.mkdir(self.work_dir)
 
     def _load(self, payload, work_dir=None):
         return isolated_translator._load_contained_manifest(io.StringIO(json.dumps(payload)), work_dir or self.work_dir)
@@ -477,3 +523,142 @@ class TestManifestPathContainment(unittest.TestCase):
     def test_work_directory_without_the_suffix_is_refused(self):
         with self.assertRaises(isolated_translator.ManifestPathError):
             self._load({"jobs": []}, work_dir=self.root)
+
+    def test_validated_manifest_holds_the_work_directory(self):
+        self._load({"jobs": [{"input": self.work_path("in.json"), "output": self.work_path("out.json")}], "pivot": None})
+
+        held = isolated_translator._held_work_dir[0]
+        self.assertIsInstance(held, HeldDirectory)
+        self.assertEqual(held.path, self.work_dir)
+
+    def test_manifest_without_paths_holds_nothing_and_releases_the_previous_directory(self):
+        _hold_work_dir(self.work_dir)
+        previous = isolated_translator._held_work_dir[0]
+
+        self._load({"jobs": [], "pivot": None})
+
+        self.assertIsNone(isolated_translator._held_work_dir[0])
+        self.assertIsNone(previous.fd)
+
+    def test_job_directory_reads_a_pivot_only_manifest(self):
+        manifest = {"jobs": [], "pivot": {"input": self.work_path("in.json")}}
+
+        self.assertEqual(isolated_translator._job_directory(manifest), self.work_dir)
+
+    def test_job_directory_is_none_without_any_path(self):
+        self.assertIsNone(isolated_translator._job_directory({"jobs": [{}], "pivot": None}))
+
+    def test_refused_manifest_does_not_hold_the_work_directory(self):
+        payload = {"jobs": [{"input": os.path.join(self.root, "in.json"), "output": self.work_path("out.json")}]}
+
+        with self.assertRaises(isolated_translator.ManifestPathError):
+            self._load(payload)
+
+        self.assertIsNone(isolated_translator._held_work_dir[0])
+
+    def test_manifest_path_in_a_sub_directory_is_refused(self):
+        os.mkdir(self.work_path("nested"))
+        nested = os.path.join(self.work_dir, "nested", "in.json")
+        payload = {"jobs": [{"input": nested, "output": self.work_path("out.json")}]}
+
+        with self.assertRaises(isolated_translator.ManifestPathError):
+            self._load(payload)
+
+    def test_manifest_path_naming_the_work_directory_itself_is_refused(self):
+        payload = {"jobs": [{"input": self.work_dir, "output": self.work_path("out.json")}]}
+
+        with self.assertRaises(isolated_translator.ManifestPathError):
+            self._load(payload)
+
+
+class TestHeldWorkDirectoryRegression(_WorkDirCase):
+    """Paths validated against the manifest must not be followed after a swap during model load."""
+
+    def setUp(self):
+        super().setUp()
+        self.input_file = self.work_path("movie.common_input.json")
+        self.output_file = self.work_path(".temp_output.movie.fr.json")
+        _write_json_file(self.input_file, [{"text": "Bonjour", "start": 0.0, "end": 1.0}])
+        self.victim = os.path.join(self.root, "victim.json")
+        _write_json_file(self.victim, [{"text": "VICTIM SECRET", "start": 0.0, "end": 1.0}])
+        payload = {"jobs": [{"lang": "fr", "tgt_code": "fra_Latn", "input": self.input_file, "output": self.output_file}]}
+        self.manifest = isolated_translator._load_contained_manifest(io.StringIO(json.dumps(payload)), self.work_dir)
+
+    def _victim_text(self):
+        return _read_json_file(self.victim)[0]["text"]
+
+    def test_job_input_swapped_for_a_symlink_is_not_read(self):
+        os.remove(self.input_file)
+        os.symlink(self.victim, self.input_file)
+        translator = MagicMock()
+
+        with patch("modules.pipeline.isolated_translator.log"):
+            with self.assertRaises(OSError):
+                isolated_translator._process_single_job(self.manifest["jobs"][0], 0, 1, translator)
+
+        translator.translate.assert_not_called()
+
+    def test_symlinked_input_never_reaches_the_loaded_segments(self):
+        os.remove(self.input_file)
+        os.symlink(self.victim, self.input_file)
+
+        with self.assertRaises(OSError):
+            isolated_translator._load_segments(self.input_file)
+
+    @unittest.skipUnless(DIR_FD_SUPPORTED, "dir_fd binding is POSIX only")
+    def test_replaced_work_directory_does_not_redirect_outputs(self):
+        elsewhere = os.path.join(self.root, "elsewhere")
+        os.mkdir(elsewhere)
+        moved = self.work_dir + ".moved"
+        os.rename(self.work_dir, moved)
+        os.symlink(elsewhere, self.work_dir)
+
+        isolated_translator._save_job_translations(self.output_file, ["Hello"], [{"text": "Bonjour"}])
+
+        self.assertEqual(os.listdir(elsewhere), [])
+        self.assertEqual(_read_json_file(os.path.join(moved, os.path.basename(self.output_file))), ["Hello"])
+
+    @unittest.skipUnless(DIR_FD_SUPPORTED, "dir_fd binding is POSIX only")
+    def test_replaced_work_directory_does_not_redirect_reads(self):
+        elsewhere = os.path.join(self.root, "elsewhere")
+        os.mkdir(elsewhere)
+        _write_json_file(os.path.join(elsewhere, os.path.basename(self.input_file)), [{"text": "VICTIM SECRET"}])
+        os.rename(self.work_dir, self.work_dir + ".moved")
+        os.symlink(elsewhere, self.work_dir)
+
+        self.assertEqual(isolated_translator._load_segments(self.input_file)[0]["text"], "Bonjour")
+
+    @unittest.skipUnless(DIR_FD_SUPPORTED, "Without dir_fd a link at the destination is refused, not replaced")
+    def test_symlink_planted_at_the_output_is_replaced_not_followed(self):
+        os.symlink(self.victim, self.output_file)
+
+        isolated_translator._save_job_translations(self.output_file, ["Hello"], [{"text": "Bonjour"}])
+
+        self.assertFalse(os.path.islink(self.output_file))
+        self.assertEqual(_read_json_file(self.output_file), ["Hello"])
+        self.assertEqual(self._victim_text(), "VICTIM SECRET")
+
+    def test_symlink_planted_at_the_scratch_name_is_not_followed(self):
+        planted = self.work_path(f"{SCRATCH_PREFIX}{'ab' * 8}.tmp")
+        os.symlink(self.victim, planted)
+
+        with patch("modules.held_dir.secrets.token_hex", return_value="ab" * 8):
+            with self.assertRaises(FileExistsError):
+                isolated_translator._save_job_translations(self.output_file, ["Hello"], [{"text": "Bonjour"}])
+
+        self.assertTrue(os.path.islink(planted))
+        self.assertFalse(os.path.lexists(self.output_file))
+        self.assertEqual(self._victim_text(), "VICTIM SECRET")
+
+    def test_discarding_a_symlinked_output_removes_only_the_link(self):
+        os.symlink(self.victim, self.output_file)
+
+        self.assertTrue(isolated_translator._output_exists(self.output_file))
+        isolated_translator._discard_temp_file(self.output_file)
+
+        self.assertFalse(os.path.lexists(self.output_file))
+        self.assertEqual(self._victim_text(), "VICTIM SECRET")
+
+
+if __name__ == "__main__":
+    unittest.main()

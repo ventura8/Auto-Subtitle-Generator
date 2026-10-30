@@ -185,7 +185,10 @@ global reach:
   isolated vocals, translation manifests and worker outputs, the recorded
   source language, and in-flight scratch files) lives in
   `<video name>.asg-temp/` next to the video. Nothing else is written beside
-  the video except the final `.srt` files and the `_multilang` container.
+  the video except the final `.srt` files and the `_multilang` container. The
+  one exception is the audio the models read during transcription: it is
+  copied into a private directory under your system temp folder
+  (`%TEMP%` / `$TMPDIR`) and removed when transcription ends.
 - **Resume After Power Loss:** The work directory is kept whenever a video
   does not finish (crash, Ctrl+C, power outage, failed stage), so the next run
   reuses the extracted audio, the isolated vocals, the source SRT, the English
@@ -202,6 +205,11 @@ global reach:
   directory swapped in afterwards (on a USB stick or a shared folder) can
   never make it read, transcribe, or copy media from elsewhere on your machine.
   On Windows the input is copied to `%TEMP%` for the duration of its run.
+  The models never read from (or write into) the work directory beside the
+  video either: the audio they use is copied into a private temp directory
+  before any model loads, and the translation worker reaches its files only
+  through the work directory it validated, so nothing swapped in during a
+  long model load is ever followed.
 - **VRAM-Aware Tuning:** The translation model is chosen to fit the card
   (`models.nllb: auto` picks NLLB-3.3B from 11 GB, the distilled 1.3B from
   5 GB, the distilled 600M below), Whisper drops to int8 weights on small
@@ -423,10 +431,17 @@ Coverage is enforced at **at least 90%** (`--cov-fail-under=90`).
 
 The `ml` group deliberately does **not** pin `nvidia-cublas`, `nvidia-cuda-nvrtc`
 or `nvidia-nvjitlink`. `torch` pulls `cuda-toolkit`, and the two `torch` entries
-resolve to different `cuda-toolkit` versions (13.2.1 for the `+cu132` build,
+resolve to different `cuda-toolkit` versions (13.2.2 for the `+cu132` build,
 13.0.3 for the plain PyPI build macOS selects), which require different
 `nvidia-*` versions. Pinning for one branch makes the lock unsolvable for the
 other. `nvidia-cudnn-cu13` stays pinned only because both builds agree on it.
+
+PyAV is capped below 19: faster-whisper 1.2.1 still passes an `av.open`
+argument that PyAV 19 removed. Lift the cap once faster-whisper supports it.
+
+pip and Poetry themselves are installed from the hash-locked
+`bootstrap-requirements.txt` (`pip install --require-hashes --only-binary=:all:`)
+by both installers and CI; regenerate it with the command in its header.
 
 Dependency markers carry only `platform_system`. `requires-python` already pins
 3.12, so repeating `python_version` / `implementation_name` on every entry only

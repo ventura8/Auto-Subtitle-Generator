@@ -10,6 +10,11 @@ ______________________________________________________________________
 - Ensure all dependencies are compatible with Python 3.12 (specifically `< 3.13`).
 - Maintain PyTorch CUDA 13.2 explicit wheel repository index configuration.
 - Avoid loose `pip install` side paths; keep all dev/test dependencies in Poetry groups.
+- pip and Poetry themselves come from the hash-locked
+  `bootstrap-requirements.txt` (`pip install --require-hashes --only-binary=:all: -r ...`)
+  in both installers and every CI job; never `pip install poetry` unpinned.
+  Regenerate it with the `uv pip compile --universal --generate-hashes`
+  command in its header after bumping either version.
 - CI installs wheels only (`POETRY_INSTALLER_ONLY_BINARY=":all:"` in
   `ci.yml`). A dependency with no wheel for a runner must be named in that
   job's `POETRY_INSTALLER_NO_BINARY` (today only `diffq` on Linux).

@@ -124,10 +124,11 @@ graph TD
   `<folder>/<base_name>.asg-temp/`. It holds `*_temp.wav`, the isolated
   `*_(Vocals)_*.wav` stem, the `<base>_asr16k.wav` transcode of the NVIDIA
   ASR path, `*.common_input.json`, `*.manifest.json`,
-  `*.pivot_pivoted.json`, `.temp_output.*.json` worker outputs (and their
-  `.tmp` staging files), `*.source_lang.txt`, and every `.asg-tmp-*` scratch
-  entry. Only the per-language SRT files and the `_multilang` container are
-  written beside the video.
+  `*.pivot_pivoted.json`, `.temp_output.*.json` worker outputs (staged as
+  `.asg-tmp-<hex>.tmp` entries), `*.source_lang.txt`, and every `.asg-tmp-*`
+  scratch entry. Only the per-language SRT files and the `_multilang`
+  container are written beside the video. Nothing a model reads is read from
+  here: see [Private audio stage](#private-audio-stage-defined-in-modulesmediaaudio_stagepy).
 - **Lifecycle**: `ensure_work_dir` creates it (`0700`, refusing a planted
   symlink or junction at that name) on first use. `_finish_temp_hygiene` in
   `auto_subtitle.py` decides at the end of every video: a terminal state
@@ -164,8 +165,9 @@ graph TD
   produced through `atomic_text_writer` or the `reserve_temp_path` /
   `promote_temp_path` pair. Both accept `scratch_dir=` so the scratch entry is
   created inside the work directory even when the destination is beside the
-  video; `create_private_dir` gives Audio-Separator a private output
-  directory inside the work directory.
+  video. `atomic_binary_writer` and `copy_file_into` land a finished file
+  produced in the private audio stage (another filesystem, so no rename) in
+  the work directory the same way.
 - **Threat model**: The input directory is untrusted. A planted symlink with a
   predictable sidecar name would otherwise be followed by `open(..., "w")` or
   FFmpeg `-y` and overwrite whatever it points at.
@@ -230,6 +232,35 @@ graph TD
   passes `probe=False` to `build_file_summary` when it was refused, so a
   rejected pathname is never handed to FFprobe.
 
+### Private audio stage (defined in `modules/media/audio_stage.py`)
+
+- **Threat model**: the work directory lives in the untrusted input folder and
+  stays listable to its owner, who can keep writing while a model loads
+  (minutes). Audio-Separator writes `{base}_temp_(Vocals)_<model>.wav` by
+  pathname, so a link planted at that predictable name in a listable scratch
+  directory would be written through (arbitrary overwrite); and a
+  `*_temp.wav`, vocal stem or `*_sepchunk_NNN.wav` swapped for a link after
+  it was written would make Whisper, Canary/Parakeet or FFmpeg read another
+  file and leak its speech into the subtitles.
+- **Mechanism**: `transcribe_video_audio` opens an `AudioStage`, a
+  `tempfile.mkdtemp()` directory (`0700`) under the user's temp location,
+  outside the input tree, removed when transcription ends. Work-directory
+  audio enters it with `import_file` *before any model loads*: the file is
+  opened with `input_binding.open_bound_input` (no link followed below the
+  selected input folder, regular file required) and its bytes copied from that
+  descriptor. Audio-Separator reads the staged `*_temp.wav` and writes into a
+  stage sub-directory; chunk inputs, raw and trimmed chunk stems and the
+  joined vocal track are produced in the stage. The work directory only
+  receives finished files through `safe_io.copy_file_into` so a later run can
+  resume; a resumed file is staged the same way before use. Whisper, the
+  language vote and the NVIDIA engines read the staged copy.
+- **Transcode**: the `<base>_asr16k.wav` transcode stays in the work
+  directory (it can be several GB) and is opened once through
+  `open_bound_input`; `soundfile` reads that held descriptor for the whole
+  decode.
+- **Cost**: one extra copy of the transcription audio in `%TEMP%` / `$TMPDIR`
+  per video (16 kHz mono float, about 230 MB per hour), plus the vocal stem.
+
 ### Chunked vocal separation (defined in `modules/pipeline/transcription.py`)
 
 - **Why**: Audio-Separator calls `librosa.load` on the whole input at
@@ -244,25 +275,28 @@ graph TD
   into the previous window (4 h 00 m 05 s becomes eight windows, the last
   30 m 05 s).
 - **Per chunk**: cut the window with 2 s of context on each side into the
-  private scratch directory. `write_audio_window` never points FFmpeg `-y` at
-  the predictable `chunk_NNN.wav` name: it reserves a private scratch file,
+  separator's directory in the private audio stage. `write_audio_window`
+  never points FFmpeg `-y` at the predictable `chunk_NNN.wav` name: it
+  reserves a private scratch file,
   writes there, then promotes (refusing a planted symlink). The separator
   runs on the promoted chunk, then the context is trimmed and downmixed to
-  16 kHz mono float onto `<base>_sepchunk_NNN.wav` the same way (callers pass
-  the final path; they must not nest a second `reserve_temp_path`). Peak RAM
-  for a 30-minute chunk is around 3 GB.
+  16 kHz mono float onto a staged `<base>_sepchunk_NNN.wav` the same way
+  (callers pass the final path; they must not nest a second
+  `reserve_temp_path`), which is copied into the work directory for resume.
+  Peak RAM for a 30-minute chunk is around 3 GB.
 - **Join**: the concat manifest lists every chunk stem as an absolute path,
   because FFmpeg resolves relative entries against the manifest's own
   directory rather than the working directory.
 - **Resume**: `_is_finished_chunk` reuses a chunk stem that is a regular file
-  of the expected duration (within 0.5 s); a truncated one is redone. A
-  power loss mid-separation costs at most one chunk.
+  of the expected duration (within 0.5 s) by staging it; a truncated one is
+  redone. A power loss mid-separation costs at most one chunk.
 - **Join**: `concat_audio_files` writes `stems.list` through
-  `atomic_text_writer` and stream-copies the stems into a reserved scratch
-  file promoted onto `<base>_temp_(Vocals)_chunked.wav` (RF64 when large);
-  a planted symlink at either predictable name is refused. The chunk stems
-  are then removed. The joined name matches the resume scan in
-  `_get_separated_vocal_path`, which validates it against `*_temp.wav`.
+  `atomic_text_writer` and stream-copies the *staged* stems (never the
+  work-directory copies written minutes earlier) into a staged
+  `<base>_temp_(Vocals)_chunked.wav` (RF64 when large), which is then copied
+  into the work directory. The chunk stems are then removed. The joined name
+  matches the resume scan in `_get_separated_vocal_path`, which validates it
+  against `*_temp.wav`.
 - **Other stages**: extraction adds `-rf64 auto` so a >17 h source WAV stays
   valid; `faster-whisper` decodes to 16 kHz mono (0.9 GB for 4 h) and windows
   internally; the Canary/Parakeet path streams spans (see
@@ -294,6 +328,24 @@ graph TD
   lifecycle.
 - **Benefit**: Prevents duplicate translator weight loading for non-English
   input.
+- **Containment**: the manifest arrives on stdin; every `input`, `output` and
+  `en_output` must name an entry *directly* inside the work directory
+  (`ManifestPathError` otherwise). `_load_contained_manifest` then holds the
+  directory those validated paths live in (`_job_directory`; the
+  command-line value is only compared, never opened) with
+  `modules/held_dir.py`'s `HeldDirectory` before the model loads. On POSIX
+  every job read, existence check, write and unlink goes through that
+  `O_NOFOLLOW` directory descriptor (`dir_fd`), entries are
+  opened with `O_NOFOLLOW` and must be regular files, so neither a link
+  planted at a job file nor a work directory replaced by a link is followed
+  after validation. On Windows the directory identity and a link/junction
+  check are re-verified before every operation, and a read compares the
+  opened file's identity with its `lstat`.
+- **Writes**: JSON is written through the descriptor of an exclusively
+  created `.asg-tmp-<hex>.tmp` entry and renamed onto the destination only if
+  that entry is still the one created; nothing is closed and reopened by
+  name. The parent reads worker outputs and the manifest it pipes to the
+  worker through `open_bound_input` (`_read_work_file`), refusing links.
 
 ### `utils.log` (shared utility)
 

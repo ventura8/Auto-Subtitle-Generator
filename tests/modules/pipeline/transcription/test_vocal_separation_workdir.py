@@ -7,6 +7,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from modules import safe_io, workdir
+from modules.media import audio_stage
+from modules.media.input_binding import InputRefusedError
 
 transcription = importlib.import_module("modules.pipeline.transcription")
 
@@ -83,17 +85,20 @@ class TestVocalSeparationWorkDir(unittest.TestCase):
     # --- separation run ---------------------------------------------------
 
     def _separator_that_writes(self, names):
-        """Return a model manager whose separator writes ``names`` into its output_dir."""
+        """Return a model manager whose separator writes ``names`` into its output_dir.
+
+        Each stem holds ``b"SEP:"`` plus the bytes of the audio the separator was
+        handed, so a test can tell which file it really read.
+        """
         manager = MagicMock()
 
         def get_separator(output_dir=None):
             separator = MagicMock()
 
-            def separate(_audio_input):
-                written = []
-                for name in names:
-                    written.append(self._write(os.path.join(output_dir, name)))
-                return written
+            def separate(audio_input):
+                with open(audio_input, "rb") as handle:
+                    payload = b"SEP:" + handle.read()
+                return [self._write(os.path.join(output_dir, name), payload) for name in names]
 
             separator.separate.side_effect = separate
             manager.last_output_dir = output_dir
@@ -102,53 +107,152 @@ class TestVocalSeparationWorkDir(unittest.TestCase):
         manager.get_separator.side_effect = get_separator
         return manager
 
-    def test_run_vocal_separation_moves_only_vocals_into_work_dir(self):
-        manager = self._separator_that_writes(["movie_temp_(Vocals)_model.wav", "movie_temp_(Instrumental)_model.wav"])
+    def _separate_in_stage(self, manager):
+        """Run ``_run_vocal_separation`` on a fresh stage; return ``(result, stage root)``."""
         with (
             patch("modules.pipeline.transcription.utils.extract_clean_audio", return_value=self.temp_wav),
             patch("modules.pipeline.transcription.log"),
+            audio_stage.open_stage() as stage,
         ):
-            vocal = transcription._run_vocal_separation(self.video, manager)
+            result = transcription._run_vocal_separation(self.video, manager, stage)
+            self.staged_bytes = self._read(result[1]) if result else None
+        return result, stage.root
+
+    def _read(self, path):
+        with open(path, "rb") as handle:
+            return handle.read()
+
+    def _symlink_or_skip(self, target, link):
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+
+    def test_run_vocal_separation_keeps_only_vocals_in_work_dir(self):
+        manager = self._separator_that_writes(["movie_temp_(Vocals)_model.wav", "movie_temp_(Instrumental)_model.wav"])
+        (vocal, staged), root = self._separate_in_stage(manager)
 
         self.assertEqual(vocal, os.path.join(self.work_dir, "movie_temp_(Vocals)_model.wav"))
-        self.assertTrue(os.path.isfile(vocal))
-        # The separator wrote into a private scratch dir inside the work dir, which is gone now.
-        self.assertTrue(manager.last_output_dir.startswith(os.path.join(self.work_dir, safe_io.SCRATCH_PREFIX)))
-        self.assertFalse(os.path.lexists(manager.last_output_dir))
+        self.assertEqual(staged, os.path.join(root, "movie_temp_(Vocals)_model.wav"))
+        self.assertEqual(self._read(vocal), b"SEP:" + b"\x00" * 2048)
+        self.assertEqual(self.staged_bytes, self._read(vocal))
+        # The separator wrote into a private stage directory, removed with the stage.
+        self.assertEqual(os.path.dirname(manager.last_output_dir), root)
+        self.assertFalse(os.path.lexists(root))
         self.assertEqual(sorted(os.listdir(self.work_dir)), ["movie_temp.wav", "movie_temp_(Vocals)_model.wav"])
         self.assertEqual(self._folder_entries(), ["movie.asg-temp"])
 
-    def test_run_vocal_separation_returns_none_without_vocals_and_cleans_scratch(self):
-        manager = self._separator_that_writes(["movie_temp_(Instrumental)_model.wav"])
+    def test_separator_reads_staged_audio_and_writes_outside_the_input_folder(self):
+        events = []
+        manager = self._separator_that_writes(["movie_temp_(Vocals)_model.wav"])
+        get_separator = manager.get_separator.side_effect
+
+        def recording_get_separator(output_dir=None):
+            events.append("get_separator")
+            return get_separator(output_dir=output_dir)
+
+        manager.get_separator.side_effect = recording_get_separator
         with (
             patch("modules.pipeline.transcription.utils.extract_clean_audio", return_value=self.temp_wav),
             patch("modules.pipeline.transcription.log"),
+            audio_stage.open_stage() as stage,
         ):
-            self.assertIsNone(transcription._run_vocal_separation(self.video, manager))
-        self.assertEqual(sorted(os.listdir(self.work_dir)), ["movie_temp.wav"])
+            real_import = stage.import_file
 
-    def test_run_vocal_separation_failure_leaves_no_scratch_behind(self):
+            def recording_import(path):
+                events.append(("import", path))
+                return real_import(path)
+
+            with patch.object(stage, "import_file", side_effect=recording_import):
+                transcription._run_vocal_separation(self.video, manager, stage)
+        # The extracted audio entered the stage before the separator model was loaded.
+        self.assertEqual(events, [("import", self.temp_wav), "get_separator"])
+        # The output directory is a stage directory, neither in the work dir nor anywhere in the input folder.
+        self.assertEqual(os.path.dirname(manager.last_output_dir), stage.root)
+        folder = os.path.realpath(self.folder)
+        self.assertNotEqual(os.path.commonpath([os.path.realpath(manager.last_output_dir), folder]), folder)
+
+    def test_separator_input_is_the_staged_copy(self):
+        manager = self._separator_that_writes(["movie_temp_(Vocals)_model.wav"])
+        seen = []
+        get_separator = manager.get_separator.side_effect
+
+        def wrapping_get_separator(output_dir=None):
+            separator = get_separator(output_dir=output_dir)
+            inner = separator.separate.side_effect
+            separator.separate.side_effect = lambda path: seen.append(path) or inner(path)
+            return separator
+
+        manager.get_separator.side_effect = wrapping_get_separator
+        _result, root = self._separate_in_stage(manager)
+        self.assertEqual(seen, [os.path.join(root, "movie_temp.wav")])
+        folder = os.path.realpath(self.folder)
+        self.assertNotEqual(os.path.commonpath([os.path.realpath(seen[0]), folder]), folder)
+
+    def test_temp_wav_swapped_for_a_link_after_staging_is_never_read(self):
+        victim = self._write(os.path.join(self.folder, "victim.wav"), b"VICTIM-RECORDING")
+        manager = self._separator_that_writes(["movie_temp_(Vocals)_model.wav"])
+        get_separator = manager.get_separator.side_effect
+
+        def swap_during_model_load(output_dir=None):
+            os.remove(self.temp_wav)
+            os.symlink(victim, self.temp_wav)
+            return get_separator(output_dir=output_dir)
+
+        manager.get_separator.side_effect = swap_during_model_load
+        (vocal, _staged), _root = self._separate_in_stage(manager)
+        self.assertEqual(self._read(vocal), b"SEP:" + b"\x00" * 2048)
+        self.assertNotIn(b"VICTIM", self.staged_bytes)
+        self.assertEqual(self._read(victim), b"VICTIM-RECORDING")
+
+    def test_link_planted_at_the_vocal_stem_name_is_never_written_through(self):
+        victim = self._write(os.path.join(self.folder, "victim.wav"), b"VICTIM")
+        stem = os.path.join(self.work_dir, "movie_temp_(Vocals)_model.wav")
+        manager = self._separator_that_writes(["movie_temp_(Vocals)_model.wav"])
+        get_separator = manager.get_separator.side_effect
+
+        def plant_during_model_load(output_dir=None):
+            self._symlink_or_skip(victim, stem)
+            return get_separator(output_dir=output_dir)
+
+        manager.get_separator.side_effect = plant_during_model_load
+        result, _root = self._separate_in_stage(manager)
+        self.assertEqual(result[0], stem)
+        self.assertTrue(self.staged_bytes.startswith(b"SEP:"))
+        self.assertEqual(self._read(victim), b"VICTIM")
+        self.assertTrue(os.path.islink(stem))
+        self.assertEqual(sorted(os.listdir(self.work_dir)), ["movie_temp.wav", "movie_temp_(Vocals)_model.wav"])
+
+    def test_linked_temp_wav_is_refused_before_the_model_loads(self):
+        victim = self._write(os.path.join(self.folder, "victim.wav"), b"VICTIM")
+        os.remove(self.temp_wav)
+        self._symlink_or_skip(victim, self.temp_wav)
+        manager = MagicMock()
+        with self.assertRaises(InputRefusedError):
+            self._separate_in_stage(manager)
+        manager.get_separator.assert_not_called()
+
+    def test_run_vocal_separation_returns_none_without_vocals(self):
+        manager = self._separator_that_writes(["movie_temp_(Instrumental)_model.wav"])
+        result, root = self._separate_in_stage(manager)
+        self.assertIsNone(result)
+        self.assertEqual(sorted(os.listdir(self.work_dir)), ["movie_temp.wav"])
+        self.assertFalse(os.path.lexists(root))
+
+    def test_run_vocal_separation_failure_leaves_nothing_behind(self):
         manager = MagicMock()
         manager.get_separator.return_value.separate.side_effect = RuntimeError("boom")
-        with (
-            patch("modules.pipeline.transcription.utils.extract_clean_audio", return_value=self.temp_wav),
-            patch("modules.pipeline.transcription.log"),
-        ):
-            with self.assertRaises(RuntimeError):
-                transcription._run_vocal_separation(self.video, manager)
+        with self.assertRaises(RuntimeError):
+            self._separate_in_stage(manager)
         self.assertEqual(sorted(os.listdir(self.work_dir)), ["movie_temp.wav"])
+        self.assertFalse(os.path.lexists(manager.get_separator.call_args.kwargs["output_dir"]))
 
     def test_run_vocal_separation_replaces_stale_vocal_output(self):
         stale = self._write(os.path.join(self.work_dir, "movie_temp_(Vocals)_model.wav"), b"stale")
         manager = self._separator_that_writes(["movie_temp_(Vocals)_model.wav"])
-        with (
-            patch("modules.pipeline.transcription.utils.extract_clean_audio", return_value=self.temp_wav),
-            patch("modules.pipeline.transcription.log"),
-        ):
-            vocal = transcription._run_vocal_separation(self.video, manager)
+        (vocal, _staged), _root = self._separate_in_stage(manager)
         self.assertEqual(vocal, stale)
-        with open(vocal, "rb") as handle:
-            self.assertNotEqual(handle.read(), b"stale")
+        self.assertEqual(self._read(vocal), b"SEP:" + b"\x00" * 2048)
 
     def test_move_separator_output_refuses_symlink_destination(self):
         source = self._write(os.path.join(self.work_dir, "src.wav"))

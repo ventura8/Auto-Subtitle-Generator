@@ -3,7 +3,8 @@
 The NVIDIA engines decode one speech span at a time, so nothing here holds a
 whole multi-hour input in RAM (AGENTS contract 7): 16 kHz mono WAVs are read by
 seeking, short inputs are decoded in memory, and anything else is transcoded
-once into the work directory and then read by seeking.
+once into the work directory and then read by seeking. A file read by seeking
+is opened once, without following links, and held for the whole decode.
 """
 
 import importlib
@@ -13,7 +14,7 @@ import os
 from collections import namedtuple
 from typing import Any
 
-from modules.media import ffmpeg_utils
+from modules.media import ffmpeg_utils, input_binding
 from modules.runtime.logging_utils import log
 
 SAMPLE_RATE = 16000
@@ -77,9 +78,10 @@ class PcmSource:
 class _SoundFileSource(PcmSource):
     """Seek-and-read access to a 16 kHz mono file; RAM stays O(one read)."""
 
-    def __init__(self, handle: Any):
+    def __init__(self, handle: Any, raw_file: Any = None):
         super().__init__(handle.frames)
         self._handle = handle
+        self._raw_file = raw_file
 
     def _frames(self, first: int, last: int) -> Any:
         """Seek to ``first`` and read up to ``last``."""
@@ -87,8 +89,12 @@ class _SoundFileSource(PcmSource):
         return self._handle.read(last - first, dtype="float32", always_2d=False)
 
     def close(self) -> None:
-        """Close the file handle."""
-        self._handle.close()
+        """Close the libsndfile handle and the descriptor it reads."""
+        try:
+            self._handle.close()
+        finally:
+            if self._raw_file is not None:
+                self._raw_file.close()
 
 
 class _ArraySource(PcmSource):
@@ -117,8 +123,22 @@ def _probe(path: str) -> tuple[bool, float]:
 
 
 def _open_soundfile(path: str) -> PcmSource:
-    """Open a 16 kHz mono file for seek-and-read access."""
-    return _SoundFileSource(_soundfile().SoundFile(path, mode="r"))
+    """Open a 16 kHz mono file for seek-and-read access through a descriptor that refused links.
+
+    The work-directory transcode is reused across runs, so a link planted at its
+    name must not be followed; the descriptor is held until the source closes.
+    """
+    bound = input_binding.open_bound_input(path)
+    try:
+        raw_file = os.fdopen(bound.fd, "rb")
+        bound.fd = None
+    finally:
+        bound.close()
+    try:
+        return _SoundFileSource(_soundfile().SoundFile(raw_file, mode="r"), raw_file)
+    except BaseException:
+        raw_file.close()
+        raise
 
 
 def _is_reusable_transcode(transcode_path: str, duration: float) -> bool:

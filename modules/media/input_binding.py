@@ -39,7 +39,9 @@ import tempfile
 
 _IS_POSIX = sys.platform != "win32"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-_FILE_FLAGS = os.O_RDONLY | _NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
+# O_NONBLOCK: a FIFO planted at the name must not block the open before fstat refuses it;
+# it has no effect on the regular files that pass that check.
+_FILE_FLAGS = os.O_RDONLY | _NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
 _DIR_FD_SUPPORTED = _IS_POSIX and os.open in os.supports_dir_fd
 _PRIVATE_COPY_PREFIX = ".asg-input-"

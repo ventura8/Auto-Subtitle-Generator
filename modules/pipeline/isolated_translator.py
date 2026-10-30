@@ -4,18 +4,23 @@ import gc
 import json
 import os
 import sys
-import tempfile
 import time
 import traceback
 from typing import Any
 
 from modules import utils, workdir
 from modules.configuration import config
+from modules.held_dir import HeldDirectory
 from modules.models import OPTIMIZER, ModelManager, apply_dynamic_translation_batch
 from modules.runtime.optional_imports import load_optional_torch
+from modules.safe_io import atomic_text_writer
 from modules.utils import log
 
 torch: Any | None = load_optional_torch()
+
+# Single slot: the work directory the batch manifest was confined to, held from validation on.
+# Every job read and write goes through it; the legacy single-file mode leaves it empty.
+_held_work_dir: list[HeldDirectory | None] = [None]
 
 PIVOT_ERROR_TYPES = (
     OSError,
@@ -145,49 +150,53 @@ def _resolve_worker_translator(manager):
 
 
 def _discard_temp_file(temp_path):
-    """Safely unlink a temporary file on disk if present."""
-    if temp_path and os.path.exists(temp_path):
-        try:
+    """Safely unlink a file if present (the entry itself, never a link's target)."""
+    if not temp_path:
+        return
+    held = _held_work_dir[0]
+    try:
+        if held is not None:
+            held.remove(temp_path)
+        elif os.path.lexists(temp_path):
             os.remove(temp_path)
-        except OSError:
-            pass
+    except OSError:
+        pass
+
+
+def _output_exists(path):
+    """Return True when an entry exists at ``path``, checked through the held work directory."""
+    held = _held_work_dir[0]
+    return held.exists(path) if held is not None else os.path.lexists(path)
+
+
+def _write_json(output_file, payload, indent=None):
+    """Atomically write ``payload`` as JSON, through the creation descriptor of a fresh scratch entry.
+
+    In batch mode the entry is created, renamed and verified relative to the
+    held work directory; the legacy single-file mode uses ``safe_io``.
+    """
+    held = _held_work_dir[0]
+    writer = held.text_writer(output_file) if held is not None else atomic_text_writer(output_file)
+    with writer as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=indent)
 
 
 def _save_worker_output(output_file, translations):
     """Persist translated worker output to disk."""
-    output_dir = os.path.dirname(output_file) or "."
-    fd, temp_path = tempfile.mkstemp(dir=output_dir, prefix=f"{os.path.basename(output_file)}.", suffix=".tmp")
-    os.close(fd)
-    try:
-        with open(temp_path, "w", encoding="utf-8") as temp_handle:
-            json.dump(translations, temp_handle, ensure_ascii=False, indent=2)
-        os.replace(temp_path, output_file)
-    except Exception:
-        _discard_temp_file(temp_path)
-        raise
+    _write_json(output_file, translations, indent=2)
 
 
 def _save_job_translations(output_file, translations, data):
     """Atomically persist per-job translations to disk."""
     if len(translations) != len(data):
         raise RuntimeError(f"Translation count mismatch for {output_file}: {len(translations)} != {len(data)}")
-
-    output_dir = os.path.dirname(output_file) or "."
-    fd, temp_save_path = tempfile.mkstemp(dir=output_dir, prefix=f"{os.path.basename(output_file)}.", suffix=".tmp")
-    os.close(fd)
-    try:
-        with open(temp_save_path, "w", encoding="utf-8") as temp_handle:
-            json.dump(translations, temp_handle, ensure_ascii=False)
-        os.replace(temp_save_path, output_file)
-    except Exception:
-        _discard_temp_file(temp_save_path)
-        raise
+    _write_json(output_file, translations)
 
 
 def _wait_for_parent_to_consume_output(output_file, lang):
     """Wait briefly for the parent process to consume a job output file."""
     wait_start = time.time()
-    while os.path.exists(output_file):
+    while _output_exists(output_file):
         time.sleep(0.05)
         if time.time() - wait_start > 10:
             log(f"[Isolation] Warning: Parent timed out consuming {lang} output.", "WARNING")
@@ -195,7 +204,10 @@ def _wait_for_parent_to_consume_output(output_file, lang):
 
 
 def _load_segments(input_file):
-    """Load serialized subtitle segments from disk."""
+    """Load serialized subtitle segments, through the held work directory in batch mode (links refused)."""
+    held = _held_work_dir[0]
+    if held is not None:
+        return json.loads(held.read_text(input_file))
     with open(input_file, "r", encoding="utf-8") as file_handle:
         return json.load(file_handle)
 
@@ -401,7 +413,7 @@ def _reuse_existing_pivot_output_if_available(pivot_job):
     (for example after re-transcription) is discarded instead of reused.
     """
     output_path = pivot_job["output"]
-    if not os.path.exists(output_path):
+    if not _output_exists(output_path):
         return False
 
     pivot_data = _load_pivot_output_matching_input(output_path, pivot_job["input"])
@@ -490,16 +502,7 @@ def _build_pivot_job_config(pivot_job):
 
 def _save_pivot_output_atomic(output_path, pivot_data):
     """Persist pivot intermediate data via atomic temp-file replace."""
-    output_dir = os.path.dirname(output_path) or "."
-    fd, temp_path = tempfile.mkstemp(dir=output_dir, prefix=f"{os.path.basename(output_path)}.", suffix=".tmp")
-    os.close(fd)
-    try:
-        with open(temp_path, "w", encoding="utf-8") as temp_handle:
-            json.dump(pivot_data, temp_handle, ensure_ascii=False, indent=2)
-        os.replace(temp_path, output_path)
-    except Exception:
-        _discard_temp_file(temp_path)
-        raise
+    _write_json(output_path, pivot_data, indent=2)
 
 
 def _save_optional_pivot_english_output(pivot_job, translations, data):
@@ -520,9 +523,9 @@ _MANIFEST_PATH_KEYS = ("input", "output", "en_output")
 
 
 def _contained_path(work_root, candidate):
-    """Return ``candidate`` resolved, or raise when it escapes ``work_root``."""
+    """Return ``candidate`` resolved, or raise unless it names an entry directly inside ``work_root``."""
     resolved = os.path.realpath(candidate)
-    if resolved != work_root and not resolved.startswith(work_root + os.sep):
+    if os.path.dirname(resolved) != work_root:
         raise ManifestPathError(f"Manifest path escapes the work directory: {candidate}")
     return resolved
 
@@ -538,7 +541,8 @@ def _contain_job_paths(job, work_root):
 def _work_root_from_argument(work_dir):
     """Resolve the work directory the parent named, refusing anything else.
 
-    The value is only ever compared against job paths; it is never opened.
+    The resolved value is only ever compared against job paths; it is never
+    opened. The worker holds the directory the validated job paths live in.
     """
     resolved = os.path.realpath(work_dir)
     if not os.path.basename(resolved).endswith(workdir.WORK_DIR_SUFFIX):
@@ -547,12 +551,16 @@ def _work_root_from_argument(work_dir):
 
 
 def _load_contained_manifest(stream, work_dir):
-    """Read the manifest from ``stream`` and confine its paths to ``work_dir``.
+    """Read the manifest from ``stream``, confine its paths to ``work_dir`` and hold that directory.
 
     The manifest arrives on an inherited descriptor the parent writes to, so the
     worker never opens a path handed to it on the command line. Every path the
-    manifest carries is then resolved and refused unless it sits inside the work
-    directory, which is where all of the worker's inputs and outputs belong.
+    manifest carries is then resolved and refused unless it names an entry
+    directly inside the work directory, which is where all of the worker's
+    inputs and outputs belong. The work directory is then held
+    (``HeldDirectory``) before the model loads, and every later job read and
+    write goes through it, so neither a link planted at a job file nor a
+    replaced work directory is followed after validation.
     """
     work_root = _work_root_from_argument(work_dir)
     manifest = json.load(stream)
@@ -564,7 +572,31 @@ def _load_contained_manifest(stream, work_dir):
     if pivot_job:
         _contain_job_paths(pivot_job, work_root)
 
+    _hold_work_dir(_job_directory(manifest))
     return manifest
+
+
+def _job_directory(manifest):
+    """Return the directory the validated job paths live in, or None for a manifest without paths.
+
+    Containment has already required every path to sit directly in the work
+    directory named on the command line, so this is that directory. The
+    worker holds the directory its jobs were validated in and keeps the
+    command-line value as a comparison operand only, never opening it.
+    """
+    for job in [*manifest.get("jobs", []), manifest.get("pivot") or {}]:
+        for key in _MANIFEST_PATH_KEYS:
+            if job.get(key):
+                return os.path.dirname(job[key])
+    return None
+
+
+def _hold_work_dir(work_root):
+    """Hold ``work_root`` (None: nothing) for every later job read and write, releasing a previous one."""
+    previous = _held_work_dir[0]
+    if previous is not None:
+        previous.close()
+    _held_work_dir[0] = HeldDirectory(work_root) if work_root else None
 
 
 def run_batch_translation_worker(manifest):

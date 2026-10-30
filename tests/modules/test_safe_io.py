@@ -285,6 +285,47 @@ class TestSafeIO(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(planted, "precious.txt")))
         self.assertFalse(os.path.exists(os.path.join(self.folder, "movie_temp.wav")))
 
+    # --- atomic_binary_writer / copy_file_into ------------------------------
+
+    def test_atomic_binary_writer_writes_bytes(self):
+        path = os.path.join(self.folder, "movie_temp.wav")
+        with safe_io.atomic_binary_writer(path) as fh:
+            fh.write(b"RIFF\x00")
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), b"RIFF\x00")
+        self.assertEqual(self._folder_entries(), ["movie_temp.wav"])
+
+    def test_copy_file_into_lands_a_private_file_in_the_scratch_dir_owner(self):
+        with tempfile.TemporaryDirectory() as private:
+            source = os.path.join(private, "movie_temp_(Vocals)_m.wav")
+            with open(source, "wb") as fh:
+                fh.write(b"\x01" * 1000)
+            work_dir = os.path.join(self.folder, "movie.asg-temp")
+            os.mkdir(work_dir)
+            target = os.path.join(work_dir, "movie_temp_(Vocals)_m.wav")
+            safe_io.copy_file_into(source, target, scratch_dir=work_dir)
+            with open(target, "rb") as fh:
+                self.assertEqual(fh.read(), b"\x01" * 1000)
+            self.assertEqual(os.listdir(work_dir), ["movie_temp_(Vocals)_m.wav"])
+
+    def test_copy_file_into_refuses_symlink_destination(self):
+        link = self._plant_symlink("movie_temp_(Vocals)_m.wav")
+        with tempfile.TemporaryDirectory() as private:
+            source = os.path.join(private, "stem.wav")
+            with open(source, "wb") as fh:
+                fh.write(b"WAVE")
+            with self.assertRaises(safe_io.SymlinkRefusedError):
+                safe_io.copy_file_into(source, link)
+        self._assert_victim_untouched()
+        self.assertEqual(self._folder_entries(), ["movie_temp_(Vocals)_m.wav"])
+
+    def test_copy_file_into_discards_scratch_when_source_is_missing(self):
+        target = os.path.join(self.folder, "movie_sepchunk_000.wav")
+        missing = os.path.join(self.folder, "missing.wav")
+        with self.assertRaises(FileNotFoundError):
+            safe_io.copy_file_into(missing, target)
+        self.assertEqual(self._folder_entries(), [])
+
 
 def _current_umask():
     value = os.umask(0)

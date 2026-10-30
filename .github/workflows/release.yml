@@ -64,7 +64,7 @@ jobs:
           mkdir -p "$bundle_root" release-assets
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
             go build -ldflags="-s -w" -o "$bundle_root/${{ matrix.launcher }}" launcher/main.go
-          cp auto_subtitle.py config.yaml pyproject.toml poetry.lock README.md "$bundle_root/"
+          cp auto_subtitle.py config.yaml pyproject.toml poetry.lock bootstrap-requirements.txt README.md "$bundle_root/"
           cp -R modules "$bundle_root/modules"
           if [ "${{ matrix.platform }}" = "windows" ]; then
             cp install_dependencies.ps1 "$bundle_root/"
@@ -91,6 +91,7 @@ jobs:
           grep -Fx "auto-subtitle-generator/${{ matrix.launcher }}" contents.txt
           grep -Fx "auto-subtitle-generator/auto_subtitle.py" contents.txt
           grep -Fx "auto-subtitle-generator/pyproject.toml" contents.txt
+          grep -Fx "auto-subtitle-generator/bootstrap-requirements.txt" contents.txt
           grep -Fx "auto-subtitle-generator/modules/models.py" contents.txt
           if [ "${{ matrix.platform }}" = "windows" ]; then
             grep -Fx "auto-subtitle-generator/install_dependencies.ps1" contents.txt

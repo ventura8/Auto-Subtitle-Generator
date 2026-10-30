@@ -38,6 +38,10 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
         exists_patcher = patch("modules.workdir.work_dir_exists", return_value=False)
         exists_patcher.start()
         self.addCleanup(exists_patcher.stop)
+        # The fake extracted audio does not exist on disk; stage it by name instead of copying bytes.
+        stage_patcher = patch("modules.media.audio_stage.AudioStage.import_file", side_effect=lambda path: path)
+        self.mock_stage_import = stage_patcher.start()
+        self.addCleanup(stage_patcher.stop)
 
         torch_patcher = patch.object(auto_subtitle, "torch", sys.modules["torch"], create=True)
         torch_patcher.start()
@@ -258,6 +262,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                         patch("auto_subtitle.embed_subtitles"),
                         patch("auto_subtitle.atomic_text_writer", mock_open()),
                         patch("modules.pipeline.translation.atomic_text_writer", mock_open()),
+                        patch("modules.pipeline.translation._read_work_file", return_value=b"[]"),
                         patch("os.remove"),
                         patch("auto_subtitle._check_resume", return_value=(None, None, None)),
                     ):
@@ -287,6 +292,7 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                     patch("builtins.open", mock_open()),
                     patch("modules.pipeline.translation.atomic_text_writer", mock_open()) as m_open,
                     patch("json.dump") as m_json_dump,
+                    patch("modules.pipeline.translation._read_work_file", return_value=b"{}") as m_read_work_file,
                     patch("os.path.exists", side_effect=lambda x: True),
                     patch("os.remove"),
                     patch("modules.pipeline.translation.time.sleep"),
@@ -325,6 +331,9 @@ class TestAutoSubtitleUltimate(unittest.TestCase):
                     # proper command called
                     cmd_args = m_popen.call_args[0][0]
                     self.assertIn("--batch-stdin", cmd_args)
+                    # The manifest reaches the worker's stdin through the no-follow reader, never by name.
+                    m_read_work_file.assert_any_call(os.path.join(folder, "video.asg-temp", "video.manifest.json"))
+                    self.assertNotIn(os.path.join(folder, "video.asg-temp", "video.manifest.json"), cmd_args)
 
                     # Sidecars must go through the symlink-safe writer
                     m_open.assert_called()

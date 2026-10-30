@@ -11,7 +11,8 @@ Bring the local machine to a functional, GPU-accelerated state for Auto-Subtitle
 ## Workflow
 
 1. Verify Python 3.12 availability.
-1. Run `.\install_dependencies.ps1` for virtual environment, PyTorch CUDA, cuDNN, and FFmpeg setup.
+1. Run `.\install_dependencies.ps1` for virtual environment, PyTorch CUDA, cuDNN, and FFmpeg setup
+   (pip and Poetry come from the hash-locked `bootstrap-requirements.txt`).
 1. Validate launcher and command-line execution.
 
 ## Commands

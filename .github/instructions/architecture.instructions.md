@@ -28,6 +28,11 @@ ______________________________________________________________________
 - Reuse a pivot or target SRT only while its cue timings match the current source; regenerate a stale one, never delete it.
 - Keep the decoded-speech guard: mostly empty NVIDIA output redoes the file with Whisper instead of a silent "no speech" purge.
 - Keep subprocess shutdown paths robust on Windows.
+- No model or tool reads work-directory audio by pathname after a model load:
+  transcription stages it first (`modules/media/audio_stage.py`, private
+  `%TEMP%` directory outside the input tree) and Audio-Separator writes only
+  into that stage. The translation worker reaches job files only through the
+  held work directory (`modules/held_dir.py`); never `mkstemp`/close/reopen.
 
 ## Performance Contracts
 

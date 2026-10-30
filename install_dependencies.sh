@@ -71,8 +71,9 @@ fi
 
 # Step 4: Install Dependencies via Poetry
 echo -e "\nStep 4: Installing Dependencies via Poetry..."
-"$VENV_PY" -m pip install --upgrade pip
-"$VENV_PY" -m pip install poetry
+# pip and Poetry come from a hash-locked file: an unpinned install would run
+# whatever PyPI serves at that moment as this user.
+"$VENV_PY" -m pip install --require-hashes --only-binary=:all: -r "$SCRIPT_DIR/bootstrap-requirements.txt"
 
 "$VENV_PY" -m poetry config --local virtualenvs.in-project true
 "$VENV_PY" -m poetry config --local virtualenvs.create false

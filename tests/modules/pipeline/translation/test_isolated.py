@@ -1,13 +1,39 @@
 import json
+import os
+import shutil
 import sys
+import tempfile
 import unittest
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
+
+from modules.held_dir import HeldDirectory
 
 # Avoid global sys.modules hacks. conftest.py handles AI libs.
 # Delayed import inside tests to ensure mocks are active
 
 
 class TestIsolatedTranslator(unittest.TestCase):
+    def _held_work_dir(self):
+        """Create a work directory and hold it the way a validated batch manifest does."""
+        from modules.pipeline import isolated_translator
+
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        work_dir = os.path.join(os.path.realpath(root), "movie.asg-temp")
+        os.mkdir(work_dir)
+        isolated_translator._held_work_dir[0] = HeldDirectory(work_dir)
+        self.addCleanup(self._release_held_work_dir)
+        return work_dir
+
+    @staticmethod
+    def _release_held_work_dir():
+        from modules.pipeline import isolated_translator
+
+        held = isolated_translator._held_work_dir[0]
+        if held is not None:
+            held.close()
+        isolated_translator._held_work_dir[0] = None
+
     def test_translate_batch_chunk(self):
         from modules.pipeline import isolated_translator
 
@@ -57,66 +83,54 @@ class TestIsolatedTranslator(unittest.TestCase):
         self.assertEqual(mock_proc.call_count, 1)
 
     @patch("modules.pipeline.isolated_translator.utils.print_progress_bar")
-    @patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "out.tmp"))
-    @patch("modules.pipeline.isolated_translator.os.close")
-    @patch("modules.pipeline.isolated_translator.time.sleep")
-    @patch("os.replace")
-    @patch("os.remove")
-    @patch("os.path.exists")
-    def test_process_single_job(self, mock_exists, mock_remove, mock_replace, mock_sleep, mock_close, mock_mkstemp, mock_print):
+    def test_process_single_job(self, mock_print):
         from modules.pipeline import isolated_translator
 
-        # Mock translator
         mock_translator = MagicMock()
         mock_translator.translate.return_value = ["Translated Text"]
+        work_dir = self._held_work_dir()
+        input_file = os.path.join(work_dir, "in.json")
+        output_file = os.path.join(work_dir, "out.json")
+        with open(input_file, "w", encoding="utf-8") as handle:
+            json.dump([{"text": "Source", "start": 0, "end": 1}], handle)
+        written = []
 
-        # Mock file I/O
-        input_data = [{"text": "Source", "start": 0, "end": 1}]
-        m_open = mock_open(read_data=json.dumps(input_data))
+        def consume_output(_seconds):
+            with open(output_file, "r", encoding="utf-8") as handle:
+                written.append(json.load(handle))
+            os.remove(output_file)
 
-        # Files:
-        # 1. output_file exists? -> False (for remove check)
-        # 2. output_file exists? -> False (for sync wait loop exit)
-        mock_exists.return_value = False
-
-        job = {"lang": "es", "tgt_code": "spa", "input": "in.json", "output": "out.json", "src_code": "eng_Latn"}
-
-        with patch("builtins.open", m_open):
+        job = {"lang": "es", "tgt_code": "spa", "input": input_file, "output": output_file, "src_code": "eng_Latn"}
+        with patch("modules.pipeline.isolated_translator.time.sleep", side_effect=consume_output):
             isolated_translator._process_single_job(job, 0, 1, mock_translator)
 
         mock_translator.translate.assert_called()
-        mock_replace.assert_called()
-        # Verify file write to satisfy unused variable lint
-        m_open().write.assert_called()
+        self.assertEqual(written, [["Translated Text"]])
+        self.assertEqual(os.listdir(work_dir), ["in.json"])
 
-    @patch("modules.pipeline.isolated_translator.tempfile.mkstemp", return_value=(99, "out.tmp"))
-    @patch("modules.pipeline.isolated_translator.os.close")
-    @patch("os.replace")
     @patch("modules.pipeline.isolated_translator.ModelManager")
     @patch("modules.pipeline.isolated_translator.config.load_config")
     @patch("modules.pipeline.isolated_translator.OPTIMIZER")
     @patch("modules.utils.print_progress_bar")
     @patch("modules.pipeline.isolated_translator.log")
-    def test_run_translation_worker_direct(
-        self, mock_log, mock_print, mock_opt, mock_load, mock_mm, mock_replace, mock_close, mock_mkstemp
-    ):
+    def test_run_translation_worker_direct(self, mock_log, mock_print, mock_opt, mock_load, mock_mm):
         from modules.pipeline import isolated_translator
 
-        # Mocking data
         mock_translator = MagicMock()
         mock_translator.translate.return_value = ["Translated"]
         mock_mm.return_value.get_nllb.return_value = mock_translator
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        input_file = os.path.join(folder, "in.json")
+        output_file = os.path.join(folder, "out.json")
+        with open(input_file, "w", encoding="utf-8") as handle:
+            json.dump([{"text": "Hello", "start": 0.0, "end": 1.0}], handle)
 
-        input_data = [{"text": "Hello", "start": 0.0, "end": 1.0}]
-        m_open = mock_open(read_data=json.dumps(input_data))
-
-        with patch("builtins.open", m_open):
-            isolated_translator.run_translation_worker("in.json", "out.json", "eng_Latn", "spa_Latn", 1, "Spanish", " [Prefix]")
+        isolated_translator.run_translation_worker(input_file, output_file, "eng_Latn", "spa_Latn", 1, "Spanish", " [Prefix]")
 
         mock_translator.translate.assert_called()
-        mock_replace.assert_called()
-        # Verify it validates the write
-        m_open().write.assert_called()
+        with open(output_file, "r", encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle), ["Translated"])
 
     @patch("sys.exit")
     def test_main_legacy_mode(self, mock_exit):

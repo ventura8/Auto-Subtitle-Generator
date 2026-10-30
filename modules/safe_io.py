@@ -21,12 +21,14 @@ import contextlib
 import hashlib
 import os
 import secrets
+import shutil
 import stat
 from dataclasses import dataclass
 
 SCRATCH_PREFIX = ".asg-tmp-"
 _TAG_STEM_LENGTH = 24
 _NAME_ATTEMPTS = 64
+COPY_CHUNK_BYTES = 8 * 1024 * 1024
 _CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 _DIR_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 DIR_FD_SUPPORTED = {os.open, os.stat, os.unlink, os.rename} <= os.supports_dir_fd
@@ -117,11 +119,35 @@ def atomic_text_writer(path, encoding="utf-8", scratch_dir=None):
     ``scratch_dir`` places the scratch entry in the per-video work directory
     instead of beside ``path``; both must be on the same filesystem.
     """
+    with _atomic_writer(path, scratch_dir, "w", encoding) as file_handle:
+        yield file_handle
+
+
+@contextlib.contextmanager
+def atomic_binary_writer(path, scratch_dir=None):
+    """Binary counterpart of ``atomic_text_writer``."""
+    with _atomic_writer(path, scratch_dir, "wb", None) as file_handle:
+        yield file_handle
+
+
+def copy_file_into(source_path, final_path, scratch_dir=None):
+    """Copy a private file onto ``final_path`` atomically, never following a link at the destination.
+
+    Used to keep a resumable copy in the work directory of a file produced in a
+    private directory on another filesystem, where a rename is not possible.
+    """
+    with open(source_path, "rb") as source, atomic_binary_writer(final_path, scratch_dir) as target:
+        shutil.copyfileobj(source, target, COPY_CHUNK_BYTES)
+
+
+@contextlib.contextmanager
+def _atomic_writer(path, scratch_dir, mode, encoding):
+    """Write through the creation descriptor of a reserved scratch file and promote it on success."""
     reject_symlink(path)
     reservation = _reserve(path, scratch_dir)
     promoted = False
     try:
-        with os.fdopen(reservation.fd, "w", encoding=encoding) as file_handle:
+        with os.fdopen(reservation.fd, mode, encoding=encoding) as file_handle:
             reservation.fd = None
             yield file_handle
         promote_temp_path(reservation, path)
