@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from modules.asr import audio_source
+from modules.media.input_binding import InputRefusedError
 from modules.safe_io import SymlinkRefusedError
 
 SR = audio_source.SAMPLE_RATE
@@ -36,13 +37,18 @@ def _write_cmd_bytes(cmd):
 
 
 def _read_header(path):
-    """Parse a fake WAV header; libsndfile-style RuntimeError for anything else."""
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        parts = handle.read().split()
+    """Parse a fake WAV header file; libsndfile-style RuntimeError for anything else."""
+    with open(path, "rb") as handle:
+        return _parse_header(handle.read(), path)
+
+
+def _parse_header(data, name):
+    """Parse the bytes of a fake WAV header; libsndfile-style RuntimeError for anything else."""
+    parts = data.decode("utf-8", errors="replace").split()
     try:
         rate, channels, frames = (int(part) for part in parts)
     except ValueError as error:
-        raise RuntimeError(f"Error opening {path!r}: Format not recognised.") from error
+        raise RuntimeError(f"Error opening {name!r}: Format not recognised.") from error
     return rate, channels, frames
 
 
@@ -76,6 +82,7 @@ class _FakeSoundFile:
     """Stand-in for the ``soundfile`` module over fake WAV header files."""
 
     handles: list = []
+    raw_files: list = []
 
     @staticmethod
     def info(path):
@@ -84,11 +91,12 @@ class _FakeSoundFile:
         return SimpleNamespace(samplerate=rate, channels=channels, duration=frames / rate)
 
     @classmethod
-    def SoundFile(cls, path, mode="r"):
-        """Open a fake WAV for reading."""
+    def SoundFile(cls, raw_file, mode="r"):
+        """Open a fake WAV for reading from an open binary file object (never a path)."""
         if mode != "r":
             raise ValueError(mode)
-        handle = _FakeHandle(_read_header(path)[2])
+        cls.raw_files.append(raw_file)
+        handle = _FakeHandle(_parse_header(raw_file.read(), raw_file.name)[2])
         cls.handles.append(handle)
         return handle
 
@@ -196,9 +204,13 @@ class TestOpenPcmSource(_AudioDirTestCase):
         self.assertEqual(source.duration, 1.0)
         self.assertEqual(source.read(0.5, 0.5 + 4 / SR), [8000, 8001, 8002, 8003])
         handle = _FakeSoundFile.handles[-1]
+        raw_file = _FakeSoundFile.raw_files[-1]
         self.assertEqual(handle.read_kwargs, {"dtype": "float32", "always_2d": False})
+        self.assertEqual(os.fstat(raw_file.fileno()).st_ino, os.stat(self.audio).st_ino)
+        self.assertFalse(raw_file.closed)
         source.close()
         self.assertTrue(handle.closed)
+        self.assertTrue(raw_file.closed)
 
     def test_short_other_format_is_decoded_in_memory(self):
         _write_fake_wav(self.audio, 0.5, rate=8000, channels=2)
@@ -218,6 +230,29 @@ class TestOpenPcmSource(_AudioDirTestCase):
             source = audio_source.open_pcm_source(self.audio, self.transcode)
         probe.assert_called_once_with(self.audio)
         self.assertEqual(source.duration, 3.0)
+
+
+class TestOpenSoundFileBinding(_AudioDirTestCase):
+    def test_symlink_is_refused_and_its_target_never_read(self):
+        victim = os.path.join(self.dir, "victim.wav")
+        _write_fake_wav(victim, 1.0)
+        os.symlink(victim, self.audio)
+        opened = len(_FakeSoundFile.raw_files)
+        with self.assertRaises(InputRefusedError):
+            audio_source._open_soundfile(self.audio)
+        self.assertEqual(len(_FakeSoundFile.raw_files), opened)
+
+    def test_raw_file_is_closed_when_soundfile_fails(self):
+        with open(self.audio, "wb") as handle:
+            handle.write(b"not audio")
+        with self.assertRaises(RuntimeError):
+            audio_source._open_soundfile(self.audio)
+        self.assertTrue(_FakeSoundFile.raw_files[-1].closed)
+
+    def test_source_without_raw_file_closes_only_the_handle(self):
+        handle = _FakeHandle(SR)
+        audio_source._SoundFileSource(handle).close()
+        self.assertTrue(handle.closed)
 
 
 def _fake_transcoder(_source, target, start, length, mono_16k=False):

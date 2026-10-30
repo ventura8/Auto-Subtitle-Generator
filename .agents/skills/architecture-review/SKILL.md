@@ -35,6 +35,7 @@ Use this skill when designing or implementing structural changes across `auto_su
 
    - Temporary file writes + atomic rename prevent corrupted partial subtitle files.
    - Signal handling preserves completed files and cleanly shuts down background workers.
+   - The work directory is in the untrusted input folder: model readers use the private audio stage (`modules/media/audio_stage.py`), Audio-Separator writes only into it, and the translation worker reads/writes job files only through the held work directory (`modules/held_dir.py`).
 
 ## Architectural Review Checklist
 

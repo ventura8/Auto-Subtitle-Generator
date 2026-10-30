@@ -464,7 +464,26 @@ class TestTranslationWorkDir(_WorkDirCase):
         self.assertFalse(os.path.exists(pivot))
 
 
+def _release_held_work_dir():
+    """Close and clear the worker's held work directory so no state leaks between tests."""
+    held = isolated_translator._held_work_dir[0]
+    if held is not None:
+        held.close()
+    isolated_translator._held_work_dir[0] = None
+
+
 class TestPivotReuseValidation(_WorkDirCase):
+    def setUp(self):
+        super().setUp()
+        _release_held_work_dir()
+        self.addCleanup(_release_held_work_dir)
+
+    def _held_pivot_job(self, source, pivot):
+        """Build a pivot job the way the worker sees it: resolved paths, work directory held."""
+        job = self._pivot_job(source, pivot)
+        isolated_translator._hold_work_dir(os.path.realpath(self.work_dir))
+        return {key: os.path.realpath(value) if isinstance(value, str) else value for key, value in job.items()}
+
     def _pivot_job(self, source, pivot):
         workdir.ensure_work_dir(self.folder, "movie")
         input_path = self._write(os.path.join(self.work_dir, "movie.common_input.json"), json.dumps(source))
@@ -512,6 +531,31 @@ class TestPivotReuseValidation(_WorkDirCase):
     def test_missing_pivot_is_not_reused(self):
         job = self._pivot_job([{"text": "Salut", "start": 0.0, "end": 1.0}], None)
         self.assertFalse(isolated_translator._reuse_existing_pivot_output_if_available(job))
+
+    def test_matching_pivot_is_reused_through_the_held_work_dir(self):
+        source = [{"text": "Salut", "start": 0.0, "end": 1.0}]
+        job = self._held_pivot_job(source, [{"text": "Hello", "start": 0.0, "end": 1.0}])
+        with patch("modules.pipeline.isolated_translator.log"):
+            self.assertTrue(isolated_translator._reuse_existing_pivot_output_if_available(job))
+        self.assertTrue(os.path.isfile(job["output"]))
+
+    def test_stale_pivot_is_discarded_through_the_held_work_dir(self):
+        source = [{"text": "Salut", "start": 0.0, "end": 1.0}]
+        job = self._held_pivot_job(source, [{"text": "Hello", "start": 4.0, "end": 5.0}])
+        with patch("modules.pipeline.isolated_translator.log"):
+            self.assertFalse(isolated_translator._reuse_existing_pivot_output_if_available(job))
+        self.assertFalse(os.path.lexists(job["output"]))
+
+    def test_symlinked_pivot_is_not_reused_and_its_target_survives(self):
+        source = [{"text": "Salut", "start": 0.0, "end": 1.0}]
+        job = self._held_pivot_job(source, None)
+        victim = self._write(os.path.join(self.folder, "victim.json"), json.dumps([{"text": "SECRET", "start": 0.0, "end": 1.0}]))
+        os.symlink(victim, job["output"])
+        with patch("modules.pipeline.isolated_translator.log"):
+            self.assertFalse(isolated_translator._reuse_existing_pivot_output_if_available(job))
+        self.assertFalse(os.path.lexists(job["output"]))
+        with open(victim, encoding="utf-8") as handle:
+            self.assertIn("SECRET", handle.read())
 
 
 class TestSafeIoScratchDir(_WorkDirCase):

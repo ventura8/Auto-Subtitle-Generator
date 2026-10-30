@@ -13,7 +13,8 @@ Validate and execute architecture-level changes without violating reliability or
 1. **Orchestration vs Business Logic**: Keep `auto_subtitle.py` strictly as an orchestrator; domain logic lives under `modules/`.
 1. **Model Lifecycle & Isolation**: Faster Whisper, the NVIDIA ASR model (Canary/Parakeet via `ModelManager.get_asr` / `offload_asr`) and isolated translators (`NLLBTranslator` / `TranslateGemmaTranslator`) are never co-located during heavy execution.
 1. **ASR Engines**: Engine selection lives in `modules/configuration/asr_settings.py` (`--asr` / `asr.engine` / `asr.routes`); every fallback to Whisper logs a WARNING, long inputs are streamed (never decoded whole), and the decoded-speech guard redoes mostly empty NVIDIA output with Whisper. See the "ASR Engines" contract in `AGENTS.md`.
-1. **Subprocess Process Isolation**: Translation runs in `isolated_translator.py` with clean signal handling and VRAM reclamation.
+1. **Subprocess Process Isolation**: Translation runs in `isolated_translator.py` with clean signal handling and VRAM reclamation; job files are reached only through the held work directory (`modules/held_dir.py`).
+1. **Private Audio Stage**: model readers and Audio-Separator use a private `%TEMP%` stage (`modules/media/audio_stage.py`), never the listable work directory, after a model load.
 1. **Reliability & Atomic Output**: Output subtitle files write to temporary `.tmp` files and atomically replace destination files.
 1. **Zero Suppressions**: Never introduce `# noqa`, `# type: ignore`, `# pylint: disable`, `# bandit: disable`, or warning-ignore filters (see `AGENTS.md`).
 1. **Quality Gates**: Keep every function at Radon grade A (CC 1-5), every file at MI grade A, and per-file test coverage >= 90%.

@@ -20,7 +20,7 @@ RUN uv python install 3.12.14
 WORKDIR /app
 # Copy only what the installer and the E2E suite need; never the whole build
 # context, so local secrets, caches or media can't leak into the image.
-COPY pyproject.toml poetry.lock poetry.toml pytest.ini pyrightconfig.json config.yaml \
+COPY pyproject.toml poetry.lock poetry.toml bootstrap-requirements.txt pytest.ini pyrightconfig.json config.yaml \
      auto_subtitle.py install_dependencies.sh start.sh run_local_pipeline.sh /app/
 COPY modules /app/modules
 COPY tests /app/tests

@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from modules import safe_io, workdir
+from modules.media import audio_stage
 
 transcription = importlib.import_module("modules.pipeline.transcription")
 
@@ -51,15 +52,22 @@ class TestChunkSeconds(unittest.TestCase):
 
 
 class _ChunkCase(unittest.TestCase):
-    """Real work directory and scratch directory; FFmpeg and the separator are stand-ins that write files."""
+    """Real work directory and audio stage; FFmpeg and the separator are stand-ins that write files.
+
+    ``self.audio`` is the staged copy of the work-directory ``movie_temp.wav``
+    (``self.work_audio``) and the separator scratch directory lives in the stage,
+    as ``_run_vocal_separation`` sets them up.
+    """
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.folder = self._tmp.name
         self.work_dir = workdir.ensure_work_dir(self.folder, "movie")
-        self.scratch_dir = safe_io.create_private_dir(self.work_dir, "movie_vocals")
-        self.audio = self._write(os.path.join(self.work_dir, "movie_temp.wav"), b"\x00" * 4096)
+        self.work_audio = self._write(os.path.join(self.work_dir, "movie_temp.wav"), b"\x00" * 4096)
+        self.stage = self.enterContext(audio_stage.open_stage())
+        self.scratch_dir = self.stage.new_dir("separator")
+        self.audio = self.stage.import_file(self.work_audio)
         self.separator = MagicMock()
         self.separator.separate.side_effect = self._fake_separate
         self.job = {
@@ -68,6 +76,7 @@ class _ChunkCase(unittest.TestCase):
             "scratch_dir": self.scratch_dir,
             "work_dir": self.work_dir,
             "base_name": "movie",
+            "stage": self.stage,
         }
         self.durations = {}
         self.addCleanup(patch.stopall)
@@ -77,8 +86,16 @@ class _ChunkCase(unittest.TestCase):
         patch("modules.pipeline.transcription.log").start()
 
     def _work_entries(self):
-        """Work-dir entries other than the fixture's own separator scratch directory."""
-        return sorted(e for e in os.listdir(self.work_dir) if e != os.path.basename(self.scratch_dir))
+        """Work-dir entries."""
+        return sorted(os.listdir(self.work_dir))
+
+    def _stage_files(self):
+        """Regular files at the top of the stage (the scratch directory is a sub-directory)."""
+        return sorted(e for e in os.listdir(self.stage.root) if os.path.isfile(os.path.join(self.stage.root, e)))
+
+    def _read(self, path):
+        with open(path, "rb") as handle:
+            return handle.read()
 
     def _write(self, path, payload=b"\x00" * 64):
         with open(path, "wb") as handle:
@@ -105,14 +122,19 @@ class _ChunkCase(unittest.TestCase):
 class TestChunkedSeparation(_ChunkCase):
     def test_separates_each_window_and_joins_into_one_16k_stem(self):
         self.durations[os.path.normpath(self.audio)] = 150.0
-        final = transcription._run_chunked_separation(self.job, 150.0, 60)
+        final, staged = transcription._run_chunked_separation(self.job, 150.0, 60)
 
         self.assertEqual(final, os.path.join(self.work_dir, "movie_temp_(Vocals)_chunked.wav"))
-        self.assertTrue(os.path.isfile(final))
+        self.assertEqual(staged, self.stage.path("movie_temp_(Vocals)_chunked.wav"))
+        # The work-directory copy kept for resume holds the same bytes as the staged join.
+        self.assertEqual(self._read(final), self._read(staged))
         # 150 s at 60 s -> (0,60) (60,60) (120,30): the 30 s tail is < 60 so it folds into the second window.
         self.assertEqual(self.separator.separate.call_count, 2)
-        # Chunk stems are removed after the join; only the source WAV and the final stem remain.
+        # Chunk inputs are cut from the staged audio, never from the work directory.
+        self.assertTrue(all(os.path.dirname(c.args[0]) == self.scratch_dir for c in self.separator.separate.call_args_list))
+        # Chunk stems are removed after the join, in the work dir and the stage alike.
         self.assertEqual(self._work_entries(), ["movie_temp.wav", "movie_temp_(Vocals)_chunked.wav"])
+        self.assertEqual(self._stage_files(), ["movie_temp.wav", "movie_temp_(Vocals)_chunked.wav"])
         # Nothing was left inside the scratch directory either.
         self.assertEqual(os.listdir(self.scratch_dir), [])
 
@@ -121,15 +143,19 @@ class TestChunkedSeparation(_ChunkCase):
             mock_window.side_effect = self._fake_window
             transcription._separate_chunk(self.job, 1, 3, (60.0, 60.0))
         cut, trim = mock_window.call_args_list
-        # Input cut: 2 s of context before and after the window, at the source format.
+        # Input cut: from the staged audio, 2 s of context before and after the window, at the source format.
+        self.assertEqual(cut.args[0], self.audio)
+        self.assertEqual(os.path.dirname(cut.args[1]), self.scratch_dir)
         self.assertEqual(cut.args[2:4], (58.0, 64.0))
         self.assertFalse(cut.kwargs.get("mono_16k", False))
         # Output trim: skip the leading pad, keep exactly the window, downmix to 16 kHz mono.
         self.assertEqual(trim.args[2:4], (2.0, 60.0))
         self.assertTrue(trim.kwargs["mono_16k"])
-        # Callers pass the final stem path; write_audio_window owns the only reservation.
-        self.assertEqual(trim.args[1], os.path.join(self.work_dir, "movie_sepchunk_001.wav"))
-        self.assertTrue(os.path.isfile(os.path.join(self.work_dir, "movie_sepchunk_001.wav")))
+        # The trimmed stem lands in the stage; write_audio_window owns the only reservation.
+        self.assertEqual(trim.args[1], self.stage.path("movie_sepchunk_001.wav"))
+        # A copy is kept in the work directory for resume.
+        work_stem = os.path.join(self.work_dir, "movie_sepchunk_001.wav")
+        self.assertEqual(self._read(work_stem), self._read(trim.args[1]))
 
     def test_first_chunk_has_no_leading_pad(self):
         with patch("modules.pipeline.transcription.ffmpeg_utils.write_audio_window") as mock_window:
@@ -140,15 +166,52 @@ class TestChunkedSeparation(_ChunkCase):
         self.assertEqual(trim.args[2:4], (0.0, 60.0))
 
     def test_finished_chunk_from_an_earlier_run_is_resumed_not_recomputed(self):
-        done = self._write(os.path.join(self.work_dir, "movie_sepchunk_000.wav"))
+        done = self._write(os.path.join(self.work_dir, "movie_sepchunk_000.wav"), b"RESUMED-")
         self.durations[os.path.normpath(done)] = 60.0
         self.durations[os.path.normpath(self.audio)] = 120.0
 
-        transcription._run_chunked_separation(self.job, 120.0, 60)
+        _final, staged = transcription._run_chunked_separation(self.job, 120.0, 60)
 
         # Only the second window went through the separator.
         self.assertEqual(self.separator.separate.call_count, 1)
         self.assertIn("chunk_001.wav", self.separator.separate.call_args[0][0])
+        # The resumed stem was staged and joined from its staged copy.
+        self.assertTrue(self._read(staged).startswith(b"RESUMED-"))
+        self.assertFalse(os.path.exists(self.stage.path("movie_sepchunk_000.wav")))
+        self.assertFalse(os.path.exists(done))
+
+    def test_resumed_stem_is_staged_so_a_later_swap_is_not_joined(self):
+        done = self._write(os.path.join(self.work_dir, "movie_sepchunk_000.wav"), b"RESUMED-")
+        victim = self._write(os.path.join(self.folder, "victim.wav"), b"VICTIM")
+        self.durations[os.path.normpath(done)] = 60.0
+
+        def swap_then_separate(chunk_input):
+            # While chunk 1 is separated, the resumed work-dir stem is swapped for a link.
+            os.remove(done)
+            os.symlink(victim, done)
+            return self._fake_separate(chunk_input)
+
+        self.separator.separate.side_effect = swap_then_separate
+        _final, staged = transcription._run_chunked_separation(self.job, 120.0, 60)
+        self.assertNotIn(b"VICTIM", self._read(staged))
+        self.assertTrue(self._read(staged).startswith(b"RESUMED-"))
+        self.assertEqual(self._read(victim), b"VICTIM")
+
+    def test_link_planted_at_the_work_stem_name_is_never_written_through(self):
+        victim = self._write(os.path.join(self.folder, "victim.wav"), b"VICTIM")
+        stem = os.path.join(self.work_dir, "movie_sepchunk_000.wav")
+
+        def plant_then_separate(chunk_input):
+            os.symlink(victim, stem)
+            return self._fake_separate(chunk_input)
+
+        self.separator.separate.side_effect = plant_then_separate
+        staged = transcription._separate_chunk(self.job, 0, 1, (0.0, 30.0))
+        self.assertTrue(os.path.isfile(staged))
+        self.assertTrue(staged.startswith(self.job["stage"].root))
+        self.assertEqual(self._read(victim), b"VICTIM")
+        self.assertTrue(os.path.islink(stem))
+        self.assertFalse(os.path.exists(os.path.join(self.scratch_dir, "chunk_000.wav")))
 
     def test_truncated_leftover_chunk_is_redone(self):
         stale = self._write(os.path.join(self.work_dir, "movie_sepchunk_000.wav"))
@@ -174,6 +237,7 @@ class TestChunkedSeparation(_ChunkCase):
             transcription._separate_chunk(self.job, 0, 1, (0.0, 30.0))
         self.assertFalse(os.path.exists(os.path.join(self.scratch_dir, "chunk_000.wav")))
         self.assertFalse(os.path.exists(os.path.join(self.work_dir, "movie_sepchunk_000.wav")))
+        self.assertFalse(os.path.exists(self.stage.path("movie_sepchunk_000.wav")))
 
     def test_failed_trim_discards_reservation_and_raw_stem(self):
         raw = self._write(os.path.join(self.scratch_dir, "raw_(Vocals).wav"))
@@ -223,9 +287,24 @@ class TestSeparateDispatch(_ChunkCase):
             patch("modules.configuration.config.SEPARATION_CHUNK_MINUTES", 30),
             patch("modules.pipeline.transcription._run_chunked_separation") as chunked,
         ):
-            transcription._separate(self.job)
+            work, staged = transcription._separate(self.job)
         chunked.assert_not_called()
         self.separator.separate.assert_called_once_with(self.audio)
+        # The vocal stem is moved out of the scratch dir into the stage and copied into the work dir.
+        self.assertEqual(staged, self.stage.path("movie_temp_(Vocals)_model.wav"))
+        self.assertEqual(work, os.path.join(self.work_dir, "movie_temp_(Vocals)_model.wav"))
+        self.assertEqual(self._read(work), self._read(staged))
+        self.assertEqual(os.listdir(self.scratch_dir), [])
+
+    def test_single_pass_without_vocal_stem_returns_none(self):
+        self.separator.separate.side_effect = lambda _audio: [self._write(os.path.join(self.scratch_dir, "x_(Instrumental).wav"))]
+        self.assertIsNone(transcription._separate(self.job))
+        self.assertEqual(self._work_entries(), ["movie_temp.wav"])
+
+    def test_single_pass_with_missing_vocal_stem_returns_none(self):
+        self.separator.separate.side_effect = lambda _audio: [os.path.join(self.scratch_dir, "x_(Vocals).wav")]
+        self.assertIsNone(transcription._separate(self.job))
+        self.assertEqual(self._work_entries(), ["movie_temp.wav"])
 
     def test_long_audio_uses_chunks(self):
         self.durations[os.path.normpath(self.audio)] = 4 * 3600.0
@@ -265,25 +344,31 @@ class TestRunVocalSeparationChunkedEndToEnd(_ChunkCase):
     def test_run_vocal_separation_delegates_and_removes_scratch(self):
         self.durations[os.path.normpath(self.audio)] = 150.0
         manager = MagicMock()
-        manager.get_separator.return_value = self.separator
         # Use a separator that writes into whatever output_dir it is handed.
         created = {}
 
         def get_separator(output_dir=None):
             created["dir"] = output_dir
             self.scratch_dir = output_dir
-            self.job["scratch_dir"] = output_dir
             return self.separator
 
         manager.get_separator.side_effect = get_separator
         with (
             patch("modules.configuration.config.SEPARATION_CHUNK_MINUTES", 1),
-            patch("modules.pipeline.transcription.utils.extract_clean_audio", return_value=self.audio),
+            patch("modules.pipeline.transcription.utils.extract_clean_audio", return_value=self.work_audio),
+            audio_stage.open_stage() as stage,
         ):
-            result = transcription._run_vocal_separation(os.path.join(self.folder, "movie.mp4"), manager)
-        self.assertEqual(result, os.path.join(self.work_dir, "movie_temp_(Vocals)_chunked.wav"))
-        self.assertFalse(os.path.lexists(created["dir"]), "separator scratch directory removed afterwards")
+            # A fresh stage: the staged copy of the work audio gets probed for its duration.
+            self.durations[os.path.normpath(stage.path("movie_temp.wav"))] = 150.0
+            result = transcription._run_vocal_separation(os.path.join(self.folder, "movie.mp4"), manager, stage)
+            self.assertEqual(
+                result, (os.path.join(self.work_dir, "movie_temp_(Vocals)_chunked.wav"), stage.path("movie_temp_(Vocals)_chunked.wav"))
+            )
+            # The separator writes into a private stage directory, outside the work directory.
+            self.assertEqual(os.path.dirname(created["dir"]), stage.root)
+        self.assertFalse(os.path.lexists(created["dir"]), "separator scratch directory removed with the stage")
         self.assertEqual(self.separator.separate.call_count, 2)
+        self.assertEqual(self._work_entries(), ["movie_temp.wav", "movie_temp_(Vocals)_chunked.wav"])
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "auto-subtitle-generator"
-version = "1.3.2"
+version = "1.3.3"
 description = "Auto-Subtitle Generator using Faster Whisper and optional Translation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -25,32 +25,35 @@ optional = true
 
 [tool.poetry.group.ml.dependencies]
 torch = [
-  { version = "2.14.0+cu132", source = "pytorch-cu132", markers = "platform_system != 'Darwin'" },
-  { version = ">=2.14,<2.15", markers = "platform_system == 'Darwin'" },
+  { version = "2.15.0+cu132", source = "pytorch-cu132", markers = "platform_system != 'Darwin'" },
+  { version = ">=2.15,<2.16", markers = "platform_system == 'Darwin'" },
 ]
 torchvision = [
-  { version = "0.29.0+cu132", source = "pytorch-cu132", markers = "platform_system != 'Darwin'" },
+  { version = "0.29.1+cu132", source = "pytorch-cu132", markers = "platform_system != 'Darwin'" },
   { version = ">=0.29,<0.30", markers = "platform_system == 'Darwin'" },
 ]
 faster-whisper = "^1.2.1"
-transformers = "^5.17.0"
+# faster-whisper 1.2.1 (latest) calls av.open(..., metadata_errors="ignore"), which PyAV 19
+# removed; every transcription fails with a TypeError until faster-whisper catches up.
+av = ">=18.1,<19"
+transformers = "^5.22.1"
 sentencepiece = "^0.2.2"
 accelerate = "^1.15.0"
 # Do not pin nvidia-cublas, nvidia-cuda-nvrtc or nvidia-nvjitlink here. torch pulls
 # cuda-toolkit, and the two torch entries below resolve to different
-# cuda-toolkit versions (13.2.1 for the +cu132 build, 13.0.3 for the plain
+# cuda-toolkit versions (13.2.2 for the +cu132 build, 13.0.3 for the plain
 # PyPI build the Darwin entry selects), which demand different nvrtc pins;
 # pinning one breaks the other branch. The resolver picks them correctly on
 # its own; nvidia-cudnn-cu13 stays pinned only because both torch builds agree
-# on 9.24.0.43. The markers deliberately carry only platform_system: requires-python
+# on 9.26.0.51. The markers deliberately carry only platform_system: requires-python
 # already pins 3.12, so repeating python_version/implementation_name on every
 # entry only enlarges the marker space Poetry has to intersect.
-nvidia-cudnn-cu13 = { version = "9.24.0.43", markers = "platform_system != 'Darwin'" }
+nvidia-cudnn-cu13 = { version = "9.26.0.51", markers = "platform_system != 'Darwin'" }
 audio-separator = [
-  { version = "^0.47.0", extras = [
+  { version = "^0.48.0", extras = [
     "gpu",
   ], markers = "platform_system != 'Darwin'" },
-  { version = "^0.47.0", extras = [
+  { version = "^0.48.0", extras = [
     "cpu",
   ], markers = "platform_system == 'Darwin'" },
 ]
@@ -65,23 +68,23 @@ optional = true
 pyarrow = "^26.0.0"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^9.1.1"
+pytest = "^9.2.0"
 pytest-cov = "^7.1.0"
 radon = "^6.0.1"
-pylint = "^4.0.8"
-flake8 = "^7.3.0"
-black = "^26.5.1"
-isort = "^9.0.1"
+pylint = "^4.1.3"
+flake8 = "^7.5.0"
+black = "^26.10.1"
+isort = "^9.0.2"
 taplo = "^0.9.3"
-ruff = "^0.16.8"
-mypy = "^2.3.1"
+ruff = "^0.17.3"
+mypy = "^2.4.1"
 pyright = "^1.1.414"
 bandit = "^1.9.4"
 pip-audit = "^2.10.1"
 genbadge = "^1.1.3"
-types-pyyaml = "^6.0.12.20260906"
+types-pyyaml = "^6.0.12.20261030"
 mdformat = "^1.0.0"
-pymarkdownlnt = "^0.9.40"
+pymarkdownlnt = "^0.9.41"
 
 [[tool.poetry.source]]
 name = "pytorch-cu132"

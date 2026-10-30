@@ -1,5 +1,8 @@
 import contextlib
+import json
 import os
+import shutil
+import tempfile
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -20,7 +23,7 @@ class TestCoverageTranslation(unittest.TestCase):
 
     def test_process_completed_output_mismatch(self):
         with (
-            patch("modules.pipeline.translation.open", mock_open(read_data='["line1"]')),
+            patch("modules.pipeline.translation._read_work_file", return_value=b'["line1"]'),
             patch("modules.pipeline.translation.log") as mock_log,
         ):
             res = translation._process_completed_output("file.json", "en", [MagicMock(), MagicMock()], "folder", "base")
@@ -29,7 +32,7 @@ class TestCoverageTranslation(unittest.TestCase):
 
     def test_process_completed_output_read_failure_after_retries(self):
         with (
-            patch("modules.pipeline.translation.open", side_effect=OSError("read failure")),
+            patch("modules.pipeline.translation.open_bound_input", side_effect=OSError("read failure")),
             patch("modules.pipeline.translation.time.sleep"),
             patch("modules.pipeline.translation.log") as mock_log,
         ):
@@ -418,6 +421,83 @@ class TestCoverageTranslation(unittest.TestCase):
         ):
             res = translation.translate_segments([], "en", MagicMock(), {"folder": "folder", "base_name": "base"})
             self.assertEqual(res, {})
+
+
+class TestWorkFileReadsDoNotFollowLinks(unittest.TestCase):
+    """The parent reads worker outputs and the manifest from the untrusted work directory."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.work_dir = os.path.join(self.root, "movie.asg-temp")
+        os.mkdir(self.work_dir)
+        self.victim = os.path.join(self.root, "victim.json")
+        with open(self.victim, "w", encoding="utf-8") as handle:
+            json.dump(["VICTIM SECRET"], handle)
+
+    def _plant_link(self, name):
+        path = os.path.join(self.work_dir, name)
+        os.symlink(self.victim, path)
+        return path
+
+    def test_read_work_file_returns_the_bytes_of_a_regular_file(self):
+        path = os.path.join(self.work_dir, "out.json")
+        with open(path, "wb") as handle:
+            handle.write(b'["Hola"]')
+
+        self.assertEqual(translation._read_work_file(path), b'["Hola"]')
+
+    def test_read_work_file_refuses_a_symlink(self):
+        with self.assertRaises(OSError):
+            translation._read_work_file(self._plant_link("out.json"))
+
+    def test_load_translation_output_refuses_a_symlinked_output(self):
+        output_file = self._plant_link(".temp_output.movie.fr.json")
+
+        with patch("modules.pipeline.translation.time.sleep") as mock_sleep:
+            with self.assertRaises(RuntimeError):
+                translation._load_translation_output_with_retry(output_file)
+
+        self.assertEqual(mock_sleep.call_count, 3)
+
+    def test_load_translation_output_reads_a_regular_output(self):
+        output_file = os.path.join(self.work_dir, ".temp_output.movie.fr.json")
+        with open(output_file, "w", encoding="utf-8") as handle:
+            json.dump(["Bonjour"], handle)
+
+        self.assertEqual(translation._load_translation_output_with_retry(output_file), ["Bonjour"])
+
+    def test_symlinked_output_never_becomes_a_subtitle(self):
+        output_file = self._plant_link(".temp_output.movie.fr.json")
+
+        with (
+            patch("modules.pipeline.translation.time.sleep"),
+            patch("modules.pipeline.translation.utils.save_translated_srt") as mock_save,
+            patch("modules.pipeline.translation.log"),
+        ):
+            self.assertFalse(translation._process_completed_output(output_file, "fr", [MagicMock()], self.root, "movie"))
+
+        mock_save.assert_not_called()
+
+    def test_send_manifest_refuses_a_symlinked_manifest_and_closes_stdin(self):
+        proc = MagicMock()
+
+        with self.assertRaises(OSError):
+            translation._send_manifest_to_worker(proc, self._plant_link("movie.manifest.json"))
+
+        proc.stdin.write.assert_not_called()
+        proc.stdin.close.assert_called_once()
+
+    def test_send_manifest_writes_the_manifest_bytes(self):
+        manifest_path = os.path.join(self.work_dir, "movie.manifest.json")
+        with open(manifest_path, "wb") as handle:
+            handle.write(b'{"jobs": []}')
+        proc = MagicMock()
+
+        translation._send_manifest_to_worker(proc, manifest_path)
+
+        proc.stdin.write.assert_called_once_with(b'{"jobs": []}')
+        proc.stdin.close.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -14,10 +14,10 @@ from modules.asr import audio_source, language_id, routing
 from modules.asr.cues import DEFAULT_LIMITS
 from modules.asr.languages import fold_romanian_diacritics, normalize_iso639_1
 from modules.configuration import asr_settings, config
-from modules.media import ffmpeg_utils
+from modules.media import audio_stage, ffmpeg_utils
 from modules.models import OPTIMIZER, Segment, apply_dynamic_asr_batch, asr_gpu_shortfall, log_vram
 from modules.runtime.optional_imports import load_optional_torch
-from modules.safe_io import create_private_dir, reject_symlink
+from modules.safe_io import copy_file_into, reject_symlink
 from modules.utils import log
 
 torch: Any | None = load_optional_torch()
@@ -32,8 +32,8 @@ CHUNK_DURATION_TOLERANCE_SECONDS = 0.5
 # Below this the language guess is reported as unreliable (Whisper path and the ASR language vote alike).
 LOW_LANGUAGE_CONFIDENCE = 0.4
 
-# One NVIDIA-path transcription: the engine asked for, the audio it reads and the 16 kHz
-# transcode it may need (both inside the work directory), and the model manager.
+# One NVIDIA-path transcription: the engine asked for, the staged audio it reads, the 16 kHz
+# transcode it may need (inside the work directory), and the model manager.
 _AsrJob = namedtuple("_AsrJob", ["engine", "audio_path", "transcode_path", "model_mgr"])
 # The routed NVIDIA run: the engine chosen, the spoken language, the PCM source and its speech spans.
 _NvidiaRun = namedtuple("_NvidiaRun", ["engine", "language", "source", "spans"])
@@ -162,56 +162,66 @@ def _move_separator_output(src_path, dst_path):
     os.replace(src_path, dst_path)
 
 
-def _detect_and_separate_vocals(video_path, model_mgr):
-    """Handles vocal separation if configured."""
+def _detect_and_separate_vocals(video_path, model_mgr, stage):
+    """Return ``(work-directory vocals, staged copy)``, or None to transcribe the plain audio."""
     if not config.USE_VOCAL_SEPARATION:
-        return video_path
-
-    existing_vocal = _get_separated_vocal_path(video_path)
-    if existing_vocal:
-        log(f"  [AI] Resuming with existing vocals: {os.path.basename(existing_vocal)}")
-        return existing_vocal
-
+        return None
     try:
-        vocal_file = _run_vocal_separation(video_path, model_mgr)
-        if vocal_file:
-            return vocal_file
-
+        existing_vocal = _get_separated_vocal_path(video_path)
+        if existing_vocal:
+            log(f"  [AI] Resuming with existing vocals: {os.path.basename(existing_vocal)}")
+            return existing_vocal, stage.import_file(existing_vocal)
+        return _run_vocal_separation(video_path, model_mgr, stage)
     except (ImportError, RuntimeError, OSError) as e:
         log(f"  [Sep] Warning: Separation failed ({e}). Using original audio.", "WARNING")
+    return None
 
-    return video_path
 
+def _run_vocal_separation(video_path, model_mgr, stage):
+    """Execute separator model and return ``(work-directory vocals, staged copy)`` when successful.
 
-def _run_vocal_separation(video_path, model_mgr):
-    """Execute separator model and return isolated vocals path when successful.
-
-    Audio-Separator writes stems with predictable names, so it is pointed at a
-    private scratch directory inside the work directory; only the finished
-    vocal stem is moved out, and the scratch directory is removed afterwards
-    (also on failure), so a crash mid-write never leaves a half-written track
-    behind under the resumable name.
+    Audio-Separator writes stems with predictable names by pathname, so it
+    reads the staged copy of the extracted audio and writes into a private
+    directory of the stage, outside the input folder; neither can be listed or
+    replaced by the input folder's owner during the model load. Only the
+    finished vocal track is copied back into the work directory for resume.
     """
     log("  [Task 0/4] Separating Vocals (BS-Roformer)...")
-    audio_input_path = utils.extract_clean_audio(video_path)
+    work_audio = utils.extract_clean_audio(video_path)
     folder, base_name = _split_video_path(video_path)
-    work_dir = workdir.ensure_work_dir(folder, base_name)
-    scratch_dir = create_private_dir(work_dir, f"{base_name}_vocals")
+    job = {
+        # Staged before the model load: nothing below reopens the work directory by pathname.
+        "audio_path": stage.import_file(work_audio),
+        "scratch_dir": stage.new_dir("separator"),
+        "work_dir": workdir.ensure_work_dir(folder, base_name),
+        "base_name": base_name,
+        "stage": stage,
+    }
+    job["separator"] = model_mgr.get_separator(output_dir=job["scratch_dir"])
+    vocals = _separate(job)
+    if vocals is None:
+        return None
+    log(f"  [Sep] Vocal track isolated: {os.path.basename(vocals[0])}")
+    return vocals
+
+
+def _keep_for_resume(staged_path, job):
+    """Copy a finished staged file into the work directory and return ``(work path, staged path)``."""
+    work_path = os.path.join(job["work_dir"], os.path.basename(staged_path))
+    _copy_for_resume(staged_path, work_path, job)
+    return work_path, staged_path
+
+
+def _copy_for_resume(staged_path, work_path, job):
+    """Keep a resumable copy of a staged file; a refused or failed copy only costs the resume.
+
+    The readers use the staged file either way, so a link planted at the
+    work-directory name is refused without switching vocal separation off.
+    """
     try:
-        job = {
-            "separator": model_mgr.get_separator(output_dir=scratch_dir),
-            "audio_path": audio_input_path,
-            "scratch_dir": scratch_dir,
-            "work_dir": work_dir,
-            "base_name": base_name,
-        }
-        vocal_file = _separate(job)
-    finally:
-        workdir.remove_scratch_dir(scratch_dir)
-    if vocal_file and os.path.exists(vocal_file):
-        log(f"  [Sep] Vocal track isolated: {os.path.basename(vocal_file)}")
-        return vocal_file
-    return None
+        copy_file_into(staged_path, work_path, scratch_dir=job["work_dir"])
+    except OSError as error:
+        log(f"  [Sep] Not keeping {os.path.basename(work_path)} for resume ({error}).", "WARNING")
 
 
 def _separate(job):
@@ -229,7 +239,10 @@ def _separate(job):
     if chunk_seconds and duration > chunk_seconds:
         return _run_chunked_separation(job, duration, chunk_seconds)
     output_files = job["separator"].separate(job["audio_path"])
-    return _process_separator_outputs(output_files, job["scratch_dir"], job["work_dir"])
+    staged = _process_separator_outputs(output_files, job["scratch_dir"], job["stage"].root)
+    if staged is None or not os.path.isfile(staged):
+        return None
+    return _keep_for_resume(staged, job)
 
 
 def _separation_chunk_seconds():
@@ -243,11 +256,13 @@ def _run_chunked_separation(job, duration, chunk_seconds):
     windows = _chunk_windows(duration, chunk_seconds)
     log(f"  [Sep] Long audio ({utils.format_timestamp(duration)}): separating in {len(windows)} chunks of up to {chunk_seconds // 60} min.")
     stems = [_separate_chunk(job, index, len(windows), window) for index, window in enumerate(windows)]
-    final_path = os.path.join(job["work_dir"], f"{job['base_name']}_temp_(Vocals)_chunked.wav")
+    final_path = job["stage"].path(f"{job['base_name']}_temp_(Vocals)_chunked.wav")
     _join_chunk_stems(stems, final_path, job)
-    for stem in stems:
+    vocals = _keep_for_resume(final_path, job)
+    for index, stem in enumerate(stems):
         _discard_file(stem)
-    return final_path
+        _discard_file(_chunk_stem_path(job, index))
+    return vocals
 
 
 def _chunk_windows(duration, chunk_seconds):
@@ -270,22 +285,29 @@ def _chunk_stem_path(job, index):
 
 
 def _separate_chunk(job, index, total, window):
-    """Return the 16 kHz mono vocal stem for one window, reusing one finished by an earlier run."""
+    """Return the staged 16 kHz mono vocal stem for one window, reusing one finished by an earlier run.
+
+    A new stem is produced in the stage and copied into the work directory for
+    resume; a resumed one is staged straight away. The join only ever reads
+    staged stems, never the work-directory copies written minutes earlier.
+    """
     start, length = window
     stem_path = _chunk_stem_path(job, index)
     if _is_finished_chunk(stem_path, length):
         log(f"  [Sep] Chunk {index + 1}/{total}: resuming finished stem.")
-        return stem_path
+        return job["stage"].import_file(stem_path)
     log(f"  [Sep] Chunk {index + 1}/{total}: {utils.format_timestamp(start)} -> {utils.format_timestamp(start + length)}")
     pad_before = min(CHUNK_PAD_SECONDS, start)
     chunk_input = os.path.join(job["scratch_dir"], f"chunk_{index:03d}.wav")
+    staged_stem = job["stage"].path(stem_path)
     try:
         ffmpeg_utils.write_audio_window(job["audio_path"], chunk_input, start - pad_before, length + pad_before + CHUNK_PAD_SECONDS)
         raw_stem = _separate_chunk_input(job, chunk_input, index)
-        _write_chunk_stem(raw_stem, stem_path, pad_before, length)
+        _write_chunk_stem(raw_stem, staged_stem, pad_before, length)
+        _copy_for_resume(staged_stem, stem_path, job)
     finally:
         _discard_file(chunk_input)
-    return stem_path
+    return staged_stem
 
 
 def _separate_chunk_input(job, chunk_input, index):
@@ -387,16 +409,15 @@ def _print_transcription_progress(current_end, total_dur, speed, eta):
     )
 
 
-def _prepare_audio(video_path, model_mgr):
-    """Prepares audio for transcription (Separation or Extraction)."""
-    transcribe_path = video_path
+def _prepare_audio(video_path, model_mgr, stage):
+    """Return ``(work-directory audio, staged copy)``: the isolated vocals, or the extracted audio."""
     if config.USE_VOCAL_SEPARATION:
-        transcribe_path = _detect_and_separate_vocals(video_path, model_mgr)
+        vocals = _detect_and_separate_vocals(video_path, model_mgr, stage)
         model_mgr.offload_separator()
-
-    if transcribe_path == video_path:
-        transcribe_path = utils.extract_clean_audio(video_path)
-    return transcribe_path
+        if vocals is not None:
+            return vocals
+    work_audio = utils.extract_clean_audio(video_path)
+    return work_audio, stage.import_file(work_audio)
 
 
 def _run_whisper_transcribe_call(whisper_model, path, vad_params, transcription_options):
@@ -505,15 +526,20 @@ def transcribe_video_audio(video_path, model_mgr, forced_lang=None, forced_promp
     Returns ``(segments, language, transcribe_path)``. Whisper, the default,
     runs exactly as before; Canary and Parakeet (``--asr`` / ``asr.engine``)
     are routed by the spoken language and fall back to Whisper with a WARNING
-    whenever they cannot handle the file.
+    whenever they cannot handle the file. Every reader gets a private staged
+    copy of the audio (``audio_stage``), taken before any model loads.
     """
-    # 1. Prepare Audio
-    transcribe_path = _prepare_audio(video_path, model_mgr)
+    with audio_stage.open_stage() as stage:
+        return _transcribe_staged(video_path, model_mgr, stage, (forced_lang, forced_prompt))
 
-    # 2. Transcribe
+
+def _transcribe_staged(video_path, model_mgr, stage, forced):
+    """Prepare the audio in ``stage`` and run the selected engine on the staged copy."""
+    audio = _prepare_audio(video_path, model_mgr, stage)
+    transcribe_path = audio[0]
     log(f"  [Task 1/4] Transcribing '{os.path.basename(transcribe_path)}'...")
     try:
-        segments, detected_lang = _run_selected_engine(video_path, transcribe_path, model_mgr, (forced_lang, forced_prompt))
+        segments, detected_lang = _run_selected_engine(video_path, audio, model_mgr, forced)
         return segments, detected_lang, transcribe_path
 
     except (RuntimeError, OSError, ValueError) as e:
@@ -542,13 +568,13 @@ def _whisper_vad_params():
     }
 
 
-def _run_selected_engine(video_path, audio_path, model_mgr, forced):
-    """Run the requested engine; plain Whisper keeps its original path (no decode, no language vote)."""
+def _run_selected_engine(video_path, audio, model_mgr, forced):
+    """Run the requested engine on ``audio`` = ``(work path, staged path)``; plain Whisper keeps its original path."""
     options = _transcription_options(*forced)
     engine = asr_settings.active_engine()
     if engine == "whisper" and (options["language"] or not asr_settings.force_detected_language()):
-        return _transcribe_with_whisper(model_mgr, audio_path, options)
-    return _transcribe_routed(_asr_job(engine, video_path, audio_path, model_mgr), options)
+        return _transcribe_with_whisper(model_mgr, audio[1], options)
+    return _transcribe_routed(_asr_job(engine, video_path, audio, model_mgr), options)
 
 
 def _transcribe_with_whisper(model_mgr, path, options):
@@ -559,13 +585,14 @@ def _transcribe_with_whisper(model_mgr, path, options):
     return _finalize_transcription(segments, info, start_time)
 
 
-def _asr_job(engine, video_path, audio_path, model_mgr):
-    """Describe one routed transcription; the audio must come from the work directory."""
+def _asr_job(engine, video_path, audio, model_mgr):
+    """Describe one routed transcription; the audio must come from the work directory, read from its staged copy."""
+    work_path, staged_path = audio
     folder, base_name = _split_video_path(video_path)
     work_dir = workdir.work_dir_path(folder, base_name)
-    if not _is_within_directory(audio_path, work_dir):
-        raise ValueError(f"ASR audio must come from the work directory, not {audio_path}")
-    return _AsrJob(engine, audio_path, os.path.join(work_dir, f"{base_name}_asr16k.wav"), model_mgr)
+    if not _is_within_directory(work_path, work_dir):
+        raise ValueError(f"ASR audio must come from the work directory, not {work_path}")
+    return _AsrJob(engine, staged_path, os.path.join(work_dir, f"{base_name}_asr16k.wav"), model_mgr)
 
 
 def _transcribe_routed(job, options):

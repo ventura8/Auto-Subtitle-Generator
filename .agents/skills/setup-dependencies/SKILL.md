@@ -13,7 +13,7 @@ Bring the local machine to a fully functional state capable of running high-perf
 ## Dependency Invariants
 
 1. **Python Runtime**: Python 3.12 (specifically `>=3.12,<3.13`).
-1. **Package Manager**: Poetry (`pyproject.toml` is the single source of truth for dependencies).
+1. **Package Manager**: Poetry (`pyproject.toml` is the single source of truth for dependencies). pip and Poetry are installed from the hash-locked `bootstrap-requirements.txt` (`--require-hashes --only-binary=:all:`), the same file CI uses.
 1. **PyTorch with CUDA 13.2**: Explicit wheel source from `https://download.pytorch.org/whl/cu132`.
 1. **NVIDIA CUDA/cuDNN**: Windows-specific wheels `nvidia-cudnn-cu13` and `nvidia-cublas`.
 1. **FFmpeg**: An installed FFmpeg on `PATH` wins; otherwise `install_dependencies.ps1` installs a versioned, SHA256-pinned gyan.dev build into `.venv\ffmpeg`.

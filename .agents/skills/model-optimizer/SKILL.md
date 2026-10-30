@@ -33,6 +33,7 @@ Use this skill when modifying model lifecycle, hardware auto-tuning, GPU memory 
    - To prevent CUDA VRAM fragmentation and Out-Of-Memory (OOM) leaks between Whisper transcription and translation backends, translation runs in a separate child process.
    - The orchestrator completely offloads and frees Whisper and NVIDIA ASR VRAM before spinning up translation workers.
    - Translation sub-process must handle clean SIGINT / SIGTERM / Ctrl+C shutdown without orphaned processes.
+   - The worker holds the work directory (`HeldDirectory`) from manifest validation on; every job read and JSON write goes through it (exclusive `.asg-tmp-*` entry written through its descriptor, renamed via `dir_fd`).
 
 1. **Atomic Subtitle IO & Resumability**:
 

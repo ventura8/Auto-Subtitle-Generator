@@ -186,7 +186,7 @@ def _parse_segment_cap(value: Any, logger_func: Logger) -> float | None:
         logger_func(f"[Config] Invalid asr.max_segment_seconds {value!r}. Keeping the default.", "WARNING")
         return None
     clamped = min(MAX_SEGMENT_SECONDS, max(MIN_SEGMENT_SECONDS, seconds))
-    if clamped != seconds:
+    if not MIN_SEGMENT_SECONDS <= seconds <= MAX_SEGMENT_SECONDS:
         logger_func(f"[Config] asr.max_segment_seconds {value!r} is outside [5, 30]; using {clamped:g}.", "WARNING")
     return clamped
 
