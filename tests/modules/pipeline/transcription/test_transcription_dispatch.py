@@ -1,6 +1,7 @@
 """Tests for ASR engine dispatch, language vote, routing and Whisper fallback in transcription.py."""
 
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
 
@@ -219,6 +220,18 @@ class TestWorkDirGuard(_DispatchCase):
         self.assertEqual(job.transcode_path, os.path.join(WORK_DIR, "vid_asr16k.wav"))
         with self.assertRaisesRegex(ValueError, "must come from the work directory"):
             transcription._asr_job("canary", os.path.join("folder", "vid.mp4"), (STAGED, AUDIO), self.mm)
+
+    def test_link_at_the_work_path_is_not_resolved_by_the_guard(self):
+        with tempfile.TemporaryDirectory() as root:
+            work_dir = os.path.join(root, "vid.asg-temp")
+            os.mkdir(work_dir)
+            stem = os.path.join(work_dir, "vid_temp_(Vocals)_m.wav")
+            try:
+                os.symlink(os.path.join(root, "victim.wav"), stem)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks unavailable: {error}")
+            job = transcription._asr_job("canary", os.path.join(root, "vid.mp4"), (stem, STAGED), self.mm)
+        self.assertEqual(job.audio_path, STAGED)
 
 
 if __name__ == "__main__":

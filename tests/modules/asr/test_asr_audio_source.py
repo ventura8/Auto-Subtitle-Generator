@@ -233,10 +233,16 @@ class TestOpenPcmSource(_AudioDirTestCase):
 
 
 class TestOpenSoundFileBinding(_AudioDirTestCase):
+    def _symlink_or_skip(self, target, link):
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+
     def test_symlink_is_refused_and_its_target_never_read(self):
         victim = os.path.join(self.dir, "victim.wav")
         _write_fake_wav(victim, 1.0)
-        os.symlink(victim, self.audio)
+        self._symlink_or_skip(victim, self.audio)
         opened = len(_FakeSoundFile.raw_files)
         with self.assertRaises(InputRefusedError):
             audio_source._open_soundfile(self.audio)

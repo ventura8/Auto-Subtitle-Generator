@@ -590,7 +590,9 @@ def _asr_job(engine, video_path, audio, model_mgr):
     work_path, staged_path = audio
     folder, base_name = _split_video_path(video_path)
     work_dir = workdir.work_dir_path(folder, base_name)
-    if not _is_within_directory(work_path, work_dir):
+    # Lexical on purpose: the reader opens only the staged copy, and a link planted at the
+    # work-directory name (a refused resume copy) must not be resolved here.
+    if os.path.dirname(os.path.abspath(work_path)) != os.path.abspath(work_dir):
         raise ValueError(f"ASR audio must come from the work directory, not {work_path}")
     return _AsrJob(engine, staged_path, os.path.join(work_dir, f"{base_name}_asr16k.wav"), model_mgr)
 

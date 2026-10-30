@@ -605,6 +605,7 @@ class TestHeldWorkDirectoryRegression(_WorkDirCase):
 
         self.assertEqual(isolated_translator._load_segments(self.input_file)[0]["text"], "Bonjour")
 
+    @unittest.skipUnless(DIR_FD_SUPPORTED, "Without dir_fd a link at the destination is refused, not replaced")
     def test_symlink_planted_at_the_output_is_replaced_not_followed(self):
         os.symlink(self.victim, self.output_file)
 

@@ -185,7 +185,10 @@ global reach:
   isolated vocals, translation manifests and worker outputs, the recorded
   source language, and in-flight scratch files) lives in
   `<video name>.asg-temp/` next to the video. Nothing else is written beside
-  the video except the final `.srt` files and the `_multilang` container.
+  the video except the final `.srt` files and the `_multilang` container. The
+  one exception is the audio the models read during transcription: it is
+  copied into a private directory under your system temp folder
+  (`%TEMP%` / `$TMPDIR`) and removed when transcription ends.
 - **Resume After Power Loss:** The work directory is kept whenever a video
   does not finish (crash, Ctrl+C, power outage, failed stage), so the next run
   reuses the extracted audio, the isolated vocals, the source SRT, the English
