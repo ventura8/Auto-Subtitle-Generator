@@ -102,8 +102,10 @@ class AudioStageTests(unittest.TestCase):
         linked_dir = os.path.join(self.folder, "linked.asg-temp")
         self._symlink_or_skip(elsewhere, linked_dir)
         set_input_root(self.folder)
-        with audio_stage.open_stage() as stage, self.assertRaises(InputRefusedError):
-            stage.import_file(os.path.join(linked_dir, "movie_temp.wav"))
+        linked_audio = os.path.join(linked_dir, "movie_temp.wav")
+        with audio_stage.open_stage() as stage:
+            with self.assertRaises(InputRefusedError):
+                stage.import_file(linked_audio)
 
     def test_import_refuses_a_directory(self):
         with audio_stage.open_stage() as stage, self.assertRaises(InputRefusedError):
@@ -131,12 +133,19 @@ class AudioStageTests(unittest.TestCase):
                 self.assertTrue(os.path.basename(created).startswith("separator-"))
                 self.assertTrue(os.path.isdir(created))
 
-    def test_stage_is_removed_even_when_the_block_raises(self):
-        with self.assertRaisesRegex(RuntimeError, "model crashed"), audio_stage.open_stage() as stage:
+    def _crash_inside_a_stage(self, seen_roots):
+        with audio_stage.open_stage() as stage:
+            seen_roots.append(stage.root)
             stage.import_file(self.work_audio)
             os.mkdir(os.path.join(stage.new_dir("separator"), "nested"))
             raise RuntimeError("model crashed")
-        self.assertFalse(os.path.lexists(stage.root))
+
+    def test_stage_is_removed_even_when_the_block_raises(self):
+        seen_roots = []
+        with self.assertRaisesRegex(RuntimeError, "model crashed"):
+            self._crash_inside_a_stage(seen_roots)
+        self.assertEqual(len(seen_roots), 1)
+        self.assertFalse(os.path.lexists(seen_roots[0]))
         # The work directory it copied from is left alone.
         self.assertEqual(self._read(self.work_audio), b"WORK-AUDIO")
 

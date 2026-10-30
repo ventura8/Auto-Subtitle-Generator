@@ -541,8 +541,8 @@ def _contain_job_paths(job, work_root):
 def _work_root_from_argument(work_dir):
     """Resolve the work directory the parent named, refusing anything else.
 
-    The resolved value is compared against job paths and then held as a
-    directory (never opened as a file, never read from).
+    The resolved value is only ever compared against job paths; it is never
+    opened. The worker holds the directory the validated job paths live in.
     """
     resolved = os.path.realpath(work_dir)
     if not os.path.basename(resolved).endswith(workdir.WORK_DIR_SUFFIX):
@@ -572,16 +572,31 @@ def _load_contained_manifest(stream, work_dir):
     if pivot_job:
         _contain_job_paths(pivot_job, work_root)
 
-    _hold_work_dir(work_root)
+    _hold_work_dir(_job_directory(manifest))
     return manifest
 
 
+def _job_directory(manifest):
+    """Return the directory the validated job paths live in, or None for a manifest without paths.
+
+    Containment has already required every path to sit directly in the work
+    directory named on the command line, so this is that directory. The
+    worker holds the directory its jobs were validated in and keeps the
+    command-line value as a comparison operand only, never opening it.
+    """
+    for job in [*manifest.get("jobs", []), manifest.get("pivot") or {}]:
+        for key in _MANIFEST_PATH_KEYS:
+            if job.get(key):
+                return os.path.dirname(job[key])
+    return None
+
+
 def _hold_work_dir(work_root):
-    """Hold ``work_root`` for every later job read and write, releasing a previously held one."""
+    """Hold ``work_root`` (None: nothing) for every later job read and write, releasing a previous one."""
     previous = _held_work_dir[0]
     if previous is not None:
         previous.close()
-    _held_work_dir[0] = HeldDirectory(work_root)
+    _held_work_dir[0] = HeldDirectory(work_root) if work_root else None
 
 
 def run_batch_translation_worker(manifest):

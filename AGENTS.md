@@ -239,8 +239,10 @@ ______________________________________________________________________
      **directly** inside that work directory, raising `ManifestPathError`
      otherwise, and `_work_root_from_argument` refuses a work directory that
      does not end in `WORK_DIR_SUFFIX`.
-   - The work directory is then **held** before the model loads
-     (`modules/held_dir.py`, `HeldDirectory`, in the `_held_work_dir` slot).
+   - The directory the validated job paths live in (`_job_directory`, i.e.
+     the work directory) is then **held** before the model loads
+     (`modules/held_dir.py`, `HeldDirectory`, in the `_held_work_dir` slot);
+     the command-line value stays a comparison operand and is never opened.
      Every job read, existence check, write and unlink goes through it: on
      POSIX relative to the `O_NOFOLLOW` directory descriptor (`dir_fd`) with
      entries opened `O_NOFOLLOW` and required to be regular files; on Windows

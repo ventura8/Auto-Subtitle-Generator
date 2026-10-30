@@ -331,9 +331,11 @@ graph TD
 - **Containment**: the manifest arrives on stdin; every `input`, `output` and
   `en_output` must name an entry *directly* inside the work directory
   (`ManifestPathError` otherwise). `_load_contained_manifest` then holds the
-  work directory (`modules/held_dir.py`, `HeldDirectory`) before the model
-  loads. On POSIX every job read, existence check, write and unlink goes
-  through that `O_NOFOLLOW` directory descriptor (`dir_fd`), entries are
+  directory those validated paths live in (`_job_directory`; the
+  command-line value is only compared, never opened) with
+  `modules/held_dir.py`'s `HeldDirectory` before the model loads. On POSIX
+  every job read, existence check, write and unlink goes through that
+  `O_NOFOLLOW` directory descriptor (`dir_fd`), entries are
   opened with `O_NOFOLLOW` and must be regular files, so neither a link
   planted at a job file nor a work directory replaced by a link is followed
   after validation. On Windows the directory identity and a link/junction

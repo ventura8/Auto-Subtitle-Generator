@@ -215,11 +215,12 @@ class TestWorkDirGuard(_DispatchCase):
         self.open_source.assert_not_called()
 
     def test_containment_is_checked_on_the_work_path_and_the_job_reads_the_staged_copy(self):
-        job = transcription._asr_job("canary", os.path.join("folder", "vid.mp4"), (AUDIO, STAGED), self.mm)
+        video = os.path.join("folder", "vid.mp4")
+        job = transcription._asr_job("canary", video, (AUDIO, STAGED), self.mm)
         self.assertEqual(job.audio_path, STAGED)
         self.assertEqual(job.transcode_path, os.path.join(WORK_DIR, "vid_asr16k.wav"))
         with self.assertRaisesRegex(ValueError, "must come from the work directory"):
-            transcription._asr_job("canary", os.path.join("folder", "vid.mp4"), (STAGED, AUDIO), self.mm)
+            transcription._asr_job("canary", video, (STAGED, AUDIO), self.mm)
 
     def test_link_at_the_work_path_is_not_resolved_by_the_guard(self):
         with tempfile.TemporaryDirectory() as root:

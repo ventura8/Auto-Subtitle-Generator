@@ -21,6 +21,11 @@ def _release_held_work_dir():
     isolated_translator._held_work_dir[0] = None
 
 
+def _hold_work_dir(work_dir):
+    """Hold ``work_dir`` the way a validated batch manifest does."""
+    isolated_translator._hold_work_dir(work_dir)
+
+
 def _write_json_file(path, payload):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)
@@ -43,10 +48,6 @@ class _WorkDirCase(unittest.TestCase):
 
     def work_path(self, name):
         return os.path.join(self.work_dir, name)
-
-    def hold(self):
-        """Hold the work directory the way a validated batch manifest does."""
-        isolated_translator._hold_work_dir(self.work_dir)
 
 
 class TestCoverageIsolated(_WorkDirCase):
@@ -299,7 +300,7 @@ class TestCoverageIsolated(_WorkDirCase):
         }
 
     def test_run_pivot_phase_writes_segment_dicts(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         pivot_job = self._pivot_job()
         source_data = [{"text": "salut", "start": 0.0, "end": 1.0}]
         _write_json_file(pivot_job["input"], source_data)
@@ -316,7 +317,7 @@ class TestCoverageIsolated(_WorkDirCase):
         self.assertEqual(sorted(os.listdir(self.work_dir)), ["pivot_input.json", "pivot_output.json"])
 
     def test_run_pivot_phase_reuses_existing_output(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         pivot_job = self._pivot_job()
         pivot_data = [{"text": "hello", "start": 0.0, "end": 1.0}]
         _write_json_file(pivot_job["input"], [{"text": "salut", "start": 0.0, "end": 1.0}])
@@ -375,43 +376,44 @@ class TestCoverageIsolated(_WorkDirCase):
 
     def _assert_failed_write_leaves_destination_alone(self, write, failure_target):
         """A write that fails mid-way removes its scratch entry and never touches the destination."""
-        _write_json_file(self.work_path("out.json"), ["previous"])
+        destination = self.work_path("out.json")
+        _write_json_file(destination, ["previous"])
         with patch(failure_target, side_effect=OSError("boom")):
             with self.assertRaises(OSError):
-                write(self.work_path("out.json"))
+                write(destination)
         self.assertEqual(os.listdir(self.work_dir), ["out.json"])
         self.assertEqual(_read_json_file(self.work_path("out.json")), ["previous"])
 
     def test_save_worker_output_error_cleanup(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         self._assert_failed_write_leaves_destination_alone(
             lambda path: isolated_translator._save_worker_output(path, ["test"]),
             "modules.pipeline.isolated_translator.json.dump",
         )
 
     def test_save_worker_output_replace_error_cleanup(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         self._assert_failed_write_leaves_destination_alone(
             lambda path: isolated_translator._save_worker_output(path, ["test"]),
             "os.replace",
         )
 
     def test_save_job_translations_error_cleanup(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         self._assert_failed_write_leaves_destination_alone(
             lambda path: isolated_translator._save_job_translations(path, ["test"], [{"text": "orig"}]),
             "modules.pipeline.isolated_translator.json.dump",
         )
 
     def test_save_job_translations_replace_error_cleanup(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         self._assert_failed_write_leaves_destination_alone(
             lambda path: isolated_translator._save_job_translations(path, ["test"], [{"text": "orig"}]),
             "os.replace",
         )
 
     def test_save_pivot_output_atomic_replace_error_cleanup(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         self._assert_failed_write_leaves_destination_alone(
             lambda path: isolated_translator._save_pivot_output_atomic(path, [{"text": "orig"}]),
             "os.replace",
@@ -440,7 +442,7 @@ class TestCoverageIsolated(_WorkDirCase):
             isolated_translator._discard_temp_file(self.work_path("out.json"))
 
     def test_discard_temp_file_removes_through_the_held_directory(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         _write_json_file(self.work_path("out.json"), [])
 
         isolated_translator._discard_temp_file(self.work_path("out.json"))
@@ -449,17 +451,18 @@ class TestCoverageIsolated(_WorkDirCase):
         self.assertEqual(os.listdir(self.work_dir), [])
 
     def test_held_mode_refuses_a_path_outside_the_work_directory(self):
-        self.hold()
-        _write_json_file(os.path.join(self.root, "victim.json"), ["secret"])
+        _hold_work_dir(self.work_dir)
+        victim = os.path.join(self.root, "victim.json")
+        _write_json_file(victim, ["secret"])
 
         with self.assertRaises(SymlinkRefusedError):
-            isolated_translator._load_segments(os.path.join(self.root, "victim.json"))
+            isolated_translator._load_segments(victim)
 
     def test_hold_work_dir_closes_the_previous_directory(self):
-        self.hold()
+        _hold_work_dir(self.work_dir)
         first = isolated_translator._held_work_dir[0]
 
-        self.hold()
+        _hold_work_dir(self.work_dir)
 
         self.assertIsNot(isolated_translator._held_work_dir[0], first)
         self.assertIsNone(first.fd)
@@ -522,11 +525,28 @@ class TestManifestPathContainment(_WorkDirCase):
             self._load({"jobs": []}, work_dir=self.root)
 
     def test_validated_manifest_holds_the_work_directory(self):
-        self._load({"jobs": [], "pivot": None})
+        self._load({"jobs": [{"input": self.work_path("in.json"), "output": self.work_path("out.json")}], "pivot": None})
 
         held = isolated_translator._held_work_dir[0]
         self.assertIsInstance(held, HeldDirectory)
         self.assertEqual(held.path, self.work_dir)
+
+    def test_manifest_without_paths_holds_nothing_and_releases_the_previous_directory(self):
+        _hold_work_dir(self.work_dir)
+        previous = isolated_translator._held_work_dir[0]
+
+        self._load({"jobs": [], "pivot": None})
+
+        self.assertIsNone(isolated_translator._held_work_dir[0])
+        self.assertIsNone(previous.fd)
+
+    def test_job_directory_reads_a_pivot_only_manifest(self):
+        manifest = {"jobs": [], "pivot": {"input": self.work_path("in.json")}}
+
+        self.assertEqual(isolated_translator._job_directory(manifest), self.work_dir)
+
+    def test_job_directory_is_none_without_any_path(self):
+        self.assertIsNone(isolated_translator._job_directory({"jobs": [{}], "pivot": None}))
 
     def test_refused_manifest_does_not_hold_the_work_directory(self):
         payload = {"jobs": [{"input": os.path.join(self.root, "in.json"), "output": self.work_path("out.json")}]}
@@ -539,13 +559,16 @@ class TestManifestPathContainment(_WorkDirCase):
     def test_manifest_path_in_a_sub_directory_is_refused(self):
         os.mkdir(self.work_path("nested"))
         nested = os.path.join(self.work_dir, "nested", "in.json")
+        payload = {"jobs": [{"input": nested, "output": self.work_path("out.json")}]}
 
         with self.assertRaises(isolated_translator.ManifestPathError):
-            self._load({"jobs": [{"input": nested, "output": self.work_path("out.json")}]})
+            self._load(payload)
 
     def test_manifest_path_naming_the_work_directory_itself_is_refused(self):
+        payload = {"jobs": [{"input": self.work_dir, "output": self.work_path("out.json")}]}
+
         with self.assertRaises(isolated_translator.ManifestPathError):
-            self._load({"jobs": [{"input": self.work_dir, "output": self.work_path("out.json")}]})
+            self._load(payload)
 
 
 class TestHeldWorkDirectoryRegression(_WorkDirCase):

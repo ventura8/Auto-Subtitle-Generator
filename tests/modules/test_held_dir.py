@@ -22,6 +22,16 @@ def _read(path):
         return handle.read()
 
 
+def _write_data(handle):
+    handle.write("data")
+
+
+def _write_through(held, path, action):
+    """Open a text writer on ``path`` and run ``action`` on its handle before it promotes."""
+    with held.text_writer(path) as handle:
+        action(handle)
+
+
 class _HeldDirCase(unittest.TestCase):
     """Shared scenarios; subclasses pick the descriptor or the re-verified identity mode."""
 
@@ -50,14 +60,16 @@ class _HeldDirCase(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs are POSIX only")
     def test_read_text_refuses_a_fifo_without_blocking(self):
-        os.mkfifo(self.entry("job.json"))
+        fifo = self.entry("job.json")
+        os.mkfifo(fifo)
         with self.assertRaises(SymlinkRefusedError):
-            self.held.read_text(self.entry("job.json"))
+            self.held.read_text(fifo)
 
     def test_entry_name_accepts_only_direct_children(self):
         self.assertEqual(self.held.entry_name(self.entry("a.json")), "a.json")
+        nested = os.path.join(self.work_dir, "sub", "a.json")
         with self.assertRaises(SymlinkRefusedError):
-            self.held.entry_name(os.path.join(self.work_dir, "sub", "a.json"))
+            self.held.entry_name(nested)
         with self.assertRaises(SymlinkRefusedError):
             self.held.entry_name(self.victim)
 
@@ -75,16 +87,18 @@ class _HeldDirCase(unittest.TestCase):
         self.assertEqual(self.held.read_text(self.entry("a.json")), "[1]")
 
     def test_read_text_refuses_a_symlink(self):
-        os.symlink(self.victim, self.entry("a.json"))
+        link = self.entry("a.json")
+        os.symlink(self.victim, link)
 
         with self.assertRaises(OSError):
-            self.held.read_text(self.entry("a.json"))
+            self.held.read_text(link)
 
     def test_read_text_refuses_a_directory(self):
-        os.mkdir(self.entry("sub"))
+        sub = self.entry("sub")
+        os.mkdir(sub)
 
         with self.assertRaises(SymlinkRefusedError):
-            self.held.read_text(self.entry("sub"))
+            self.held.read_text(sub)
 
     def test_remove_unlinks_the_link_not_its_target(self):
         os.symlink(self.victim, self.entry("a.json"))
@@ -107,31 +121,40 @@ class _HeldDirCase(unittest.TestCase):
         self.assertEqual(self.scratch_entries(), [])
 
     def test_text_writer_failure_discards_the_scratch_entry(self):
+        def write_then_fail(handle):
+            handle.write("partial")
+            raise ValueError("boom")
+
+        target = self.entry("out.json")
         with self.assertRaises(ValueError):
-            with self.held.text_writer(self.entry("out.json")) as handle:
-                handle.write("partial")
-                raise ValueError("boom")
+            _write_through(self.held, target, write_then_fail)
 
         self.assertEqual(os.listdir(self.work_dir), [])
 
     def test_text_writer_refuses_a_replaced_scratch_entry_and_leaves_the_impostor(self):
+        def replace_scratch_with_link(handle):
+            handle.write("data")
+            (scratch,) = self.scratch_entries()
+            os.remove(scratch)
+            os.symlink(self.victim, scratch)
+
+        target = self.entry("out.json")
         with self.assertRaises(SymlinkRefusedError):
-            with self.held.text_writer(self.entry("out.json")) as handle:
-                handle.write("data")
-                (scratch,) = self.scratch_entries()
-                os.remove(scratch)
-                os.symlink(self.victim, scratch)
+            _write_through(self.held, target, replace_scratch_with_link)
 
         self.assertFalse(os.path.lexists(self.entry("out.json")))
         self.assertEqual(len(self.scratch_entries()), 1)
         self.assertEqual(_read(self.victim), "VICTIM")
 
     def test_text_writer_tolerates_a_vanished_scratch_entry(self):
+        def remove_scratch(handle):
+            handle.write("data")
+            (scratch,) = self.scratch_entries()
+            os.remove(scratch)
+
+        target = self.entry("out.json")
         with self.assertRaises(FileNotFoundError):
-            with self.held.text_writer(self.entry("out.json")) as handle:
-                handle.write("data")
-                (scratch,) = self.scratch_entries()
-                os.remove(scratch)
+            _write_through(self.held, target, remove_scratch)
 
         self.assertEqual(os.listdir(self.work_dir), [])
 
@@ -139,11 +162,11 @@ class _HeldDirCase(unittest.TestCase):
         token = "cd" * 8
         planted = self.entry(f"{SCRATCH_PREFIX}{token}.tmp")
         os.symlink(self.victim, planted)
+        target = self.entry("out.json")
 
         with patch("modules.held_dir.secrets.token_hex", return_value=token):
             with self.assertRaises(FileExistsError):
-                with self.held.text_writer(self.entry("out.json")) as handle:
-                    handle.write("data")
+                _write_through(self.held, target, _write_data)
 
         self.assertTrue(os.path.islink(planted))
         self.assertEqual(_read(self.victim), "VICTIM")
@@ -216,37 +239,43 @@ class TestHeldDirectoryWithoutDescriptor(_HeldDirCase):
     def test_replaced_directory_is_refused_before_any_operation(self):
         os.rename(self.work_dir, self.work_dir + ".moved")
         os.mkdir(self.work_dir)
+        entry = self.entry("a.json")
 
         with self.assertRaises(SymlinkRefusedError):
-            self.held.exists(self.entry("a.json"))
+            self.held.exists(entry)
         with self.assertRaises(SymlinkRefusedError):
-            self.held.remove(self.entry("a.json"))
+            self.held.remove(entry)
 
     def test_directory_replaced_by_a_link_is_refused_before_writing(self):
         elsewhere = os.path.join(self.root, "elsewhere")
         os.mkdir(elsewhere)
         os.rename(self.work_dir, self.work_dir + ".moved")
         os.symlink(elsewhere, self.work_dir)
+        target = self.entry("out.json")
 
         with self.assertRaises(SymlinkRefusedError):
-            with self.held.text_writer(self.entry("out.json")) as handle:
-                handle.write("data")
+            _write_through(self.held, target, _write_data)
 
         self.assertEqual(os.listdir(elsewhere), [])
 
     def test_read_refuses_a_file_swapped_between_check_and_open(self):
-        _write(self.entry("a.json"), "mine")
+        entry = self.entry("a.json")
+        _write(entry, "mine")
         other = os.lstat(self.victim)
 
         with patch.object(HeldDirectory, "_stat", return_value=other):
             with self.assertRaises(SymlinkRefusedError):
-                self.held.read_text(self.entry("a.json"))
+                self.held.read_text(entry)
 
     def test_promote_refuses_a_link_planted_at_the_destination(self):
+        target = self.entry("out.json")
+
+        def plant_link_at_destination(handle):
+            handle.write("data")
+            os.symlink(self.victim, target)
+
         with self.assertRaises(SymlinkRefusedError):
-            with self.held.text_writer(self.entry("out.json")) as handle:
-                handle.write("data")
-                os.symlink(self.victim, self.entry("out.json"))
+            _write_through(self.held, target, plant_link_at_destination)
 
         self.assertEqual(_read(self.victim), "VICTIM")
         self.assertEqual(self.scratch_entries(), [])

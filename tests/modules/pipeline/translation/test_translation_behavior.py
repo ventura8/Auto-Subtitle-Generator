@@ -448,8 +448,9 @@ class TestWorkFileReadsDoNotFollowLinks(unittest.TestCase):
         self.assertEqual(translation._read_work_file(path), b'["Hola"]')
 
     def test_read_work_file_refuses_a_symlink(self):
+        link = self._plant_link("out.json")
         with self.assertRaises(OSError):
-            translation._read_work_file(self._plant_link("out.json"))
+            translation._read_work_file(link)
 
     def test_load_translation_output_refuses_a_symlinked_output(self):
         output_file = self._plant_link(".temp_output.movie.fr.json")
@@ -481,9 +482,10 @@ class TestWorkFileReadsDoNotFollowLinks(unittest.TestCase):
 
     def test_send_manifest_refuses_a_symlinked_manifest_and_closes_stdin(self):
         proc = MagicMock()
+        link = self._plant_link("movie.manifest.json")
 
         with self.assertRaises(OSError):
-            translation._send_manifest_to_worker(proc, self._plant_link("movie.manifest.json"))
+            translation._send_manifest_to_worker(proc, link)
 
         proc.stdin.write.assert_not_called()
         proc.stdin.close.assert_called_once()

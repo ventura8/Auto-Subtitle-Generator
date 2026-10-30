@@ -321,8 +321,9 @@ class TestSafeIO(unittest.TestCase):
 
     def test_copy_file_into_discards_scratch_when_source_is_missing(self):
         target = os.path.join(self.folder, "movie_sepchunk_000.wav")
+        missing = os.path.join(self.folder, "missing.wav")
         with self.assertRaises(FileNotFoundError):
-            safe_io.copy_file_into(os.path.join(self.folder, "missing.wav"), target)
+            safe_io.copy_file_into(missing, target)
         self.assertEqual(self._folder_entries(), [])
 
 
